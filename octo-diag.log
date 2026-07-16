@@ -1,315 +1,127 @@
-2026-07-17 00:21:28,637 INFO octo: мост слушает 127.0.0.1:8787 (live), serial=auto @ 115200 DIAG log→C:/Users/Evgenii/PycharmProjects/Claudiki/octo-diag.log
-2026-07-17 00:21:31,640 INFO octo.bridge: создана на лету: w0 (core) state=0
-2026-07-17 00:21:31,640 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,641 INFO octo.bridge: создана на лету: w1 (api) state=0
-2026-07-17 00:21:31,641 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,642 INFO octo.bridge: создана на лету: w2 (docs) state=0
-2026-07-17 00:21:31,642 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,643 INFO octo.bridge: создана на лету: w3 (mcp) state=0
-2026-07-17 00:21:31,644 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,645 INFO octo.bridge: создана на лету: w4 (tests) state=0
-2026-07-17 00:21:31,645 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,646 INFO octo.bridge: создана на лету: w5 (hotfix) state=0
-2026-07-17 00:21:31,646 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,647 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,666 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,681 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,682 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,683 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,684 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:31,748 INFO octo.serial: serial открыт: COM3 @ 115200 (auto) (no-reset)
-2026-07-17 00:21:31,768 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:21:31,768 INFO octo.bridge: PUSH #1 reason=event dt=0ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:21:33,074 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":221164,"draw_us":21245,"blit_us":15337,"tent_us":19895,"sph_us":233,"acc_us":920,"snaps":1,"cells":6,"badjson":0}
-2026-07-17 00:21:35,299 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":221022,"draw_us":20720,"blit_us":15294,"tent_us":19572,"sph_us":205,"acc_us":921,"snaps":1,"cells":6,"badjson":0}
-2026-07-17 00:21:36,801 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:21:36,802 INFO octo.bridge: PUSH #2 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:21:37,509 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":221196,"draw_us":20768,"blit_us":15381,"tent_us":19718,"sph_us":205,"acc_us":915,"snaps":2,"cells":6,"badjson":0}
-2026-07-17 00:21:39,738 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":221166,"draw_us":20690,"blit_us":15297,"tent_us":19588,"sph_us":205,"acc_us":916,"snaps":2,"cells":6,"badjson":0}
-2026-07-17 00:21:41,830 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:21:41,830 INFO octo.bridge: PUSH #3 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:21:41,995 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":220887,"draw_us":20745,"blit_us":15532,"tent_us":19611,"sph_us":205,"acc_us":910,"snaps":2,"cells":6,"badjson":0}
-2026-07-17 00:21:44,223 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":221947,"draw_us":20992,"blit_us":15314,"tent_us":19569,"sph_us":201,"acc_us":914,"snaps":3,"cells":6,"badjson":0}
-2026-07-17 00:21:45,011 INFO octo.bridge: создана на лету: 99ce5dce-9f98-4c30-9e7e-d807af4afd01 (Claudiki) state=0
-2026-07-17 00:21:45,011 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:21:45,112 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:21:45,132 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:21:45,132 INFO octo.bridge: PUSH #4 reason=event dt=3313ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:21:46,239 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223047,"draw_us":20975,"blit_us":15557,"tent_us":19633,"sph_us":205,"acc_us":926,"snaps":4,"cells":6,"badjson":0}
-2026-07-17 00:21:48,311 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222548,"draw_us":21039,"blit_us":15294,"tent_us":19546,"sph_us":206,"acc_us":923,"snaps":4,"cells":6,"badjson":0}
-2026-07-17 00:21:50,138 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:21:50,158 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:21:50,158 INFO octo.bridge: PUSH #5 reason=heartbeat dt=5015ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:21:50,324 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222671,"draw_us":21036,"blit_us":15290,"tent_us":19539,"sph_us":206,"acc_us":943,"snaps":4,"cells":6,"badjson":0}
-2026-07-17 00:21:52,161 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223096,"draw_us":21066,"blit_us":15440,"tent_us":19663,"sph_us":205,"acc_us":931,"snaps":5,"cells":6,"badjson":0}
-2026-07-17 00:21:54,201 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223213,"draw_us":20979,"blit_us":15291,"tent_us":19557,"sph_us":205,"acc_us":926,"snaps":5,"cells":6,"badjson":0}
-2026-07-17 00:21:55,162 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:21:55,181 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:21:55,182 INFO octo.bridge: PUSH #6 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:21:56,213 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222913,"draw_us":21051,"blit_us":15302,"tent_us":19859,"sph_us":205,"acc_us":945,"snaps":6,"cells":6,"badjson":0}
-2026-07-17 00:21:58,239 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222833,"draw_us":21101,"blit_us":15294,"tent_us":19560,"sph_us":205,"acc_us":949,"snaps":6,"cells":6,"badjson":0}
-2026-07-17 00:22:00,189 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:00,209 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:00,209 INFO octo.bridge: PUSH #7 reason=heartbeat dt=5015ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:00,251 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223185,"draw_us":21057,"blit_us":15292,"tent_us":19556,"sph_us":206,"acc_us":959,"snaps":6,"cells":6,"badjson":0}
-2026-07-17 00:22:02,262 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222634,"draw_us":21018,"blit_us":15409,"tent_us":19545,"sph_us":206,"acc_us":959,"snaps":7,"cells":6,"badjson":0}
-2026-07-17 00:22:04,271 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222631,"draw_us":21016,"blit_us":15294,"tent_us":19528,"sph_us":206,"acc_us":966,"snaps":7,"cells":6,"badjson":0}
-2026-07-17 00:22:05,213 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:05,233 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:05,233 INFO octo.bridge: PUSH #8 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:06,296 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222964,"draw_us":21136,"blit_us":15533,"tent_us":19669,"sph_us":205,"acc_us":963,"snaps":8,"cells":6,"badjson":0}
-2026-07-17 00:22:08,311 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223033,"draw_us":21144,"blit_us":15293,"tent_us":19640,"sph_us":206,"acc_us":961,"snaps":8,"cells":6,"badjson":0}
-2026-07-17 00:22:10,233 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:10,253 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:10,253 INFO octo.bridge: PUSH #9 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:10,325 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223197,"draw_us":21143,"blit_us":15293,"tent_us":19652,"sph_us":205,"acc_us":962,"snaps":8,"cells":6,"badjson":0}
-2026-07-17 00:22:12,336 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223345,"draw_us":21074,"blit_us":15426,"tent_us":19684,"sph_us":205,"acc_us":964,"snaps":9,"cells":6,"badjson":0}
-2026-07-17 00:22:14,380 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223633,"draw_us":21144,"blit_us":15297,"tent_us":19650,"sph_us":206,"acc_us":958,"snaps":9,"cells":6,"badjson":0}
-2026-07-17 00:22:15,260 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:15,280 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:15,280 INFO octo.bridge: PUSH #10 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:16,235 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223152,"draw_us":21117,"blit_us":15550,"tent_us":19608,"sph_us":205,"acc_us":963,"snaps":10,"cells":6,"badjson":0}
-2026-07-17 00:22:18,260 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":222977,"draw_us":21120,"blit_us":15297,"tent_us":19636,"sph_us":205,"acc_us":960,"snaps":10,"cells":6,"badjson":0}
-2026-07-17 00:22:20,271 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223122,"draw_us":21207,"blit_us":15297,"tent_us":19670,"sph_us":205,"acc_us":950,"snaps":10,"cells":6,"badjson":0}
-2026-07-17 00:22:20,286 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:20,306 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:20,306 INFO octo.bridge: PUSH #11 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:22,281 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223524,"draw_us":21123,"blit_us":15574,"tent_us":19611,"sph_us":205,"acc_us":952,"snaps":11,"cells":6,"badjson":0}
-2026-07-17 00:22:24,321 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223269,"draw_us":21102,"blit_us":15297,"tent_us":19644,"sph_us":206,"acc_us":946,"snaps":11,"cells":6,"badjson":0}
-2026-07-17 00:22:25,310 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:25,330 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:25,330 INFO octo.bridge: PUSH #12 reason=heartbeat dt=5015ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:26,346 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223459,"draw_us":21130,"blit_us":15557,"tent_us":19695,"sph_us":206,"acc_us":949,"snaps":12,"cells":6,"badjson":0}
-2026-07-17 00:22:28,357 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":223638,"draw_us":21072,"blit_us":15294,"tent_us":19601,"sph_us":205,"acc_us":949,"snaps":12,"cells":6,"badjson":0}
-2026-07-17 00:22:30,339 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:30,360 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:30,360 INFO octo.bridge: PUSH #13 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:30,371 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":226230,"draw_us":21613,"blit_us":15297,"tent_us":19645,"sph_us":205,"acc_us":1546,"snaps":12,"cells":6,"badjson":0}
-2026-07-17 00:22:32,413 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":231566,"draw_us":22458,"blit_us":15401,"tent_us":19796,"sph_us":205,"acc_us":2374,"snaps":13,"cells":6,"badjson":0}
-2026-07-17 00:22:34,651 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234250,"draw_us":23083,"blit_us":15297,"tent_us":19613,"sph_us":205,"acc_us":2915,"snaps":13,"cells":6,"badjson":0}
-2026-07-17 00:22:35,361 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:35,381 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:35,381 INFO octo.bridge: PUSH #14 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:36,687 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234593,"draw_us":22967,"blit_us":15352,"tent_us":19788,"sph_us":205,"acc_us":2836,"snaps":14,"cells":6,"badjson":0}
-2026-07-17 00:22:38,901 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234429,"draw_us":22957,"blit_us":15294,"tent_us":19657,"sph_us":205,"acc_us":2840,"snaps":14,"cells":6,"badjson":0}
-2026-07-17 00:22:40,386 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:40,406 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:40,406 INFO octo.bridge: PUSH #15 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:40,925 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234611,"draw_us":22976,"blit_us":15556,"tent_us":19637,"sph_us":206,"acc_us":2820,"snaps":15,"cells":6,"badjson":0}
-2026-07-17 00:22:42,935 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234333,"draw_us":22957,"blit_us":15294,"tent_us":19675,"sph_us":205,"acc_us":2827,"snaps":15,"cells":6,"badjson":0}
-2026-07-17 00:22:45,159 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234286,"draw_us":22944,"blit_us":15294,"tent_us":19616,"sph_us":205,"acc_us":2814,"snaps":15,"cells":6,"badjson":0}
-2026-07-17 00:22:45,406 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:45,426 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:45,426 INFO octo.bridge: PUSH #16 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:47,198 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234462,"draw_us":22938,"blit_us":15515,"tent_us":19654,"sph_us":205,"acc_us":2874,"snaps":16,"cells":6,"badjson":0}
-2026-07-17 00:22:49,423 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234643,"draw_us":22950,"blit_us":15294,"tent_us":19603,"sph_us":205,"acc_us":2863,"snaps":16,"cells":6,"badjson":0}
-2026-07-17 00:22:50,430 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:50,450 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:50,450 INFO octo.bridge: PUSH #17 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:51,436 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234831,"draw_us":22990,"blit_us":15331,"tent_us":19801,"sph_us":205,"acc_us":2872,"snaps":17,"cells":6,"badjson":0}
-2026-07-17 00:22:53,651 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234638,"draw_us":23033,"blit_us":15293,"tent_us":19632,"sph_us":205,"acc_us":2822,"snaps":17,"cells":6,"badjson":0}
-2026-07-17 00:22:55,463 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:22:55,482 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:22:55,482 INFO octo.bridge: PUSH #18 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:22:55,663 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234638,"draw_us":22922,"blit_us":15451,"tent_us":19801,"sph_us":205,"acc_us":2822,"snaps":17,"cells":6,"badjson":0}
-2026-07-17 00:22:57,891 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234588,"draw_us":22972,"blit_us":15318,"tent_us":19670,"sph_us":201,"acc_us":2828,"snaps":18,"cells":6,"badjson":0}
-2026-07-17 00:22:59,896 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234834,"draw_us":23001,"blit_us":15294,"tent_us":19657,"sph_us":205,"acc_us":2950,"snaps":18,"cells":6,"badjson":0}
-2026-07-17 00:23:00,485 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:00,504 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:00,504 INFO octo.bridge: PUSH #19 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:02,126 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234944,"draw_us":22997,"blit_us":15306,"tent_us":19892,"sph_us":206,"acc_us":2877,"snaps":19,"cells":6,"badjson":0}
-2026-07-17 00:23:04,151 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234414,"draw_us":23019,"blit_us":15298,"tent_us":19653,"sph_us":205,"acc_us":2826,"snaps":19,"cells":6,"badjson":0}
-2026-07-17 00:23:05,513 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:05,533 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:05,533 INFO octo.bridge: PUSH #20 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:06,178 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234624,"draw_us":23022,"blit_us":15557,"tent_us":19604,"sph_us":206,"acc_us":2846,"snaps":20,"cells":6,"badjson":0}
-2026-07-17 00:23:08,402 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234659,"draw_us":23053,"blit_us":15290,"tent_us":19656,"sph_us":205,"acc_us":2892,"snaps":20,"cells":6,"badjson":0}
-2026-07-17 00:23:10,444 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234752,"draw_us":22978,"blit_us":15294,"tent_us":19662,"sph_us":205,"acc_us":2903,"snaps":20,"cells":6,"badjson":0}
-2026-07-17 00:23:10,537 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:10,556 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:10,557 INFO octo.bridge: PUSH #21 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:12,663 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":234682,"draw_us":23032,"blit_us":15388,"tent_us":19717,"sph_us":206,"acc_us":2898,"snaps":21,"cells":6,"badjson":0}
-2026-07-17 00:23:14,690 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235331,"draw_us":23009,"blit_us":15294,"tent_us":19674,"sph_us":205,"acc_us":2844,"snaps":21,"cells":6,"badjson":0}
-2026-07-17 00:23:15,571 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:15,590 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:15,590 INFO octo.bridge: PUSH #22 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:16,930 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235387,"draw_us":23177,"blit_us":15455,"tent_us":19842,"sph_us":205,"acc_us":2852,"snaps":22,"cells":6,"badjson":0}
-2026-07-17 00:23:18,941 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235649,"draw_us":23220,"blit_us":15291,"tent_us":19730,"sph_us":205,"acc_us":2966,"snaps":22,"cells":6,"badjson":0}
-2026-07-17 00:23:20,597 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:20,616 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:20,617 INFO octo.bridge: PUSH #23 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:21,169 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235175,"draw_us":23370,"blit_us":15385,"tent_us":19872,"sph_us":205,"acc_us":2910,"snaps":23,"cells":6,"badjson":0}
-2026-07-17 00:23:23,178 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235702,"draw_us":23151,"blit_us":15294,"tent_us":19731,"sph_us":205,"acc_us":2893,"snaps":23,"cells":6,"badjson":0}
-2026-07-17 00:23:25,402 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235212,"draw_us":23152,"blit_us":15294,"tent_us":19749,"sph_us":205,"acc_us":2842,"snaps":23,"cells":6,"badjson":0}
-2026-07-17 00:23:25,619 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:25,639 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:25,639 INFO octo.bridge: PUSH #24 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:27,426 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235480,"draw_us":23139,"blit_us":15315,"tent_us":19972,"sph_us":206,"acc_us":2904,"snaps":24,"cells":6,"badjson":0}
-2026-07-17 00:23:29,636 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235709,"draw_us":23121,"blit_us":15290,"tent_us":19746,"sph_us":206,"acc_us":2895,"snaps":24,"cells":6,"badjson":0}
-2026-07-17 00:23:30,163 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:23:30,644 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:30,664 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:30,664 INFO octo.bridge: PUSH #25 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:31,666 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235326,"draw_us":23224,"blit_us":15314,"tent_us":20067,"sph_us":205,"acc_us":2901,"snaps":25,"cells":6,"badjson":0}
-2026-07-17 00:23:33,880 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235856,"draw_us":23255,"blit_us":15305,"tent_us":19738,"sph_us":205,"acc_us":2948,"snaps":25,"cells":6,"badjson":0}
-2026-07-17 00:23:35,673 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:35,693 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:35,693 INFO octo.bridge: PUSH #26 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:35,889 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235904,"draw_us":23514,"blit_us":15290,"tent_us":20097,"sph_us":206,"acc_us":2840,"snaps":25,"cells":6,"badjson":0}
-2026-07-17 00:23:38,100 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235736,"draw_us":23145,"blit_us":15310,"tent_us":19749,"sph_us":201,"acc_us":2905,"snaps":26,"cells":6,"badjson":0}
-2026-07-17 00:23:40,108 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235266,"draw_us":23108,"blit_us":15301,"tent_us":19739,"sph_us":205,"acc_us":2837,"snaps":26,"cells":6,"badjson":0}
-2026-07-17 00:23:40,698 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:40,717 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:40,718 INFO octo.bridge: PUSH #27 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:42,352 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235358,"draw_us":23150,"blit_us":15409,"tent_us":19820,"sph_us":205,"acc_us":2961,"snaps":27,"cells":6,"badjson":0}
-2026-07-17 00:23:44,392 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235450,"draw_us":23145,"blit_us":15297,"tent_us":19747,"sph_us":205,"acc_us":2839,"snaps":27,"cells":6,"badjson":0}
-2026-07-17 00:23:45,719 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:45,739 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:45,739 INFO octo.bridge: PUSH #28 reason=heartbeat dt=5015ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:46,616 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235191,"draw_us":23182,"blit_us":15536,"tent_us":19739,"sph_us":205,"acc_us":2864,"snaps":28,"cells":6,"badjson":0}
-2026-07-17 00:23:47,453 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:23:48,631 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235868,"draw_us":23159,"blit_us":15293,"tent_us":19749,"sph_us":205,"acc_us":2907,"snaps":28,"cells":6,"badjson":0}
-2026-07-17 00:23:50,752 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:50,771 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:50,772 INFO octo.bridge: PUSH #29 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:50,845 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235605,"draw_us":23132,"blit_us":15297,"tent_us":19737,"sph_us":205,"acc_us":2864,"snaps":28,"cells":6,"badjson":0}
-2026-07-17 00:23:52,858 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235496,"draw_us":23182,"blit_us":15475,"tent_us":19769,"sph_us":205,"acc_us":2980,"snaps":29,"cells":6,"badjson":0}
-2026-07-17 00:23:55,088 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235312,"draw_us":23206,"blit_us":15294,"tent_us":19756,"sph_us":206,"acc_us":2896,"snaps":29,"cells":6,"badjson":0}
-2026-07-17 00:23:55,784 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:23:55,803 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:23:55,803 INFO octo.bridge: PUSH #30 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:23:57,099 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235327,"draw_us":23196,"blit_us":15426,"tent_us":19797,"sph_us":205,"acc_us":2924,"snaps":30,"cells":6,"badjson":0}
-2026-07-17 00:23:59,328 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235242,"draw_us":23107,"blit_us":15293,"tent_us":19731,"sph_us":205,"acc_us":2861,"snaps":30,"cells":6,"badjson":0}
-2026-07-17 00:24:00,811 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:00,831 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:00,831 INFO octo.bridge: PUSH #31 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:01,349 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235341,"draw_us":23158,"blit_us":15438,"tent_us":19832,"sph_us":205,"acc_us":2863,"snaps":31,"cells":6,"badjson":0}
-2026-07-17 00:24:03,562 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235821,"draw_us":23193,"blit_us":15294,"tent_us":19747,"sph_us":205,"acc_us":2980,"snaps":31,"cells":6,"badjson":0}
-2026-07-17 00:24:03,959 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:24:05,573 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235296,"draw_us":23179,"blit_us":15290,"tent_us":19740,"sph_us":205,"acc_us":2864,"snaps":31,"cells":6,"badjson":0}
-2026-07-17 00:24:05,837 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:05,856 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:05,857 INFO octo.bridge: PUSH #32 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:07,787 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235774,"draw_us":23210,"blit_us":15549,"tent_us":19813,"sph_us":205,"acc_us":2867,"snaps":32,"cells":6,"badjson":0}
-2026-07-17 00:24:09,801 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235283,"draw_us":23153,"blit_us":15294,"tent_us":19749,"sph_us":205,"acc_us":2864,"snaps":32,"cells":6,"badjson":0}
-2026-07-17 00:24:10,869 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:10,888 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:10,888 INFO octo.bridge: PUSH #33 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:12,014 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235583,"draw_us":23249,"blit_us":15500,"tent_us":19873,"sph_us":205,"acc_us":2927,"snaps":33,"cells":6,"badjson":0}
-2026-07-17 00:24:14,055 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":235318,"draw_us":23169,"blit_us":15297,"tent_us":19746,"sph_us":205,"acc_us":2864,"snaps":33,"cells":6,"badjson":0}
-2026-07-17 00:24:15,894 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:15,914 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:15,914 INFO octo.bridge: PUSH #34 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:16,265 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":236176,"draw_us":24149,"blit_us":15561,"tent_us":19728,"sph_us":206,"acc_us":3935,"snaps":33,"cells":6,"badjson":0}
-2026-07-17 00:24:18,475 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":238306,"draw_us":25245,"blit_us":15306,"tent_us":19742,"sph_us":202,"acc_us":5036,"snaps":34,"cells":6,"badjson":0}
-2026-07-17 00:24:19,588 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:24:20,517 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":240042,"draw_us":26357,"blit_us":15301,"tent_us":19745,"sph_us":205,"acc_us":6201,"snaps":34,"cells":6,"badjson":0}
-2026-07-17 00:24:20,919 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:20,939 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:20,939 INFO octo.bridge: PUSH #35 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:22,728 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242463,"draw_us":26475,"blit_us":15561,"tent_us":19738,"sph_us":205,"acc_us":6162,"snaps":35,"cells":6,"badjson":0}
-2026-07-17 00:24:24,943 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241589,"draw_us":26419,"blit_us":15291,"tent_us":19748,"sph_us":206,"acc_us":6090,"snaps":35,"cells":6,"badjson":0}
-2026-07-17 00:24:25,944 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:25,963 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:25,964 INFO octo.bridge: PUSH #36 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:27,008 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241837,"draw_us":26388,"blit_us":15377,"tent_us":19904,"sph_us":205,"acc_us":6115,"snaps":36,"cells":6,"badjson":0}
-2026-07-17 00:24:29,236 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241960,"draw_us":26377,"blit_us":15291,"tent_us":19738,"sph_us":205,"acc_us":6166,"snaps":36,"cells":6,"badjson":0}
-2026-07-17 00:24:30,969 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:30,988 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:30,989 INFO octo.bridge: PUSH #37 reason=heartbeat dt=5015ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:31,449 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242082,"draw_us":26348,"blit_us":15479,"tent_us":19891,"sph_us":205,"acc_us":6093,"snaps":37,"cells":6,"badjson":0}
-2026-07-17 00:24:33,674 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242092,"draw_us":26456,"blit_us":15290,"tent_us":19738,"sph_us":205,"acc_us":6233,"snaps":37,"cells":6,"badjson":0}
-2026-07-17 00:24:35,900 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242140,"draw_us":26379,"blit_us":15291,"tent_us":19744,"sph_us":205,"acc_us":6107,"snaps":37,"cells":6,"badjson":0}
-2026-07-17 00:24:35,993 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:36,013 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:36,013 INFO octo.bridge: PUSH #38 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:37,908 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241840,"draw_us":26455,"blit_us":15434,"tent_us":19791,"sph_us":205,"acc_us":6105,"snaps":38,"cells":6,"badjson":0}
-2026-07-17 00:24:38,967 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:24:40,124 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242013,"draw_us":26422,"blit_us":15290,"tent_us":19739,"sph_us":206,"acc_us":6143,"snaps":38,"cells":6,"badjson":0}
-2026-07-17 00:24:41,023 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:41,042 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:41,043 INFO octo.bridge: PUSH #39 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:42,354 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242069,"draw_us":26364,"blit_us":15309,"tent_us":19992,"sph_us":205,"acc_us":6099,"snaps":39,"cells":6,"badjson":0}
-2026-07-17 00:24:44,569 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242185,"draw_us":26428,"blit_us":15290,"tent_us":19743,"sph_us":205,"acc_us":6229,"snaps":39,"cells":6,"badjson":0}
-2026-07-17 00:24:46,054 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:46,074 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:46,074 INFO octo.bridge: PUSH #40 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:46,782 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241809,"draw_us":26609,"blit_us":15451,"tent_us":19863,"sph_us":205,"acc_us":6283,"snaps":40,"cells":6,"badjson":0}
-2026-07-17 00:24:48,792 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241823,"draw_us":26428,"blit_us":15291,"tent_us":19716,"sph_us":205,"acc_us":6210,"snaps":40,"cells":6,"badjson":0}
-2026-07-17 00:24:51,011 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242080,"draw_us":26415,"blit_us":15301,"tent_us":19732,"sph_us":206,"acc_us":6193,"snaps":40,"cells":6,"badjson":0}
-2026-07-17 00:24:51,088 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:51,108 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:51,108 INFO octo.bridge: PUSH #41 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:53,225 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242371,"draw_us":26496,"blit_us":15507,"tent_us":19745,"sph_us":205,"acc_us":6225,"snaps":41,"cells":6,"badjson":0}
-2026-07-17 00:24:55,452 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241958,"draw_us":26437,"blit_us":15298,"tent_us":19756,"sph_us":206,"acc_us":6107,"snaps":41,"cells":6,"badjson":0}
-2026-07-17 00:24:56,117 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:24:56,137 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:24:56,137 INFO octo.bridge: PUSH #42 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:24:56,978 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:24:57,664 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242226,"draw_us":26691,"blit_us":15335,"tent_us":20049,"sph_us":205,"acc_us":6214,"snaps":42,"cells":6,"badjson":0}
-2026-07-17 00:24:59,881 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242818,"draw_us":26555,"blit_us":15298,"tent_us":19752,"sph_us":206,"acc_us":6164,"snaps":42,"cells":6,"badjson":0}
-2026-07-17 00:25:01,149 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:01,169 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:01,169 INFO octo.bridge: PUSH #43 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:01,891 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242145,"draw_us":26416,"blit_us":15450,"tent_us":19816,"sph_us":205,"acc_us":6152,"snaps":43,"cells":6,"badjson":0}
-2026-07-17 00:25:04,104 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242365,"draw_us":26455,"blit_us":15301,"tent_us":19740,"sph_us":205,"acc_us":6238,"snaps":43,"cells":6,"badjson":0}
-2026-07-17 00:25:06,177 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:06,197 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:06,197 INFO octo.bridge: PUSH #44 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:06,332 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241828,"draw_us":26486,"blit_us":15528,"tent_us":19767,"sph_us":205,"acc_us":6229,"snaps":43,"cells":6,"badjson":0}
-2026-07-17 00:25:08,547 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242143,"draw_us":26477,"blit_us":15313,"tent_us":19756,"sph_us":202,"acc_us":6272,"snaps":44,"cells":6,"badjson":0}
-2026-07-17 00:25:10,761 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242269,"draw_us":26361,"blit_us":15294,"tent_us":19740,"sph_us":205,"acc_us":6185,"snaps":44,"cells":6,"badjson":0}
-2026-07-17 00:25:11,210 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:11,230 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:11,230 INFO octo.bridge: PUSH #45 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:12,773 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242005,"draw_us":26358,"blit_us":15314,"tent_us":20096,"sph_us":205,"acc_us":6185,"snaps":45,"cells":6,"badjson":0}
-2026-07-17 00:25:12,896 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:25:14,986 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242451,"draw_us":26570,"blit_us":15290,"tent_us":19753,"sph_us":205,"acc_us":6284,"snaps":45,"cells":6,"badjson":0}
-2026-07-17 00:25:16,238 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:16,258 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:16,258 INFO octo.bridge: PUSH #46 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:17,214 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242021,"draw_us":26348,"blit_us":15549,"tent_us":19730,"sph_us":205,"acc_us":6124,"snaps":46,"cells":6,"badjson":0}
-2026-07-17 00:25:19,444 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242821,"draw_us":26367,"blit_us":15294,"tent_us":19730,"sph_us":206,"acc_us":6222,"snaps":46,"cells":6,"badjson":0}
-2026-07-17 00:25:21,269 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:21,289 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:21,289 INFO octo.bridge: PUSH #47 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:21,671 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242028,"draw_us":26463,"blit_us":15401,"tent_us":19840,"sph_us":206,"acc_us":6202,"snaps":46,"cells":6,"badjson":0}
-2026-07-17 00:25:23,682 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242374,"draw_us":26561,"blit_us":15321,"tent_us":19729,"sph_us":209,"acc_us":6265,"snaps":47,"cells":6,"badjson":0}
-2026-07-17 00:25:25,900 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":241940,"draw_us":26404,"blit_us":15297,"tent_us":19758,"sph_us":205,"acc_us":6132,"snaps":47,"cells":6,"badjson":0}
-2026-07-17 00:25:26,302 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:26,322 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:26,322 INFO octo.bridge: PUSH #48 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:28,115 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242200,"draw_us":26525,"blit_us":15409,"tent_us":19807,"sph_us":205,"acc_us":6192,"snaps":48,"cells":6,"badjson":0}
-2026-07-17 00:25:28,854 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:25:30,335 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":242280,"draw_us":26342,"blit_us":15301,"tent_us":19916,"sph_us":206,"acc_us":6078,"snaps":48,"cells":6,"badjson":0}
-2026-07-17 00:25:31,327 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:31,347 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:31,347 INFO octo.bridge: PUSH #49 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:32,551 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243306,"draw_us":26592,"blit_us":15306,"tent_us":20276,"sph_us":209,"acc_us":6111,"snaps":49,"cells":6,"badjson":0}
-2026-07-17 00:25:34,767 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243317,"draw_us":26641,"blit_us":15294,"tent_us":19988,"sph_us":205,"acc_us":6187,"snaps":49,"cells":6,"badjson":0}
-2026-07-17 00:25:36,360 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:36,379 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:36,379 INFO octo.bridge: PUSH #50 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:36,794 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243339,"draw_us":26847,"blit_us":15306,"tent_us":20106,"sph_us":206,"acc_us":6207,"snaps":50,"cells":6,"badjson":0}
-2026-07-17 00:25:39,039 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243881,"draw_us":26688,"blit_us":15298,"tent_us":19978,"sph_us":209,"acc_us":6194,"snaps":50,"cells":6,"badjson":0}
-2026-07-17 00:25:41,251 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243413,"draw_us":26587,"blit_us":15301,"tent_us":19974,"sph_us":205,"acc_us":6196,"snaps":50,"cells":6,"badjson":0}
-2026-07-17 00:25:41,390 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:41,410 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:41,410 INFO octo.bridge: PUSH #51 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:42,189 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
-2026-07-17 00:25:43,469 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243671,"draw_us":26769,"blit_us":15339,"tent_us":20101,"sph_us":205,"acc_us":6267,"snaps":51,"cells":6,"badjson":0}
-2026-07-17 00:25:45,681 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243530,"draw_us":26598,"blit_us":15293,"tent_us":19992,"sph_us":205,"acc_us":6183,"snaps":51,"cells":6,"badjson":0}
-2026-07-17 00:25:46,423 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:46,443 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:46,443 INFO octo.bridge: PUSH #52 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:47,904 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243636,"draw_us":26645,"blit_us":15314,"tent_us":20216,"sph_us":206,"acc_us":6187,"snaps":52,"cells":6,"badjson":0}
-2026-07-17 00:25:50,114 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":244138,"draw_us":26691,"blit_us":15297,"tent_us":20010,"sph_us":205,"acc_us":6224,"snaps":52,"cells":6,"badjson":0}
-2026-07-17 00:25:51,445 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:51,465 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:51,465 INFO octo.bridge: PUSH #53 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:52,126 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243261,"draw_us":26715,"blit_us":15376,"tent_us":20119,"sph_us":205,"acc_us":6191,"snaps":53,"cells":6,"badjson":0}
-2026-07-17 00:25:54,339 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243931,"draw_us":26641,"blit_us":15294,"tent_us":20001,"sph_us":205,"acc_us":6216,"snaps":53,"cells":6,"badjson":0}
-2026-07-17 00:25:56,474 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
-2026-07-17 00:25:56,493 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"w0","name":"core","state":0,"sub":1},{"id":"w1","name":"api","state":0,"sub":2},{"id":"w2","name":"docs","state":0,"sub":3},{"id":"w3","name":"mcp","state":0},{"id":"w4","name":"tests","state":0},{"id":"w5","name":"hotfix","state":0}]}
-2026-07-17 00:25:56,493 INFO octo.bridge: PUSH #54 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
-2026-07-17 00:25:56,567 INFO octo.esp: ← ESP: {"esp":"stat","ver":6,"n":6,"heap":34864,"frag":0,"maxframe_us":243664,"draw_us":26621,"blit_us":15475,"tent_us":19978,"sph_us":205,"acc_us":6187,"snaps":53,"cells":6,"badjson":0}
+2026-07-17 00:27:47,159 INFO octo: мост слушает 127.0.0.1:8787 (live), serial=auto @ 115200 DIAG log→C:/Users/Evgenii/PycharmProjects/Claudiki/octo-diag.log
+2026-07-17 00:27:50,163 INFO octo.bridge: создана на лету: v0 (core) state=0
+2026-07-17 00:27:50,164 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,165 INFO octo.bridge: создана на лету: v1 (api) state=0
+2026-07-17 00:27:50,165 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,166 INFO octo.bridge: создана на лету: v2 (docs) state=0
+2026-07-17 00:27:50,166 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,183 INFO octo.bridge: создана на лету: v3 (mcp) state=0
+2026-07-17 00:27:50,184 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,185 INFO octo.bridge: создана на лету: v4 (tests) state=0
+2026-07-17 00:27:50,185 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,186 INFO octo.bridge: создана на лету: v5 (hotfix) state=0
+2026-07-17 00:27:50,186 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,186 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,199 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,214 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,230 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,231 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,245 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:27:50,271 INFO octo.serial: serial открыт: COM3 @ 115200 (auto) (no-reset)
+2026-07-17 00:27:50,291 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:27:50,291 INFO octo.bridge: PUSH #1 reason=event dt=0ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:27:52,456 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110523,"draw_us":2481,"blit_us":15314,"tent_us":1516,"sph_us":268,"acc_us":556,"snaps":1,"cells":6,"badjson":0}
+2026-07-17 00:27:54,466 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110581,"draw_us":2122,"blit_us":15301,"tent_us":1406,"sph_us":166,"acc_us":500,"snaps":1,"cells":6,"badjson":0}
+2026-07-17 00:27:55,322 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:27:55,322 INFO octo.bridge: PUSH #2 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:27:56,681 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110936,"draw_us":2125,"blit_us":15556,"tent_us":1422,"sph_us":170,"acc_us":499,"snaps":2,"cells":6,"badjson":0}
+2026-07-17 00:27:58,708 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110930,"draw_us":2121,"blit_us":15305,"tent_us":1405,"sph_us":166,"acc_us":499,"snaps":2,"cells":6,"badjson":0}
+2026-07-17 00:28:00,350 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:00,350 INFO octo.bridge: PUSH #3 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:00,947 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110882,"draw_us":2156,"blit_us":15487,"tent_us":1443,"sph_us":165,"acc_us":498,"snaps":3,"cells":6,"badjson":0}
+2026-07-17 00:28:02,975 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110604,"draw_us":2124,"blit_us":15301,"tent_us":1406,"sph_us":165,"acc_us":501,"snaps":3,"cells":6,"badjson":0}
+2026-07-17 00:28:03,561 INFO octo.bridge: создана на лету: 99ce5dce-9f98-4c30-9e7e-d807af4afd01 (Claudiki) state=0
+2026-07-17 00:28:03,561 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:28:03,662 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:03,681 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:03,682 INFO octo.bridge: PUSH #4 reason=event dt=3344ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:05,003 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110863,"draw_us":2155,"blit_us":15511,"tent_us":1418,"sph_us":169,"acc_us":512,"snaps":4,"cells":6,"badjson":0}
+2026-07-17 00:28:07,228 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110573,"draw_us":2122,"blit_us":15297,"tent_us":1405,"sph_us":166,"acc_us":498,"snaps":4,"cells":6,"badjson":0}
+2026-07-17 00:28:08,685 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:08,704 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:08,705 INFO octo.bridge: PUSH #5 reason=heartbeat dt=5015ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:09,242 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110873,"draw_us":2131,"blit_us":15557,"tent_us":1416,"sph_us":165,"acc_us":499,"snaps":5,"cells":6,"badjson":0}
+2026-07-17 00:28:11,471 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110567,"draw_us":2124,"blit_us":15301,"tent_us":1405,"sph_us":166,"acc_us":498,"snaps":5,"cells":6,"badjson":0}
+2026-07-17 00:28:13,495 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110565,"draw_us":2131,"blit_us":15296,"tent_us":1405,"sph_us":166,"acc_us":498,"snaps":5,"cells":6,"badjson":0}
+2026-07-17 00:28:13,713 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:13,733 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:13,733 INFO octo.bridge: PUSH #6 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:15,513 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110573,"draw_us":2121,"blit_us":15561,"tent_us":1421,"sph_us":170,"acc_us":499,"snaps":6,"cells":6,"badjson":0}
+2026-07-17 00:28:17,728 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110569,"draw_us":2125,"blit_us":15300,"tent_us":1405,"sph_us":174,"acc_us":499,"snaps":6,"cells":6,"badjson":0}
+2026-07-17 00:28:18,734 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:18,754 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:18,754 INFO octo.bridge: PUSH #7 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:19,754 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110956,"draw_us":2153,"blit_us":15557,"tent_us":1420,"sph_us":174,"acc_us":510,"snaps":7,"cells":6,"badjson":0}
+2026-07-17 00:28:21,968 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110566,"draw_us":2131,"blit_us":15296,"tent_us":1405,"sph_us":173,"acc_us":498,"snaps":7,"cells":6,"badjson":0}
+2026-07-17 00:28:23,764 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:23,784 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:23,784 INFO octo.bridge: PUSH #8 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:23,981 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110969,"draw_us":2126,"blit_us":15482,"tent_us":1439,"sph_us":173,"acc_us":500,"snaps":8,"cells":6,"badjson":0}
+2026-07-17 00:28:26,195 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110927,"draw_us":2127,"blit_us":15300,"tent_us":1405,"sph_us":166,"acc_us":494,"snaps":8,"cells":6,"badjson":0}
+2026-07-17 00:28:28,223 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110613,"draw_us":2121,"blit_us":15294,"tent_us":1404,"sph_us":166,"acc_us":498,"snaps":8,"cells":6,"badjson":0}
+2026-07-17 00:28:28,796 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:28,816 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:28,816 INFO octo.bridge: PUSH #9 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:30,237 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":111253,"draw_us":2151,"blit_us":15561,"tent_us":1418,"sph_us":170,"acc_us":502,"snaps":9,"cells":6,"badjson":0}
+2026-07-17 00:28:32,449 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110908,"draw_us":2128,"blit_us":15297,"tent_us":1405,"sph_us":166,"acc_us":498,"snaps":9,"cells":6,"badjson":0}
+2026-07-17 00:28:33,825 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:33,844 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:33,845 INFO octo.bridge: PUSH #10 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:34,475 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110931,"draw_us":2121,"blit_us":15458,"tent_us":1417,"sph_us":166,"acc_us":498,"snaps":10,"cells":6,"badjson":0}
+2026-07-17 00:28:36,702 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110589,"draw_us":2126,"blit_us":15296,"tent_us":1405,"sph_us":170,"acc_us":499,"snaps":10,"cells":6,"badjson":0}
+2026-07-17 00:28:38,717 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110627,"draw_us":2131,"blit_us":15297,"tent_us":1404,"sph_us":166,"acc_us":505,"snaps":10,"cells":6,"badjson":0}
+2026-07-17 00:28:38,856 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:38,876 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:38,876 INFO octo.bridge: PUSH #11 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:40,957 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110735,"draw_us":2126,"blit_us":15560,"tent_us":1422,"sph_us":166,"acc_us":499,"snaps":11,"cells":6,"badjson":0}
+2026-07-17 00:28:42,983 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110593,"draw_us":2121,"blit_us":15294,"tent_us":1405,"sph_us":166,"acc_us":494,"snaps":11,"cells":6,"badjson":0}
+2026-07-17 00:28:43,880 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:43,899 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:43,899 INFO octo.bridge: PUSH #12 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:44,994 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110951,"draw_us":2130,"blit_us":15586,"tent_us":1419,"sph_us":166,"acc_us":494,"snaps":12,"cells":6,"badjson":0}
+2026-07-17 00:28:47,207 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110587,"draw_us":2127,"blit_us":15293,"tent_us":1405,"sph_us":158,"acc_us":498,"snaps":12,"cells":6,"badjson":0}
+2026-07-17 00:28:48,908 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:48,928 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:48,928 INFO octo.bridge: PUSH #13 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:49,217 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110915,"draw_us":2132,"blit_us":15478,"tent_us":1417,"sph_us":165,"acc_us":499,"snaps":13,"cells":6,"badjson":0}
+2026-07-17 00:28:49,429 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:28:51,432 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110567,"draw_us":2124,"blit_us":15297,"tent_us":1405,"sph_us":166,"acc_us":499,"snaps":13,"cells":6,"badjson":0}
+2026-07-17 00:28:53,457 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110570,"draw_us":2132,"blit_us":15297,"tent_us":1405,"sph_us":165,"acc_us":499,"snaps":13,"cells":6,"badjson":0}
+2026-07-17 00:28:53,935 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:53,955 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:53,955 INFO octo.bridge: PUSH #14 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:55,684 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110830,"draw_us":2121,"blit_us":15483,"tent_us":1417,"sph_us":166,"acc_us":500,"snaps":14,"cells":6,"badjson":0}
+2026-07-17 00:28:57,696 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110515,"draw_us":2133,"blit_us":15293,"tent_us":1409,"sph_us":158,"acc_us":499,"snaps":14,"cells":6,"badjson":0}
+2026-07-17 00:28:58,016 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:28:58,967 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:28:58,987 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:28:58,987 INFO octo.bridge: PUSH #15 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:28:59,711 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110928,"draw_us":2121,"blit_us":15556,"tent_us":1416,"sph_us":174,"acc_us":493,"snaps":15,"cells":6,"badjson":0}
+2026-07-17 00:29:01,936 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110930,"draw_us":2127,"blit_us":15294,"tent_us":1406,"sph_us":174,"acc_us":494,"snaps":15,"cells":6,"badjson":0}
+2026-07-17 00:29:03,975 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110573,"draw_us":2125,"blit_us":15301,"tent_us":1405,"sph_us":173,"acc_us":500,"snaps":15,"cells":6,"badjson":0}
+2026-07-17 00:29:03,991 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:29:04,010 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:29:04,010 INFO octo.bridge: PUSH #16 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:29:06,202 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110870,"draw_us":2131,"blit_us":15556,"tent_us":1426,"sph_us":174,"acc_us":500,"snaps":16,"cells":6,"badjson":0}
+2026-07-17 00:29:08,214 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110930,"draw_us":2120,"blit_us":15296,"tent_us":1404,"sph_us":166,"acc_us":499,"snaps":16,"cells":6,"badjson":0}
+2026-07-17 00:29:09,019 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:29:09,039 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:29:09,039 INFO octo.bridge: PUSH #17 reason=heartbeat dt=5031ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:29:10,241 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110841,"draw_us":2134,"blit_us":15463,"tent_us":1416,"sph_us":170,"acc_us":499,"snaps":17,"cells":6,"badjson":0}
+2026-07-17 00:29:12,485 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110655,"draw_us":2132,"blit_us":15296,"tent_us":1409,"sph_us":166,"acc_us":499,"snaps":17,"cells":6,"badjson":0}
+2026-07-17 00:29:14,049 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:29:14,069 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:29:14,069 INFO octo.bridge: PUSH #18 reason=heartbeat dt=5016ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:29:14,513 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110920,"draw_us":2127,"blit_us":15553,"tent_us":1416,"sph_us":166,"acc_us":499,"snaps":18,"cells":6,"badjson":0}
+2026-07-17 00:29:15,215 DEBUG octo.http: "POST /event HTTP/1.1" 200 -
+2026-07-17 00:29:16,729 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110592,"draw_us":2126,"blit_us":15297,"tent_us":1404,"sph_us":170,"acc_us":498,"snaps":18,"cells":6,"badjson":0}
+2026-07-17 00:29:18,744 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110920,"draw_us":2131,"blit_us":15297,"tent_us":1406,"sph_us":166,"acc_us":504,"snaps":18,"cells":6,"badjson":0}
+2026-07-17 00:29:19,084 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:29:19,104 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:29:19,105 INFO octo.bridge: PUSH #19 reason=heartbeat dt=5046ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:29:20,788 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":111350,"draw_us":2125,"blit_us":15487,"tent_us":1416,"sph_us":166,"acc_us":494,"snaps":19,"cells":6,"badjson":0}
+2026-07-17 00:29:23,044 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110600,"draw_us":2122,"blit_us":15293,"tent_us":1405,"sph_us":166,"acc_us":494,"snaps":19,"cells":6,"badjson":0}
+2026-07-17 00:29:24,112 WARNING octo.bridge: сессий больше 6, не влезли: ['Claudiki']
+2026-07-17 00:29:24,132 DEBUG octo.serial: → ESP: {"v":1,"sessions":[{"id":"v0","name":"core","state":0,"sub":1},{"id":"v1","name":"api","state":0,"sub":2},{"id":"v2","name":"docs","state":0,"sub":3},{"id":"v3","name":"mcp","state":0},{"id":"v4","name":"tests","state":0},{"id":"v5","name":"hotfix","state":0}]}
+2026-07-17 00:29:24,132 INFO octo.bridge: PUSH #20 reason=heartbeat dt=5032ms n=6 serial=ok [core:W+1,api:W+2,docs:W+3,mcp:W,tests:W,hotfix:W]
+2026-07-17 00:29:25,085 INFO octo.esp: ← ESP: {"esp":"stat","ver":7,"n":6,"heap":33784,"frag":0,"maxframe_us":110961,"draw_us":2126,"blit_us":15557,"tent_us":1417,"sph_us":166,"acc_us":499,"snaps":20,"cells":6,"badjson":0}

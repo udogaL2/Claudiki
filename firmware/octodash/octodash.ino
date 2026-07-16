@@ -24,7 +24,7 @@
 //           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
 //   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
 #define ESP_DIAG 1
-#define FW_VER   7   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
+#define FW_VER   8   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
 
 #define TFT_CS   D8
 #define TFT_DC   D4
@@ -371,10 +371,14 @@ void updateOctopusArea(int col, int row, Session &s, float tt) {
   unsigned long _d1 = micros();
 #endif
 
-  // 2. выкидываем буфер ОДНИМ блоком: одно окно + потоковый writePixels.
+  // 2. свап в big-endian + ОДИН блочный SPI.writeBytes (writePixels у Adafruit
+  //    на ESP8266 идёт пер-пиксельно — ~15мс; блок через FIFO — единицы мс).
+  uint16_t *bb = octoBuf.getBuffer();
+  uint32_t px = (uint32_t)BUF_W * BUF_H;
+  for (uint32_t i = 0; i < px; i++) { uint16_t v = bb[i]; bb[i] = (uint16_t)((v << 8) | (v >> 8)); }
   tft.startWrite();
   tft.setAddrWindow(cx - LCX, cy - LCY, BUF_W, BUF_H);
-  tft.writePixels(octoBuf.getBuffer(), (uint32_t)BUF_W * BUF_H);
+  SPI.writeBytes((uint8_t *)bb, px * 2);
   tft.endWrite();
 #if ESP_DIAG
   unsigned long _d2 = micros();
