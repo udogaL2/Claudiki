@@ -24,7 +24,7 @@
 //           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
 //   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
 #define ESP_DIAG 1
-#define FW_VER   5   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
+#define FW_VER   6   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
 
 #define TFT_CS   D8
 #define TFT_DC   D4
@@ -100,6 +100,7 @@ unsigned long lastStat = 0;         // когда последний раз пе
 unsigned long maxFrameUs = 0;       // макс. время рендера кадра за интервал (мкс)
 unsigned long maxDrawUs = 0;        // макс. время рисования ОДНОГО осьминога в буфер (CPU)
 unsigned long maxBlitUs = 0;        // макс. время блита ОДНОГО осьминога на экран (SPI)
+unsigned long maxTentUs = 0, maxSphUs = 0, maxAccUs = 0;  // раскладка draw по фазам
 uint16_t diagSnaps = 0;             // принято снэпшотов
 uint16_t diagBadJson = 0;           // снэпшотов не распарсилось
 uint16_t diagCells = 0;             // перерисовано ячеек (diff)
@@ -123,11 +124,15 @@ void diagPrintStat() {
   Serial.print(F(",\"maxframe_us\":"));              Serial.print(maxFrameUs);
   Serial.print(F(",\"draw_us\":"));                  Serial.print(maxDrawUs);
   Serial.print(F(",\"blit_us\":"));                  Serial.print(maxBlitUs);
+  Serial.print(F(",\"tent_us\":"));                  Serial.print(maxTentUs);
+  Serial.print(F(",\"sph_us\":"));                   Serial.print(maxSphUs);
+  Serial.print(F(",\"acc_us\":"));                   Serial.print(maxAccUs);
   Serial.print(F(",\"snaps\":"));                    Serial.print(diagSnaps);
   Serial.print(F(",\"cells\":"));                    Serial.print(diagCells);
   Serial.print(F(",\"badjson\":"));                  Serial.print(diagBadJson);
   Serial.println(F("}"));
-  maxFrameUs = 0; maxDrawUs = 0; maxBlitUs = 0;   // окна замеров обнуляем
+  maxFrameUs = 0; maxDrawUs = 0; maxBlitUs = 0;
+  maxTentUs = 0; maxSphUs = 0; maxAccUs = 0;   // окна замеров обнуляем
 }
 #endif
 
@@ -247,6 +252,9 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub)
   int bob = (state == IDLE) ? 0 : (int)roundf(sinf(tt * (state == WORKING ? 4.4f : 2.4f)) * 1.2f);
   int hy = cy + bob + (flipped ? 5 : 0);
   const int R = SPH_R;                       // фикс. радиус — сфера предрасчитана
+#if ESP_DIAG
+  unsigned long _tp0 = micros();
+#endif
 
   // щупальца: корни ВНУТРИ тела (прикрыты сферой), тёмные у основания → светлые
   // к кончику. Тело рисуется поверх → бесшовное крепление без светлого канта.
@@ -267,8 +275,14 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub)
     g.drawPixel(kx, rootY + dir * (seg * 2), TENT_TIP);
   }
 
+#if ESP_DIAG
+  unsigned long _tp1 = micros();
+#endif
   // тело: глянцевая сфера (одинакова для всех состояний; сверху — лицо/акценты)
   sphereBody(g, cx, hy);
+#if ESP_DIAG
+  unsigned long _tp2 = micros();
+#endif
 
   int eyY = hy - dir * 4;
   drawEyes(g, cx, eyY, state, tt);
@@ -316,6 +330,12 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub)
     g.fillCircle(ox, oy, 2, SUBA);
     g.drawPixel(ox - 1, oy - 1, 0xFFFF);
   }
+#if ESP_DIAG
+  unsigned long _tp3 = micros();
+  if (_tp1 - _tp0 > maxTentUs) maxTentUs = _tp1 - _tp0;
+  if (_tp2 - _tp1 > maxSphUs)  maxSphUs  = _tp2 - _tp1;
+  if (_tp3 - _tp2 > maxAccUs)  maxAccUs  = _tp3 - _tp2;
+#endif
 }
 
 void updateOctopusArea(int col, int row, Session &s, float tt) {
