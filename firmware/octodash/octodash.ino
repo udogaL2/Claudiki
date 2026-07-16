@@ -24,7 +24,7 @@
 //           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
 //   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
 #define ESP_DIAG 1
-#define FW_VER   6   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
+#define FW_VER   7   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
 
 #define TFT_CS   D8
 #define TFT_DC   D4
@@ -67,6 +67,13 @@ uint16_t sphereTile[SPH_D * SPH_D];
 bool     sphereMask[SPH_D * SPH_D];
 uint8_t  sphRowX0[SPH_D];    // для каждой строки тайла: начало заполненного span'а
 uint8_t  sphRowLen[SPH_D];   // и его длина — чтобы блитить сферу построчным memcpy
+
+// Синус-таблица: программный sinf/cosf на ESP8266 ~сотни мкс — в горячем цикле
+// щупалец это были ~20мс/осьминог. LUT + целочисленная выборка ≈ бесплатно.
+#define TENT_SEG 9
+float    sinLut[256];
+uint16_t tentCol[TENT_SEG];   // цвет сегмента щупальца (константа — предрасчёт)
+float    tentTaper[TENT_SEG]; // амплитудный тейпер сегмента (константа)
 
 enum State { WORKING, WAITING, IDLE, ERR };
 
@@ -180,7 +187,7 @@ void drawEyes(GFXcanvas16 &g, int cx, int eyY, State state, float tt) {
     g.drawFastHLine(exR - 3, eyY, 6, EYE_LIGHT);
     return;
   }
-  int look = (state == WORKING) ? (int)roundf(sinf(tt * 2.2f) * 1.4f) : 0;
+  int look = (state == WORKING) ? iround(fastSin(tt * 2.2f) * 1.4f) : 0;
   int r = (state == WAITING) ? 4 : 3;       // WAITING — глаза шире
   g.fillCircle(exL, eyY, r, EYE_LIGHT);
   g.fillCircle(exR, eyY, r, EYE_LIGHT);
@@ -198,6 +205,11 @@ uint16_t lerp565(uint16_t a, uint16_t b, float t) {
   r += (int)((r2 - r) * t); g += (int)((g2 - g) * t); bl += (int)((b2 - bl) * t);
   return (uint16_t)((r << 11) | (g << 5) | bl);
 }
+
+// Быстрые sin/cos через LUT и быстрое округление (без libm в горячем цикле).
+static inline float fastSin(float x) { return sinLut[(int32_t)(x * 40.7436f) & 255]; }
+static inline float fastCos(float x) { return sinLut[((int32_t)(x * 40.7436f) + 64) & 255]; }
+static inline int   iround(float x)  { return (int)(x < 0 ? x - 0.5f : x + 0.5f); }
 
 // Один раз считаем радиальный градиент сферы в тайл (свет сверху-слева).
 void buildSphere() {
@@ -218,6 +230,11 @@ void buildSphere() {
     int dx = (int)floorf(sqrtf((float)(R * R - y * y)));
     sphRowX0[yy]  = (uint8_t)(R - dx);
     sphRowLen[yy] = (uint8_t)(2 * dx + 1);
+  }
+  for (int i = 0; i < 256; i++) sinLut[i] = sinf(i * (6.2831853f / 256.0f));
+  for (int s = 0; s < TENT_SEG; s++) {          // цвет и тейпер сегмента — константы
+    tentCol[s]   = lerp565(BODY_DK, TENT_TIP, (s < 3) ? 0.0f : (float)(s - 3) / (TENT_SEG - 3));
+    tentTaper[s] = 0.2f + (float)s / TENT_SEG;
   }
 }
 
@@ -249,7 +266,7 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub)
 
   float speed = state == WORKING ? 7.5f : state == WAITING ? 2.2f : state == IDLE ? 1.4f : 5.5f;
   float amp   = state == WORKING ? 2.6f : state == WAITING ? 1.0f : state == IDLE ? 0.7f : 2.0f;
-  int bob = (state == IDLE) ? 0 : (int)roundf(sinf(tt * (state == WORKING ? 4.4f : 2.4f)) * 1.2f);
+  int bob = (state == IDLE) ? 0 : iround(fastSin(tt * (state == WORKING ? 4.4f : 2.4f)) * 1.2f);
   int hy = cy + bob + (flipped ? 5 : 0);
   const int R = SPH_R;                       // фикс. радиус — сфера предрасчитана
 #if ESP_DIAG
@@ -258,20 +275,19 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub)
 
   // щупальца: корни ВНУТРИ тела (прикрыты сферой), тёмные у основания → светлые
   // к кончику. Тело рисуется поверх → бесшовное крепление без светлого канта.
-  const int seg = 9, legs = 6;
-  const int baseHW = (int)roundf(R * 0.66f);
+  const int seg = TENT_SEG, legs = 6;
+  const int baseHW = iround(R * 0.66f);
   const int rootY = hy + dir * (R - 4);
   const float step = (2.0f * baseHW - 2) / (legs - 1);
   for (int i = 0; i < legs; i++) {
     float bx = cx - baseHW + 1 + i * step;
     float ph = tt * speed + i * 0.7f;
     for (int s = 0; s < seg; s++) {
-      float sway = sinf(ph + s * 0.5f) * amp * (0.2f + (float)s / seg);
+      float sway = fastSin(ph + s * 0.5f) * amp * tentTaper[s];
       int w = (s < 3) ? 3 : (s < 6 ? 2 : 1);
-      uint16_t col = lerp565(BODY_DK, TENT_TIP, (s < 3) ? 0.0f : (float)(s - 3) / (seg - 3));
-      g.fillRect((int)roundf(bx + sway) - (w >> 1), rootY + dir * (s * 2), w, 2, col);
+      g.fillRect(iround(bx + sway) - (w >> 1), rootY + dir * (s * 2), w, 2, tentCol[s]);
     }
-    int kx = (int)roundf(bx + sinf(ph + seg * 0.5f) * amp);
+    int kx = iround(bx + fastSin(ph + seg * 0.5f) * amp);
     g.drawPixel(kx, rootY + dir * (seg * 2), TENT_TIP);
   }
 
@@ -297,9 +313,10 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub)
     g.fillRect(mx + 18, my, 3, 3, hot ? 0xFF0C : 0xFC00); // большой тлеющий уголёк
     int tipx = mx + 22, tipy = my - 1;
     for (int s = 0; s < 6; s++) {                     // густой дым волнами вверх
-      float st = fmodf(tt * 1.2f + s * 0.4f, 1.0f);
+      float f = tt * 1.2f + s * 0.4f;
+      float st = f - (int)f;                          // frac (аналог fmodf(.,1))
       int yy = tipy - 1 - (int)(st * 26);
-      int xx = tipx + (int)roundf(sinf(tt * 2.1f + s * 1.1f + st * 3.2f) * 5);
+      int xx = tipx + iround(fastSin(tt * 2.1f + s * 1.1f + st * 3.2f) * 5);
       g.fillCircle(xx, yy, st < 0.4f ? 1 : (st < 0.75f ? 2 : 3), 0x9CD3); // серый дым
     }
   } else if (state == WAITING) {            // «?» — ждёт тебя
@@ -322,10 +339,10 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub)
   int nsub = sub > 5 ? 5 : sub;
   for (int k = 0; k < nsub; k++) {
     float a = tt * 1.0f + k * (6.2832f / nsub);
-    int ox = cx + (int)roundf(cosf(a) * (R + 9));
-    int oy = hy - 2 + (int)roundf(sinf(a) * (R * 0.62f));
-    int tx = cx + (int)roundf(cosf(a - 0.4f) * (R + 9));   // хвост позади
-    int ty = hy - 2 + (int)roundf(sinf(a - 0.4f) * (R * 0.62f));
+    int ox = cx + iround(fastCos(a) * (R + 9));
+    int oy = hy - 2 + iround(fastSin(a) * (R * 0.62f));
+    int tx = cx + iround(fastCos(a - 0.4f) * (R + 9));   // хвост позади
+    int ty = hy - 2 + iround(fastSin(a - 0.4f) * (R * 0.62f));
     g.drawPixel(tx, ty, SUBA_D);
     g.fillCircle(ox, oy, 2, SUBA);
     g.drawPixel(ox - 1, oy - 1, 0xFFFF);
