@@ -24,7 +24,7 @@
 //           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
 //   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
 #define ESP_DIAG 1
-#define FW_VER   4   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
+#define FW_VER   5   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
 
 #define TFT_CS   D8
 #define TFT_DC   D4
@@ -65,6 +65,8 @@ GFXcanvas16 octoBuf(BUF_W, BUF_H);
 #define SPH_D (2 * SPH_R + 1)
 uint16_t sphereTile[SPH_D * SPH_D];
 bool     sphereMask[SPH_D * SPH_D];
+uint8_t  sphRowX0[SPH_D];    // для каждой строки тайла: начало заполненного span'а
+uint8_t  sphRowLen[SPH_D];   // и его длина — чтобы блитить сферу построчным memcpy
 
 enum State { WORKING, WAITING, IDLE, ERR };
 
@@ -206,15 +208,27 @@ void buildSphere() {
       sphereMask[idx] = true;
     }
   }
+  for (int yy = 0; yy < SPH_D; yy++) {          // span заполненных пикселей в строке
+    int y = yy - R;
+    int dx = (int)floorf(sqrtf((float)(R * R - y * y)));
+    sphRowX0[yy]  = (uint8_t)(R - dx);
+    sphRowLen[yy] = (uint8_t)(2 * dx + 1);
+  }
 }
 
-// Тело: копируем предрасчитанный тайл (целочисленно, быстро) + блик поверх.
+// Тело: копируем предрасчитанный тайл ПОСТРОЧНО memcpy прямо в буфер канвы
+// (вместо 1225 drawPixel — это был основной жор CPU) + блик поверх.
 void sphereBody(GFXcanvas16 &g, int cx, int hy) {
+  uint16_t *buf = g.getBuffer();
   for (int yy = 0; yy < SPH_D; yy++) {
-    for (int xx = 0; xx < SPH_D; xx++) {
-      int idx = yy * SPH_D + xx;
-      if (sphereMask[idx]) g.drawPixel(cx - SPH_R + xx, hy - SPH_R + yy, sphereTile[idx]);
-    }
+    int destY = hy - SPH_R + yy;
+    if (destY < 0 || destY >= BUF_H) continue;
+    int sx = sphRowX0[yy], len = sphRowLen[yy];
+    int destX = cx - SPH_R + sx;
+    if (destX < 0) { len += destX; sx -= destX; destX = 0; }   // клип слева
+    if (destX + len > BUF_W) len = BUF_W - destX;              // клип справа
+    if (len <= 0) continue;
+    memcpy(&buf[destY * BUF_W + destX], &sphereTile[yy * SPH_D + sx], (size_t)len * 2);
   }
   const int R = SPH_R;
   g.fillCircle(cx - (int)(R * 0.32f), hy - (int)(R * 0.38f), (int)(R * 0.26f), lerp565(BODY_LIGHT, 0xFFFF, 0.6f));
@@ -444,6 +458,7 @@ void setup() {
   cellH = H / ROWS;
 
   tft.begin(40000000);   // 40 МГц SPI — быстрый блочный вывод буфера
+  tft.setSPISpeed(40000000);   // явно: begin() клок иногда не применяет
   tft.setRotation(3);
 
   buildSphere();  // предрасчёт тела один раз
