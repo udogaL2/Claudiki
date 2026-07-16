@@ -4,7 +4,6 @@
     --bg:#060a11; --bg2:#0a1019; --panel:#101a2b; --panel2:#0c1524;
     --line:#1b2942; --ink:#e8f1f6; --muted:#8397b0; --faint:#5b6f8a;
     --accent:#35e0d8; --accent2:#7c8cff;
-    /* статусные цвета — точные RGB из RGB565 прошивки, чтобы превью = экрану */
     --work:#31ff3a; --wait:#ffd600; --idle:#5a5d5a; --err:#ff1463;
     --font-mono: ui-monospace,"Cascadia Code","JetBrains Mono","SF Mono",Consolas,monospace;
     --font-ui: system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -19,8 +18,6 @@
     -webkit-font-smoothing:antialiased; line-height:1.5;
   }
   .wrap{max-width:1160px; margin:0 auto; padding:28px 22px 56px; display:flex; flex-direction:column; gap:22px;}
-
-  /* ---- шапка ---- */
   header{display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap;}
   .brand{display:flex; flex-direction:column; gap:6px;}
   .eyebrow{font-family:var(--font-mono); font-size:12px; letter-spacing:.28em; text-transform:uppercase;
@@ -28,83 +25,64 @@
   .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
     box-shadow:0 0 12px var(--accent); animation:beat 1.8s ease-in-out infinite;}
   @keyframes beat{0%,100%{opacity:1}50%{opacity:.35}}
-  h1{margin:0; font-size:clamp(30px,5vw,50px); letter-spacing:-.02em; line-height:1;
-     font-weight:800; text-wrap:balance;}
-  h1 b{color:var(--accent); font-weight:800;}
+  h1{margin:0; font-size:clamp(30px,5vw,50px); letter-spacing:-.02em; line-height:1; font-weight:800; text-wrap:balance;}
+  h1 b{color:var(--accent);}
   .sub{color:var(--muted); font-size:15px; max-width:52ch;}
   .specs{font-family:var(--font-mono); font-size:12px; color:var(--faint); display:flex; gap:16px; flex-wrap:wrap;}
   .specs b{color:var(--muted); font-weight:600;}
-
-  /* ---- сцена ---- */
   .stage{display:grid; grid-template-columns:minmax(0,1.55fr) minmax(260px,1fr); gap:22px; align-items:start;}
   @media(max-width:840px){.stage{grid-template-columns:1fr;}}
-
-  /* устройство */
   .device{background:linear-gradient(180deg,#141c26,#0c121b); border:1px solid #232f40;
     border-radius:20px; padding:16px; box-shadow:0 30px 80px -30px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05);}
   .bezel{position:relative; background:#05070b; border-radius:12px; padding:12px;
     border:1px solid #1a2536; box-shadow:inset 0 0 0 2px #0b1119, inset 0 0 60px rgba(0,0,0,.9);}
-  .screen{position:relative; border-radius:6px; overflow:hidden; background:#000;
-    box-shadow:0 0 30px rgba(53,224,216,.12), 0 0 0 1px #0d141d;}
+  .screen{position:relative; border-radius:6px; overflow:hidden; background:#000; box-shadow:0 0 30px rgba(53,224,216,.12), 0 0 0 1px #0d141d;}
   canvas#tft{display:block; width:100%; height:auto; image-rendering:pixelated;}
-  .scan{position:absolute; inset:0; pointer-events:none; border-radius:6px;
-    background:repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px);
-    mix-blend-mode:multiply; opacity:.5;}
   .glare{position:absolute; inset:0; pointer-events:none; border-radius:6px;
-    background:radial-gradient(140% 90% at 50% -20%, rgba(255,255,255,.06), transparent 55%);}
+    background:radial-gradient(140% 90% at 50% -20%, rgba(255,255,255,.05), transparent 55%);}
   .plate{display:flex; align-items:center; justify-content:space-between; margin-top:12px;
     font-family:var(--font-mono); font-size:11px; color:var(--faint); letter-spacing:.1em;}
   .plate .led{display:inline-flex; align-items:center; gap:7px;}
   .plate .led i{width:6px;height:6px;border-radius:50%;background:var(--work);box-shadow:0 0 8px var(--work);}
-
   .hint{font-family:var(--font-mono); font-size:12px; color:var(--faint); text-align:center; margin-top:2px;}
   .hint b{color:var(--accent2)}
-
-  /* панель управления */
   .deck{display:flex; flex-direction:column; gap:14px;}
-  .card-panel{background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--line);
-    border-radius:14px; padding:16px;}
-  .card-panel h2{margin:0 0 12px; font-size:12px; font-family:var(--font-mono); letter-spacing:.18em;
-    text-transform:uppercase; color:var(--muted); font-weight:600;}
+  .card-panel{background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--line); border-radius:14px; padding:16px;}
+  .card-panel h2{margin:0 0 12px; font-size:12px; font-family:var(--font-mono); letter-spacing:.18em; text-transform:uppercase; color:var(--muted); font-weight:600;}
   .legend{display:flex; flex-direction:column; gap:2px;}
   .leg{display:grid; grid-template-columns:auto 1fr; gap:11px; padding:9px 6px; border-radius:9px; align-items:baseline;}
   .leg:hover{background:rgba(255,255,255,.03)}
   .swatch{width:12px;height:12px;border-radius:3px;margin-top:4px;box-shadow:0 0 10px -1px currentColor;}
-  .leg .nm{font-weight:700; font-size:14px;}
+  .leg .nm{font-weight:700; font-size:14px; color:var(--ink);}
   .leg .meta{color:var(--muted); font-size:12.5px;}
   .leg .hook{font-family:var(--font-mono); font-size:11px; color:var(--faint);}
-  .leg.work{color:var(--work)} .leg.wait{color:var(--wait)} .leg.idle{color:#9aa3ad} .leg.err{color:var(--err)}
-  .leg .nm,.leg .meta,.leg .hook{color:initial}
-  .leg .nm{color:var(--ink)}
-
+  .leg.work .swatch{background:var(--work);color:var(--work)} .leg.wait .swatch{background:var(--wait);color:var(--wait)}
+  .leg.idle .swatch{background:#9aa3ad;color:#9aa3ad} .leg.err .swatch{background:var(--err);color:var(--err)}
   .btns{display:flex; gap:8px; flex-wrap:wrap;}
   button{font-family:var(--font-mono); font-size:12.5px; color:var(--ink); cursor:pointer;
-    background:#16223500; border:1px solid var(--line); border-radius:9px; padding:9px 13px;
+    background:transparent; border:1px solid var(--line); border-radius:9px; padding:9px 13px;
     transition:border-color .15s, background .15s, transform .05s;}
   button:hover{border-color:var(--accent); background:rgba(53,224,216,.08);}
   button:active{transform:translateY(1px);}
   button:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
   button.on{border-color:var(--accent); background:rgba(53,224,216,.14); color:var(--accent);}
   .note{font-size:12px; color:var(--faint); line-height:1.55;}
-  .note code{font-family:var(--font-mono); color:var(--muted); background:rgba(255,255,255,.05);
-    padding:1px 5px; border-radius:5px;}
-  footer{color:var(--faint); font-family:var(--font-mono); font-size:11.5px; text-align:center;
-    border-top:1px solid var(--line); padding-top:18px;}
+  .note code{font-family:var(--font-mono); color:var(--muted); background:rgba(255,255,255,.05); padding:1px 5px; border-radius:5px;}
+  footer{color:var(--faint); font-family:var(--font-mono); font-size:11.5px; text-align:center; border-top:1px solid var(--line); padding-top:18px;}
   @media(prefers-reduced-motion:reduce){ .eyebrow .dot{animation:none} }
 </style>
 
 <div class="wrap">
   <header>
     <div class="brand">
-      <div class="eyebrow"><span class="dot"></span>OctoDash · Live Preview</div>
+      <div class="eyebrow"><span class="dot"></span>OctoDash · Device Emulator</div>
       <h1>Аквариум <b>сессий</b></h1>
-      <p class="sub">Пиксель-точное превью экрана ILI9341: один осьминог на каждую сессию Claude&nbsp;Code, анимация задаётся её статусом. Это ровно то, что рисует ESP — только крупно.</p>
+      <p class="sub">Не «красивый веб», а честный эмулятор ILI9341: буфер RGB565 и те же примитивы Adafruit_GFX, что и в прошивке. Что здесь — то и на экране.</p>
     </div>
     <div class="specs">
-      <span><b>320×240</b> ILI9341</span>
+      <span><b>320×240</b> RGB565</span>
       <span><b>3×2</b> сетка</span>
-      <span><b>≤6</b> карточек</span>
-      <span><b>~7</b> fps tick</span>
+      <span><b>Adafruit_GFX</b> 1:1</span>
     </div>
   </header>
 
@@ -113,8 +91,7 @@
       <div class="device">
         <div class="bezel">
           <div class="screen">
-            <canvas id="tft" width="960" height="720" aria-label="Симулятор экрана OctoDash"></canvas>
-            <div class="scan"></div>
+            <canvas id="tft" width="960" height="720" aria-label="Эмулятор экрана OctoDash"></canvas>
             <div class="glare"></div>
           </div>
           <div class="plate">
@@ -123,7 +100,7 @@
           </div>
         </div>
       </div>
-      <p class="hint">Клик по карточке — <b>сменить состояние</b>. Имена показывают обрезку и суффиксы из моста.</p>
+      <p class="hint">Клик по карточке — <b>сменить состояние</b>. Тело с градиентом рисуется построчно (можно и на ESP).</p>
     </div>
 
     <div class="deck">
@@ -139,252 +116,252 @@
           <button id="reset">↺ Сброс</button>
         </div>
         <p class="note" style="margin-top:12px">
-          Рамка кодирует статус, поэтому смена состояния = полная перерисовка (<code>drawGrid</code> + рамки),
-          а между ними идёт только анимация осьминогов через off-screen буфер.
+          Буфер <code>RGB565</code> → конвертация в 888 как у панели. Круги/линии — алгоритмами
+          Adafruit_GFX, поэтому силуэт совпадает с железом пиксель-в-пиксель.
         </p>
       </div>
     </div>
   </div>
 
-  <footer>Пиксель-арт рендерится 1:1 с прошивкой · статусные цвета взяты из RGB565-палитры <code>octodash.ino</code></footer>
+  <footer>Эмулятор Adafruit_GFX · один код рисования с <code>octodash.ino</code></footer>
 </div>
 
 <script>
 (() => {
   "use strict";
-  const W = 0, A = 1, I = 2, E = 3;               // WORKING / WAITING / IDLE / ERROR
+  const W = 0, A = 1, I = 2, E = 3;
   const COLS = 3, ROWS = 2, DW = 320, DH = 240;
-  const cw = (DW/COLS)|0, ch = (DH/ROWS)|0;       // 106 x 120
-  const SCALE = 3;
+  const cw = (DW/COLS)|0, ch = (DH/ROWS)|0;
 
-  // --- палитра устройства (RGB, соответствует RGB565 в прошивке) ---
-  const C = {
-    bg:"#000000", grid:"#080c08", cell:"#070b10",
-    body:"#b98cff", bodyDark:"#7c53d6", belly:"#d9c2ff",
-    eye:"#f2f4ff", pupil:"#141826", glint:"#8ff6ef",
-    work:"#31ff3a", wait:"#ffd600", idle:"#8a8f96", err:"#ff1463",
-    cig:"#e9e9ef", filter:"#caa15a", ember:"#ff7a1a", emberHot:"#ffe08a", smoke:"#9aa3b2",
-  };
-  const frameColor = s => [C.work,C.wait,C.idle,C.err][s];
+  // ---- RGB565 helpers ----
+  const rgb = (r,g,b) => (((r>>3)<<11)|((g>>2)<<5)|(b>>3)) & 0xffff;
+  const R5=c=>(c>>11)&31, G6=c=>(c>>5)&63, B5=c=>c&31;
+  // gradient interpolation in 565 space
+  function lerp(c1,c2,t){
+    const r=(R5(c1)+(R5(c2)-R5(c1))*t)|0, g=(G6(c1)+(G6(c2)-G6(c1))*t)|0, b=(B5(c1)+(B5(c2)-B5(c1))*t)|0;
+    return ((r<<11)|(g<<5)|b)&0xffff;
+  }
 
-  const META = [
-    {cls:"work", nm:"WORKING", meta:"смолит сигарету и вкалывает 🚬", hook:"UserPromptSubmit · PostToolUse"},
-    {cls:"wait", nm:"WAITING", meta:"замер, ждёт твоего ответа/разрешения", hook:"Notification"},
-    {cls:"idle", nm:"IDLE",    meta:"ход завершён, спит", hook:"Stop"},
-    {cls:"err",  nm:"ERROR",   meta:"кверху брюхом, крестики вместо глаз", hook:"StopFailure"},
-  ];
+  // ---- палитра (RGB565, как в прошивке) ----
+  const BG=0x0000, GRID=0x0861;
+  const BODY_TOP=rgb(206,172,255), BODY_BOT=rgb(74,42,130);   // градиент тела
+  const HILITE=rgb(236,220,255);
+  const TENT=rgb(120,74,190), TENT_TIP=rgb(190,150,255);
+  const EYE=0xF7BF, PUPIL=0x10C4, GLINT=0x8FBD;
+  const C_WORK=0x37E7, C_WAIT=0xFEA0, C_IDLE=0x5AEB, C_ERR=0xF8AC;
+  const CIG=0xF7BF, CIG_HI=0xFFFF, FILTER=0xCD0B, EMBER=0xFC00, EMBER_HOT=0xFF0C, SMOKE=0x9CD3;
+  const frameColor = s => [C_WORK,C_WAIT,C_IDLE,C_ERR][s];
 
-  // демо-сессии — имена нарочно показывают фичи моста (обрезка, суффиксы дублей)
-  const DEFAULT = [
-    {name:"bitrixpet",      state:W},
-    {name:"worktree-4",     state:A},
-    {name:"core",           state:I},
-    {name:"feature-~tion-v2", state:W},
-    {name:"Claudiki#99ce",  state:A},
-    {name:"Claudiki#8d7d",  state:E},
-  ];
-  let cards = DEFAULT.map(c => ({...c}));
+  // ================= Эмулятор Adafruit_GFX (буфер RGB565) =================
+  class GFX {
+    constructor(w,h){ this.W=w; this.H=h; this.b=new Uint16Array(w*h); }
+    fillScreen(c){ this.b.fill(c); }
+    drawPixel(x,y,c){ x|=0;y|=0; if(x<0||y<0||x>=this.W||y>=this.H)return; this.b[y*this.W+x]=c; }
+    drawFastHLine(x,y,w,c){ for(let i=0;i<w;i++) this.drawPixel(x+i,y,c); }
+    drawFastVLine(x,y,h,c){ for(let i=0;i<h;i++) this.drawPixel(x,y+i,c); }
+    fillRect(x,y,w,h,c){ for(let j=0;j<h;j++) this.drawFastHLine(x,y+j,w,c); }
+    drawRect(x,y,w,h,c){ this.drawFastHLine(x,y,w,c); this.drawFastHLine(x,y+h-1,w,c);
+      this.drawFastVLine(x,y,h,c); this.drawFastVLine(x+w-1,y,h,c); }
+    drawLine(x0,y0,x1,y1,c){ x0|=0;y0|=0;x1|=0;y1|=0;
+      let steep=Math.abs(y1-y0)>Math.abs(x1-x0);
+      if(steep){ let t=x0;x0=y0;y0=t; t=x1;x1=y1;y1=t; }
+      if(x0>x1){ let t=x0;x0=x1;x1=t; t=y0;y0=y1;y1=t; }
+      let dx=x1-x0, dy=Math.abs(y1-y0), err=(dx/2)|0, ys=y0<y1?1:-1;
+      for(;x0<=x1;x0++){ steep?this.drawPixel(y0,x0,c):this.drawPixel(x0,y0,c); err-=dy; if(err<0){y0+=ys;err+=dx;} }
+    }
+    fillCircleHelper(x0,y0,r,corners,delta,c){
+      let f=1-r,ddx=1,ddy=-2*r,x=0,y=r,px=x,py=y; delta++;
+      while(x<y){ if(f>=0){y--;ddy+=2;f+=ddy;} x++;ddx+=2;f+=ddx;
+        if(x<y+1){ if(corners&1)this.drawFastVLine(x0+x,y0-y,2*y+delta,c); if(corners&2)this.drawFastVLine(x0-x,y0-y,2*y+delta,c); }
+        if(y!=py){ if(corners&1)this.drawFastVLine(x0+py,y0-px,2*px+delta,c); if(corners&2)this.drawFastVLine(x0-py,y0-px,2*px+delta,c); py=y; }
+        px=x;
+      }
+    }
+    fillCircle(x0,y0,r,c){ this.drawFastVLine(x0,y0-r,2*r+1,c); this.fillCircleHelper(x0,y0,r,3,0,c); }
+    drawCircle(x0,y0,r,c){ let f=1-r,ddx=1,ddy=-2*r,x=0,y=r;
+      this.drawPixel(x0,y0+r,c);this.drawPixel(x0,y0-r,c);this.drawPixel(x0+r,y0,c);this.drawPixel(x0-r,y0,c);
+      while(x<y){ if(f>=0){y--;ddy+=2;f+=ddy;} x++;ddx+=2;f+=ddx;
+        this.drawPixel(x0+x,y0+y,c);this.drawPixel(x0-x,y0+y,c);this.drawPixel(x0+x,y0-y,c);this.drawPixel(x0-x,y0-y,c);
+        this.drawPixel(x0+y,y0+x,c);this.drawPixel(x0-y,y0+x,c);this.drawPixel(x0+y,y0-x,c);this.drawPixel(x0-y,y0-x,c);
+      }
+    }
+  }
 
-  // offscreen в родном разрешении 320x240 → потом апскейл без сглаживания
-  const off = document.createElement("canvas"); off.width = DW; off.height = DH;
-  const g = off.getContext("2d");
+  const g = new GFX(DW,DH);
   const disp = document.getElementById("tft");
   const dctx = disp.getContext("2d");
-  dctx.imageSmoothingEnabled = false;
+  const off = document.createElement("canvas"); off.width=DW; off.height=DH;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(DW,DH);
 
-  // --- пиксельные примитивы (1:1 с Adafruit_GFX: fillRect/fillCircle/drawLine) ---
-  const rect = (x,y,w,h,col)=>{ g.fillStyle=col; g.fillRect(x|0,y|0,w|0,h|0); };
-  const px   = (x,y,col)=> rect(x,y,1,1,col);
-  function fillCircle(cx,cy,r,col){
-    g.fillStyle=col;
-    for(let dy=-r; dy<=r; dy++){
-      const dx = Math.floor(Math.sqrt(r*r - dy*dy));
-      g.fillRect((cx-dx)|0,(cy+dy)|0, 2*dx+1, 1);
+  function blit(){
+    const d = img.data, b = g.b;
+    for(let i=0;i<b.length;i++){
+      const c=b[i], r5=(c>>11)&31, g6=(c>>5)&63, b5=c&31, j=i*4;
+      d[j]  =(r5<<3)|(r5>>2);           // 5→8 бит как у ILI9341
+      d[j+1]=(g6<<2)|(g6>>4);
+      d[j+2]=(b5<<3)|(b5>>2);
+      d[j+3]=255;
     }
-  }
-  function line(x0,y0,x1,y1,col){
-    x0|=0;y0|=0;x1|=0;y1|=0;
-    let dx=Math.abs(x1-x0), dy=-Math.abs(y1-y0), sx=x0<x1?1:-1, sy=y0<y1?1:-1, e=dx+dy;
-    for(;;){ px(x0,y0,col); if(x0===x1&&y0===y1)break; const e2=2*e; if(e2>=dy){e+=dy;x0+=sx;} if(e2<=dx){e+=dx;y0+=sy;} }
-  }
-
-  // --- рамка карточки со скруглёнными уголками ---
-  function frame(x0,y0,w,h,col){
-    line(x0+1,y0,x0+w-2,y0,col); line(x0+1,y0+h-1,x0+w-2,y0+h-1,col);
-    line(x0,y0+1,x0,y0+h-2,col); line(x0+w-1,y0+1,x0+w-1,y0+h-2,col);
-    line(x0+1,y0+1,x0+2,y0+1,col); line(x0+1,y0+1,x0+1,y0+2,col);
-    line(x0+w-3,y0+1,x0+w-2,y0+1,col); line(x0+w-2,y0+1,x0+w-2,y0+2,col);
-    line(x0+1,y0+h-2,x0+2,y0+h-2,col); line(x0+1,y0+h-3,x0+1,y0+h-2,col);
-    line(x0+w-3,y0+h-2,x0+w-2,y0+h-2,col); line(x0+w-2,y0+h-3,x0+w-2,y0+h-2,col);
-  }
-
-  // --- осьминог ---
-  function octo(cx, cy, state, t){
-    const flipped = state === E;
-    const dir = flipped ? -1 : 1;
-
-    // темп/амплитуда по состоянию
-    const speed = state===W?7.5 : state===A?2.2 : state===I?1.4 : 5.5;
-    const amp   = state===W?3.2 : state===A?1.2 : state===I?0.8 : 2.4;
-    const breath = Math.sin(t*(state===I?1.6:3.0));
-    const bob = state===I?0 : Math.round(Math.sin(t*(state===W?4.4:2.4))*1.3);
-    let hy = cy + bob + (flipped?6:0);
-    const R = 17 + Math.round(breath*(state===I?0.6:1.1));
-
-    // прямоугольное туловище ниже купола; щупальца от его низа
-    const torsoDrop = 9;
-    // щупальца (за телом)
-    const legs = 6, spread = R*2 - 8, step = spread/(legs-1);
-    const baseY = hy + dir*(R + torsoDrop);
-    for(let i=0;i<legs;i++){
-      const bx = cx - R + 4 + i*step;
-      const ph = t*speed + i*0.75;
-      const seg = 7;
-      for(let s=0;s<seg;s++){
-        const k = s/seg;
-        const sway = Math.sin(ph + s*0.55) * amp * (0.25 + k);
-        const yy = baseY + dir*(s*2.0);
-        const w = s < 2 ? 3 : (s < 4 ? 2 : 1);
-        rect(bx + sway - (w>>1), yy, w, 2, s<3?C.bodyDark:C.bodyDark);
-      }
-      // светлый кончик
-      const kx = bx + Math.sin(ph + seg*0.55)*amp;
-      px(kx, baseY + dir*(seg*2.0), C.body);
-    }
-
-    // тело: купол-голова + прямоугольное туловище
-    const halfW = R - 3;
-    const ty = Math.min(hy, baseY), th = Math.abs(baseY - hy);
-    rect(cx-halfW, ty, halfW*2, th, C.body);                 // прямые бока туловища
-    fillCircle(cx, hy, R, C.body);                            // купол-голова
-    if(dir>0) rect(cx-halfW+1, baseY-3, halfW*2-2, 3, C.bodyDark);  // тень у низа туловища
-    fillCircle(cx-5, hy-6, 4, C.belly);                       // мягкий блик
-
-    // глаза
-    const eyY = hy - (flipped?-5:5);
-    const exL = cx-7, exR = cx+7;
-    if(state === E){
-      for(const ex of [exL,exR]){
-        line(ex-3,eyY-3,ex+3,eyY+3,C.pupil); line(ex+3,eyY-3,ex-3,eyY+3,C.pupil);
-      }
-    } else if(state === I){
-      line(exL-3,eyY,exL+3,eyY,C.pupil); line(exR-3,eyY,exR+3,eyY,C.pupil);   // закрытые
-    } else {
-      const look = state===W ? Math.round(Math.sin(t*2.2)*1.5) : 0;
-      const eo = state===A ? -1 : 0;                                          // WAITING — глаза шире
-      for(const ex of [exL,exR]){
-        fillCircle(ex, eyY, 4+(-eo), C.eye);
-        fillCircle(ex+look, eyY+1, 2, C.pupil);
-        px(ex+look-1, eyY-1, C.glint);
-      }
-    }
-
-    // акценты по состоянию
-    if(state === W){                                          // 🚬 смолит и вкалывает
-      const mx = cx+1, my = hy+5;                             // рот чуть ниже глаз
-      rect(mx, my, 3, 3, C.filter);                           // фильтр у рта
-      rect(mx+3, my, 15, 3, C.cig);                           // толстый длинный корпус
-      rect(mx+4, my, 11, 1, "#ffffff");                       // блик
-      const hot = (Math.floor(t*3)%2)===0;                    // уголёк подрагивает
-      rect(mx+18, my, 3, 3, hot?C.emberHot:C.ember);          // большой тлеющий уголёк
-      const tipx = mx+22, tipy = my-1;
-      for(let s=0;s<6;s++){                                   // густой дым волнами вверх
-        const st = (t*1.2 + s*0.4) % 1;
-        const yy = tipy - 1 - st*26;
-        const xx = tipx + Math.sin(t*2.1 + s*1.1 + st*3.2)*5;
-        fillCircle(xx, yy, st<0.4?1:(st<0.75?2:3), C.smoke);
-      }
-    } else if(state === A){                                   // «?» — ждёт тебя
-      const yy = hy - R - 8;
-      rect(cx+8, yy, 4, 1, C.wait); rect(cx+11, yy, 1, 2, C.wait);
-      rect(cx+10, yy+2, 1, 1, C.wait); rect(cx+10, yy+4, 1, 1, C.wait);
-    } else if(state === I){                                   // «z z» — спит
-      const zt = Math.floor(t*1.2)%3;
-      for(let z=0;z<=zt;z++){ const zx=cx+8+z*4, zy=hy-R-2-z*5; rect(zx,zy,3,1,C.idle); rect(zx,zy+2,3,1,C.idle); line(zx+2,zy,zx,zy+2,C.idle);}
-    }
-  }
-
-  function cellOrigin(i){ return [ (i%COLS)*cw, ((i/COLS)|0)*ch ]; }
-
-  function render(t){
-    // фон + сетка
-    g.fillStyle=C.bg; g.fillRect(0,0,DW,DH);
-    g.fillStyle=C.grid;
-    for(let c=1;c<COLS;c++) g.fillRect(c*cw,0,1,DH);
-    for(let r=1;r<ROWS;r++) g.fillRect(0,r*ch,DW,1);
-
-    cards.forEach((card,i)=>{
-      const [ox,oy]=cellOrigin(i);
-      const x0=ox+2, y0=oy+2, w=cw-4, h=ch-4;
-      const st=card.state;
-      // тёмная ячейка
-      rect(x0,y0,w,h,C.cell);
-      // дрожь для ERROR
-      const shake = st===E ? Math.round(Math.sin(t*22)*1) : 0;
-      // пульс рамки для WORKING / мигание для WAITING
-      let col=frameColor(st);
-      if(st===A && (Math.floor(t*1.6)%2===0)) col=C.cell;     // мигает жёлтым
-      frame(x0+shake,y0,w,h,col);
-      octo(x0+w/2+shake, y0+h/2-4, st, t);
-      // точка-статус
-      const blink = st!==A || (Math.floor(t*1.6)%2===0);
-      rect(x0+4+shake,y0+4,3,3, blink?frameColor(st):C.cell);
-    });
-
-    // апскейл на экран
+    octx.putImageData(img,0,0);
     dctx.imageSmoothingEnabled=false;
     dctx.clearRect(0,0,disp.width,disp.height);
     dctx.drawImage(off,0,0,DW,DH,0,0,disp.width,disp.height);
-
-    // подписи — крупным чётким шрифтом поверх (пиксельный шрифт был бы нечитаем)
-    dctx.textAlign="center"; dctx.textBaseline="alphabetic";
-    dctx.font="600 22px ui-monospace, Consolas, monospace";
-    cards.forEach((card,i)=>{
-      const [ox,oy]=cellOrigin(i);
-      dctx.fillStyle=frameColor(card.state);
-      dctx.globalAlpha=0.95;
-      dctx.fillText(card.name, (ox+cw/2)*SCALE, (oy+ch-8)*SCALE);
-    });
-    dctx.globalAlpha=1;
   }
 
-  // --- цикл ---
+  // ================= осьминог (1:1 с прошивкой) =================
+  function drawEyes(cx, eyY, state, tt){
+    const exL=cx-6, exR=cx+6;
+    if(state===E){
+      g.drawLine(exL-3,eyY-3,exL+3,eyY+3,C_ERR); g.drawLine(exL+3,eyY-3,exL-3,eyY+3,C_ERR);
+      g.drawLine(exR-3,eyY-3,exR+3,eyY+3,C_ERR); g.drawLine(exR+3,eyY-3,exR-3,eyY+3,C_ERR); return;
+    }
+    if(state===I){ g.drawFastHLine(exL-3,eyY,6,EYE); g.drawFastHLine(exR-3,eyY,6,EYE); return; }
+    const look = state===W ? Math.round(Math.sin(tt*2.2)*1.4) : 0;
+    const r = state===A ? 4 : 3;
+    g.fillCircle(exL,eyY,r,EYE); g.fillCircle(exR,eyY,r,EYE);
+    g.fillCircle(exL+look,eyY+1,1,PUPIL); g.fillCircle(exR+look,eyY+1,1,PUPIL);
+    g.drawPixel(exL+look-1,eyY-1,GLINT); g.drawPixel(exR+look-1,eyY-1,GLINT);
+  }
+
+  // глянцевая сфера-тело (радиальный градиент + блики) — 1:1 с sphereBody() в прошивке
+  function sphereBody(cx,hy,R){
+    const L=rgb(238,224,255), D=rgb(64,34,120), M=rgb(139,108,187);
+    const lx=-R*0.34, ly=-R*0.42, spread=1.5;
+    for(let y=-R;y<=R;y++){
+      const dx=Math.floor(Math.sqrt(Math.max(0,R*R-y*y)));
+      for(let x=-dx;x<=dx;x++){
+        const nx=(x-lx)/R, ny=(y-ly)/R, d=Math.sqrt(nx*nx+ny*ny)/spread;
+        g.drawPixel(cx+x,hy+y, lerp(L,D,d));
+      }
+    }
+    g.fillCircle(cx-Math.round(R*0.32), hy-Math.round(R*0.38), Math.round(R*0.26), lerp(L,0xFFFF,0.6));
+    g.fillCircle(cx-Math.round(R*0.30), hy-Math.round(R*0.36), Math.round(R*0.12), 0xFFFF);
+    g.fillCircle(cx+Math.round(R*0.34), hy+Math.round(R*0.20), 2, lerp(M,L,0.5));
+  }
+
+  function octo(cx, cy, state, tt){
+    const flipped = state===E, dir = flipped?-1:1;
+    const speed = state===W?7.5 : state===A?2.2 : state===I?1.4 : 5.5;
+    const amp   = state===W?2.6 : state===A?1.0 : state===I?0.7 : 2.0;
+    const breath= Math.sin(tt*(state===I?1.6:3.0));
+    const bob   = state===I?0 : Math.round(Math.sin(tt*(state===W?4.4:2.4))*1.2);
+    const hy = cy + bob + (flipped?5:0);
+    const R  = 17 + Math.round(breath*(state===I?0.6:1.1));
+    // --- щупальца: корни тёмные (прячутся под телом) → светлые к кончику ---
+    const baseHW = Math.round(R*0.66), rootY = hy + dir*(R-4);
+    const legs=6, seg=9, step=(2*baseHW-2)/(legs-1);
+    const DK=rgb(46,24,96), TIPC=rgb(196,158,255);
+    for(let i=0;i<legs;i++){
+      const bx = cx - baseHW + 1 + i*step;
+      const ph = tt*speed + i*0.7;
+      for(let s=0;s<seg;s++){
+        const sway = Math.sin(ph + s*0.5) * amp * (0.2 + s/seg);
+        const w = s<3?3:(s<6?2:1);
+        const col = lerp(DK, TIPC, s<3?0:(s-3)/(seg-3));
+        g.fillRect(Math.round(bx+sway)-(w>>1), rootY+dir*(s*2), w, 2, col);
+      }
+      g.drawPixel(Math.round(bx+Math.sin(ph+seg*0.5)*amp), rootY+dir*(seg*2), TIPC);
+    }
+
+    // --- тело: глянцевая сфера (радиальная тень, свет сверху-слева) ---
+    sphereBody(cx, hy, R);
+
+    // глаза
+    const eyY = hy - dir*4;
+    drawEyes(cx, eyY, state, tt);
+
+    // --- акценты ---
+    if(state===W){                                              // 🚬
+      const mx=cx+1, my=hy+5;
+      g.fillRect(mx,my,3,3,FILTER);
+      g.fillRect(mx+3,my,15,3,CIG); g.drawFastHLine(mx+4,my,11,CIG_HI);
+      const hot=(Math.floor(tt*3)%2)===0;
+      g.fillRect(mx+18,my,3,3,hot?EMBER_HOT:EMBER);
+      const tipx=mx+22, tipy=my-1;
+      for(let s=0;s<6;s++){
+        const st=(tt*1.2+s*0.4)%1;
+        const yy=tipy-1-Math.round(st*26);
+        const xx=tipx+Math.round(Math.sin(tt*2.1+s*1.1+st*3.2)*5);
+        g.fillCircle(xx,yy, st<0.4?1:(st<0.75?2:3), SMOKE);
+      }
+    } else if(state===A){                                       // «?»
+      const yy=hy-R-8;
+      g.fillRect(cx+8,yy,4,1,C_WAIT); g.drawPixel(cx+11,yy+1,C_WAIT);
+      g.drawPixel(cx+10,yy+2,C_WAIT); g.drawPixel(cx+10,yy+4,C_WAIT);
+    } else if(state===I){                                       // «z»
+      const zt=Math.floor(tt*1.2)%3;
+      for(let z=0;z<=zt;z++){ const zx=cx+7+z*4, zy=hy-R-2-z*5;
+        g.fillRect(zx,zy,3,1,C_IDLE); g.fillRect(zx,zy+2,3,1,C_IDLE); g.drawLine(zx+2,zy,zx,zy+2,C_IDLE); }
+    }
+  }
+
+  // ================= карточки / сетка =================
+  const META=[
+    {cls:"work", nm:"WORKING", meta:"смолит сигарету и вкалывает 🚬", hook:"UserPromptSubmit · PostToolUse"},
+    {cls:"wait", nm:"WAITING", meta:"замер, ждёт твоего ответа", hook:"Notification"},
+    {cls:"idle", nm:"IDLE",    meta:"ход завершён, спит", hook:"Stop"},
+    {cls:"err",  nm:"ERROR",   meta:"кверху брюхом, крестики", hook:"StopFailure"},
+  ];
+  const DEFAULT=[
+    {name:"bitrixpet",state:W},{name:"worktree-4",state:A},{name:"core",state:I},
+    {name:"feature-~tion-v2",state:W},{name:"Claudiki#99ce",state:A},{name:"Claudiki#8d7d",state:E},
+  ];
+  let cards = DEFAULT.map(c=>({...c}));
+  const cellOrigin = i => [ (i%COLS)*cw, ((i/COLS)|0)*ch ];
+
+  function render(tt){
+    g.fillScreen(BG);
+    for(let c=1;c<COLS;c++) g.drawFastVLine(c*cw,0,DH,GRID);
+    for(let r=1;r<ROWS;r++) g.drawFastHLine(0,r*ch,DW,GRID);
+    cards.forEach((card,i)=>{
+      const [ox,oy]=cellOrigin(i);
+      const x0=ox+2,y0=oy+2,bw=cw-4,bh=ch-4, st=card.state;
+      const shake = st===E ? Math.round(Math.sin(tt*22)) : 0;
+      let col = frameColor(st);
+      if(st===A && Math.floor(tt*1.6)%2===0) col=BG;
+      g.drawRect(x0+shake,y0,bw,bh,col);
+      octo(x0+bw/2+shake, y0+bh/2-8, st, tt);
+      const blink = st!==A || (Math.floor(tt*1.6)%2===0);
+      g.fillRect(x0+3+shake,y0+3,3,3, blink?frameColor(st):BG);
+    });
+    blit();
+    // подписи — крупным чётким шрифтом поверх (для читабельности)
+    dctx.textAlign="center"; dctx.font="600 22px ui-monospace,Consolas,monospace";
+    cards.forEach((card,i)=>{
+      const [ox,oy]=cellOrigin(i);
+      const c=frameColor(card.state), r=(c>>11)&31,gg=(c>>5)&63,b=c&31;
+      dctx.fillStyle=`rgb(${(r<<3)|(r>>2)},${(gg<<2)|(gg>>4)},${(b<<3)|(b>>2)})`;
+      dctx.fillText(card.name, (ox+cw/2)*3, (oy+ch-8)*3);
+    });
+  }
+
+  // ================= цикл / интеракции =================
   let playing=true, t0=performance.now(), frozen=0;
   const reduce = matchMedia("(prefers-reduced-motion:reduce)").matches;
   function loop(now){
-    const t = playing ? (now - t0)/1000 : frozen;
-    render(reduce ? 3.2 : t);
+    const tt = playing ? (now-t0)/1000 : frozen;
+    render(reduce ? 3.2 : tt);
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
 
-  // --- интеракции ---
   disp.addEventListener("click", e=>{
-    const rct=disp.getBoundingClientRect();
-    const x=(e.clientX-rct.left)/rct.width*DW, y=(e.clientY-rct.top)/rct.height*DH;
+    const rc=disp.getBoundingClientRect();
+    const x=(e.clientX-rc.left)/rc.width*DW, y=(e.clientY-rc.top)/rc.height*DH;
     const i=((y/ch)|0)*COLS + ((x/cw)|0);
-    if(i>=0 && i<cards.length){ cards[i].state=(cards[i].state+1)%4; }
+    if(i>=0 && i<cards.length) cards[i].state=(cards[i].state+1)%4;
   });
-
   const playBtn=document.getElementById("play");
-  playBtn.onclick=()=>{
-    playing=!playing;
+  playBtn.onclick=()=>{ playing=!playing;
     if(!playing){ frozen=(performance.now()-t0)/1000; playBtn.textContent="▶ Играть"; playBtn.classList.remove("on"); }
-    else{ t0=performance.now()-frozen*1000; playBtn.textContent="⏸ Пауза"; playBtn.classList.add("on"); }
-  };
-  document.getElementById("rand").onclick=()=>{ cards.forEach(c=>c.state=(Math.random()*4)|0); };
+    else{ t0=performance.now()-frozen*1000; playBtn.textContent="⏸ Пауза"; playBtn.classList.add("on"); } };
+  document.getElementById("rand").onclick=()=>cards.forEach(c=>c.state=(Math.random()*4)|0);
   document.getElementById("reset").onclick=()=>{ cards=DEFAULT.map(c=>({...c})); };
 
-  // легенда
-  const leg=document.getElementById("legend");
-  leg.innerHTML=META.map(m=>`
-    <div class="leg ${m.cls}">
-      <span class="swatch" style="background:var(--${m.cls}); color:var(--${m.cls})"></span>
-      <div>
-        <div class="nm">${m.nm}</div>
-        <div class="meta">${m.meta}</div>
-        <div class="hook">← ${m.hook}</div>
-      </div>
+  document.getElementById("legend").innerHTML = META.map(m=>`
+    <div class="leg ${m.cls}"><span class="swatch"></span>
+      <div><div class="nm">${m.nm}</div><div class="meta">${m.meta}</div><div class="hook">← ${m.hook}</div></div>
     </div>`).join("");
 })();
 </script>

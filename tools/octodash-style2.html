@@ -1,0 +1,165 @@
+<style>
+  :root{
+    color-scheme:dark;
+    --bg:#060a11; --panel:#101a2b; --panel2:#0c1524; --line:#1b2942;
+    --ink:#e8f1f6; --muted:#8397b0; --faint:#5b6f8a; --accent:#35e0d8;
+    --font-mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --font-ui:system-ui,"Segoe UI",Roboto,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:
+      radial-gradient(1100px 600px at 82% -10%, rgba(53,224,216,.10), transparent 60%),
+      radial-gradient(800px 500px at 5% 110%, rgba(124,140,255,.10), transparent 55%), var(--bg);
+    color:var(--ink); font-family:var(--font-ui); -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1180px; margin:0 auto; padding:30px 22px 60px;}
+  .eyebrow{font-family:var(--font-mono); font-size:12px; letter-spacing:.28em; text-transform:uppercase;
+    color:var(--accent); display:flex; align-items:center; gap:10px; margin-bottom:8px;}
+  .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent);
+    animation:beat 1.8s ease-in-out infinite;}
+  @keyframes beat{0%,100%{opacity:1}50%{opacity:.35}}
+  h1{margin:0 0 6px; font-size:clamp(28px,4.5vw,44px); font-weight:800; letter-spacing:-.02em;}
+  h1 b{color:var(--accent)}
+  .sub{color:var(--muted); font-size:15px; max-width:64ch; margin:0 0 26px;}
+  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:20px;}
+  @media(max-width:820px){.grid{grid-template-columns:repeat(2,1fr);}}
+  @media(max-width:520px){.grid{grid-template-columns:1fr;}}
+  .tile{background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--line);
+    border-radius:16px; padding:16px; display:flex; flex-direction:column; gap:12px;}
+  .tile .no{font-family:var(--font-mono); font-size:12px; color:var(--faint);}
+  .tile h2{margin:0; font-size:17px; font-weight:700;}
+  .tile p{margin:0; font-size:12.5px; color:var(--muted); min-height:34px;}
+  .screen{position:relative; border-radius:8px; overflow:hidden; background:#000; align-self:center;
+    box-shadow:0 0 24px rgba(53,224,216,.10), inset 0 0 0 1px #0d141d;}
+  .screen canvas{display:block; width:100%; height:auto; image-rendering:pixelated;}
+  .screen .glare{position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(130% 80% at 50% -15%, rgba(255,255,255,.05), transparent 55%);}
+  footer{margin-top:30px; color:var(--faint); font-family:var(--font-mono); font-size:12px; text-align:center;
+    border-top:1px solid var(--line); padding-top:18px;}
+  footer b{color:var(--accent)}
+</style>
+
+<div class="wrap">
+  <div class="eyebrow"><span class="dot"></span>OctoDash · Style 2 · доводка</div>
+  <h1>Круглый — <b>вариации</b></h1>
+  <p class="sub">Шесть доводок круглого тела: от плоского до сферической тени (радиальный градиент, свет сверху-слева). Всё в эмуляторе RGB565 → переносимо на ESP. Назови номер — доведу и залью в прошивку.</p>
+  <div class="grid" id="grid"></div>
+  <footer>Все вариации переносимы на ESP · назови номер — <b>перенесу в octodash.ino</b></footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const rgb=(r,g,b)=>(((r>>3)<<11)|((g>>2)<<5)|(b>>3))&0xffff;
+  const R5=c=>(c>>11)&31,G6=c=>(c>>5)&63,B5=c=>c&31;
+  const lerp=(c1,c2,t)=>{t=t<0?0:t>1?1:t;const r=(R5(c1)+(R5(c2)-R5(c1))*t)|0,g=(G6(c1)+(G6(c2)-G6(c1))*t)|0,b=(B5(c1)+(B5(c2)-B5(c1))*t)|0;return((r<<11)|(g<<5)|b)&0xffff;};
+
+  const BG=0x0000;
+  const TOP=rgb(214,182,255), BOT=rgb(64,34,120), MID=lerp(TOP,BOT,.5);
+  const LIGHT=rgb(238,224,255), DARK=rgb(46,24,96), WHITE=0xFFFF;
+  const TENT=rgb(120,74,190), TENT_TIP=rgb(196,158,255);
+  const EYE=0xF7BF, PUPIL=0x10C4, GLINT=0x8FBD;
+  const C_WORK=0x37E7, CIG=0xF7BF, CIG_HI=0xFFFF, FILTER=0xCD0B, EMBER=0xFC00, EMBER_HOT=0xFF0C, SMOKE=0x9CD3;
+
+  class GFX{
+    constructor(w,h){this.W=w;this.H=h;this.b=new Uint16Array(w*h);}
+    fillScreen(c){this.b.fill(c);}
+    drawPixel(x,y,c){x|=0;y|=0;if(x<0||y<0||x>=this.W||y>=this.H)return;this.b[y*this.W+x]=c;}
+    drawFastHLine(x,y,w,c){for(let i=0;i<w;i++)this.drawPixel(x+i,y,c);}
+    drawFastVLine(x,y,h,c){for(let i=0;i<h;i++)this.drawPixel(x,y+i,c);}
+    fillRect(x,y,w,h,c){for(let j=0;j<h;j++)this.drawFastHLine(x,y+j,w,c);}
+    drawRect(x,y,w,h,c){this.drawFastHLine(x,y,w,c);this.drawFastHLine(x,y+h-1,w,c);this.drawFastVLine(x,y,h,c);this.drawFastVLine(x+w-1,y,h,c);}
+    drawLine(x0,y0,x1,y1,c){x0|=0;y0|=0;x1|=0;y1|=0;let st=Math.abs(y1-y0)>Math.abs(x1-x0);
+      if(st){let t=x0;x0=y0;y0=t;t=x1;x1=y1;y1=t;}if(x0>x1){let t=x0;x0=x1;x1=t;t=y0;y0=y1;y1=t;}
+      let dx=x1-x0,dy=Math.abs(y1-y0),e=(dx/2)|0,ys=y0<y1?1:-1;
+      for(;x0<=x1;x0++){st?this.drawPixel(y0,x0,c):this.drawPixel(x0,y0,c);e-=dy;if(e<0){y0+=ys;e+=dx;}}}
+    fchelp(x0,y0,r,cn,d,c){let f=1-r,ddx=1,ddy=-2*r,x=0,y=r,px=0,py=r;d++;
+      while(x<y){if(f>=0){y--;ddy+=2;f+=ddy;}x++;ddx+=2;f+=ddx;
+        if(x<y+1){if(cn&1)this.drawFastVLine(x0+x,y0-y,2*y+d,c);if(cn&2)this.drawFastVLine(x0-x,y0-y,2*y+d,c);}
+        if(y!=py){if(cn&1)this.drawFastVLine(x0+py,y0-px,2*px+d,c);if(cn&2)this.drawFastVLine(x0-py,y0-px,2*px+d,c);py=y;}px=x;}}
+    fillCircle(x0,y0,r,c){this.drawFastVLine(x0,y0-r,2*r+1,c);this.fchelp(x0,y0,r,3,0,c);}
+    drawCircle(x0,y0,r,c){let f=1-r,ddx=1,ddy=-2*r,x=0,y=r;
+      this.drawPixel(x0,y0+r,c);this.drawPixel(x0,y0-r,c);this.drawPixel(x0+r,y0,c);this.drawPixel(x0-r,y0,c);
+      while(x<y){if(f>=0){y--;ddy+=2;f+=ddy;}x++;ddx+=2;f+=ddx;
+        this.drawPixel(x0+x,y0+y,c);this.drawPixel(x0-x,y0+y,c);this.drawPixel(x0+x,y0-y,c);this.drawPixel(x0-x,y0-y,c);
+        this.drawPixel(x0+y,y0+x,c);this.drawPixel(x0-y,y0+x,c);this.drawPixel(x0+y,y0-x,c);this.drawPixel(x0-y,y0-x,c);}}
+  }
+
+  // спот-заливка эллипса радиальным градиентом (свет в lx,ly) — работает и на ESP (пиксельно)
+  function sphere(g,cx,hy,rx,ry,lx,ly,cl,cd,spread){
+    for(let y=-ry;y<=ry;y++){
+      const dxf=rx*Math.sqrt(Math.max(0,1-(y/ry)*(y/ry))); const dx=Math.floor(dxf);
+      for(let x=-dx;x<=dx;x++){
+        const nx=(x-lx)/rx, ny=(y-ly)/ry, d=Math.sqrt(nx*nx+ny*ny)/spread;
+        g.drawPixel(cx+x,hy+y,lerp(cl,cd,d));
+      }
+    }
+  }
+
+  // общий низ: щупальца + лицо + сигарета (одинаково)
+  function tentacles(g,cx,hy,R,tt){
+    const baseHW=Math.round(R*0.66), rootY=hy+R-4, legs=6, seg=9, spread=baseHW*2-2, step=spread/(legs-1);
+    for(let i=0;i<legs;i++){ const bx=cx-baseHW+1+i*step, ph=tt*7.5+i*0.7;
+      for(let s=0;s<seg;s++){ const sway=Math.sin(ph+s*0.5)*2.6*(0.2+s/seg), w=s<3?3:(s<6?2:1);
+        // корни тёмные (сливаются с низом тела), кончики светлеют — без светлого канта под пузом
+        const col=lerp(DARK,TENT_TIP,Math.max(0,s-3)/(seg-3));
+        g.fillRect(Math.round(bx+sway)-(w>>1),rootY+s*2,w,2,col);}
+      g.drawPixel(Math.round(bx+Math.sin(ph+seg*0.5)*2.6),rootY+seg*2,TENT_TIP);}
+  }
+  function face(g,cx,hy,R,tt){
+    const eyY=hy-4, exL=cx-6, exR=cx+6, look=Math.round(Math.sin(tt*2.2)*1.4);
+    g.fillCircle(exL,eyY,3,EYE); g.fillCircle(exR,eyY,3,EYE);
+    g.fillCircle(exL+look,eyY+1,1,PUPIL); g.fillCircle(exR+look,eyY+1,1,PUPIL);
+    g.drawPixel(exL+look-1,eyY-1,GLINT); g.drawPixel(exR+look-1,eyY-1,GLINT);
+    const mx=cx+1,my=hy+5;
+    g.fillRect(mx,my,3,3,FILTER); g.fillRect(mx+3,my,15,3,CIG); g.drawFastHLine(mx+4,my,11,CIG_HI);
+    g.fillRect(mx+18,my,3,3,(Math.floor(tt*3)%2)?EMBER:EMBER_HOT);
+    const tipx=mx+22,tipy=my-1;
+    for(let s=0;s<6;s++){const st=(tt*1.2+s*0.4)%1,yy=tipy-1-Math.round(st*26),xx=tipx+Math.round(Math.sin(tt*2.1+s*1.1+st*3.2)*5);
+      g.fillCircle(xx,yy,st<0.4?1:(st<0.75?2:3),SMOKE);}
+  }
+
+  const STYLES=[
+    { name:"Классик (плоский)", desc:"Текущий: ровная заливка, тёмная тень внизу, светлый верх.",
+      body(g,cx,hy,R){ g.fillCircle(cx,hy,R,MID);
+        for(let y=hy+R-6;y<=hy+R;y++){const dx=Math.floor(Math.sqrt(Math.max(0,R*R-(y-hy)*(y-hy))));g.drawFastHLine(cx-dx,y,2*dx+1,DARK);}
+        g.fillCircle(cx,hy-4,R-4,lerp(MID,LIGHT,.35)); g.fillCircle(cx-6,hy-7,3,LIGHT);}},
+    { name:"Сфера (радиальная тень)", desc:"Настоящий объём: свет сверху-слева плавно уходит в тень. Гладкий шар.",
+      body(g,cx,hy,R){ sphere(g,cx,hy,R,R,-R*0.34,-R*0.42,LIGHT,BOT,1.55); g.fillCircle(cx-6,hy-7,2,WHITE);}},
+    { name:"Глянцевый", desc:"Сфера + крупный зеркальный блик и мелкий отблеск — «мокрый» вид.",
+      body(g,cx,hy,R){ sphere(g,cx,hy,R,R,-R*0.34,-R*0.42,LIGHT,BOT,1.5);
+        g.fillCircle(cx-Math.round(R*0.32),hy-Math.round(R*0.38),Math.round(R*0.26),lerp(LIGHT,WHITE,.6));
+        g.fillCircle(cx-Math.round(R*0.30),hy-Math.round(R*0.36),Math.round(R*0.12),WHITE);
+        g.fillCircle(cx+Math.round(R*0.34),hy+Math.round(R*0.2),2,lerp(MID,LIGHT,.5));}},
+    { name:"Пухлый", desc:"Шире, чем выше — умильный колобок. Сферическая тень.",
+      body(g,cx,hy,R){ sphere(g,cx,hy+2,R+3,R-1,-R*0.32,-R*0.4,LIGHT,BOT,1.55); g.fillCircle(cx-6,hy-6,2,WHITE);}},
+    { name:"С ободком", desc:"Сфера + тонкий светящийся контур — не «плывёт» на ярком экране.",
+      body(g,cx,hy,R){ g.fillCircle(cx,hy,R+1,lerp(TENT_TIP,LIGHT,.4)); sphere(g,cx,hy,R,R,-R*0.34,-R*0.42,LIGHT,BOT,1.55); g.fillCircle(cx-6,hy-7,2,WHITE);}},
+    { name:"Мягкий дуотон", desc:"Две зоны: светлая макушка и тёмный низ, мягкий стык. Чистый стиль.",
+      body(g,cx,hy,R){ g.fillCircle(cx,hy,R,MID);
+        for(let y=-R;y<=R;y++){const dx=Math.floor(Math.sqrt(Math.max(0,R*R-y*y)));
+          const c=y<-3?lerp(MID,LIGHT,.55):(y<4?MID:lerp(MID,DARK,.6)); g.drawFastHLine(cx-dx,hy+y,2*dx+1,c);}
+        g.fillCircle(cx-6,hy-7,3,LIGHT);}},
+  ];
+
+  const TW=108,TH=132,SC=3;
+  const g=new GFX(TW,TH), off=document.createElement("canvas"); off.width=TW; off.height=TH;
+  const octx=off.getContext("2d"), img=octx.createImageData(TW,TH), grid=document.getElementById("grid");
+  const tiles=STYLES.map((s,i)=>{const el=document.createElement("div");el.className="tile";
+    el.innerHTML=`<div class="no">ВАРИАНТ ${i+1}</div><h2>${s.name}</h2><p>${s.desc}</p>
+      <div class="screen"><canvas width="${TW*SC}" height="${TH*SC}"></canvas><div class="glare"></div></div>`;
+    grid.appendChild(el); const cv=el.querySelector("canvas"),ctx=cv.getContext("2d");ctx.imageSmoothingEnabled=false;
+    return {style:s,cv,ctx};});
+
+  function blit(ctx,cv){const d=img.data,b=g.b;
+    for(let i=0;i<b.length;i++){const c=b[i],r=(c>>11)&31,gg=(c>>5)&63,bb=c&31,j=i*4;
+      d[j]=(r<<3)|(r>>2);d[j+1]=(gg<<2)|(gg>>4);d[j+2]=(bb<<3)|(bb>>2);d[j+3]=255;}
+    octx.putImageData(img,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.drawImage(off,0,0,TW,TH,0,0,cv.width,cv.height);}
+  function renderTile(t,tt){ g.fillScreen(BG); g.drawRect(2,2,TW-4,TH-4,C_WORK);
+    const cx=TW/2|0, hy=(TH/2|0)-16, R=17+Math.round(Math.sin(tt*3)*1.1);
+    tentacles(g,cx,hy,R,tt); t.style.body(g,cx,hy,R,tt); face(g,cx,hy,R,tt);
+    blit(t.ctx,t.cv); t.ctx.textAlign="center"; t.ctx.font="600 20px ui-monospace,Consolas,monospace";
+    t.ctx.fillStyle="#31ff3a"; t.ctx.fillText("bitrixpet",(TW/2)*SC,(TH-9)*SC);}
+  const reduce=matchMedia("(prefers-reduced-motion:reduce)").matches, t0=performance.now();
+  (function loop(now){const tt=reduce?3.2:(now-t0)/1000; tiles.forEach(t=>renderTile(t,tt)); requestAnimationFrame(loop);})(performance.now());
+})();
+</script>

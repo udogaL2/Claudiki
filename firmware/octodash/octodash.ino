@@ -25,9 +25,13 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
 #define BG        0x0000
 #define GRIDLINE  0x0861
-#define BODY      0xBC7F   // фиолетовое тельце
-#define BODY_DARK 0x7A9A   // тёмно-фиолетовый (щупальца/тень)
-#define BELLY     0xDE1F   // светлый блик на тельце
+// Палитра тела (глянцевая сфера, «вариант 3» из style-lab), RGB565
+#define BODY_LIGHT 0xEF1F  // свет на сфере
+#define BODY_MID   0x8B77  // средний тон
+#define BODY_BOT   0x410F  // тень сферы
+#define BODY_DK    0x28CC  // самый тёмный (корни щупалец / стык)
+#define TENT       0x7A57  // щупальца (средний)
+#define TENT_TIP   0xC4FF  // кончики щупалец
 #define EYE_LIGHT 0xF7BF
 #define EYE_DARK  0x10C4
 #define GLINT     0x8FBD   // бирюзовый блик в глазу
@@ -62,7 +66,7 @@ Session sessions[MAX_SESSIONS];   // то, что сейчас на экране
 Session incoming[MAX_SESSIONS];   // распарсенный снэпшот
 
 unsigned long lastTick = 0;
-const unsigned long TICK_MS = 140;
+const unsigned long TICK_MS = 50;   // ~20 fps (плавнее прежних 140мс/~7fps)
 int t = 0;
 
 // --- Serial line reader ------------------------------------------------------
@@ -124,10 +128,36 @@ void drawEyes(GFXcanvas16 &g, int cx, int eyY, State state, float tt) {
   g.drawPixel(exR + look - 1, eyY - 1, GLINT);
 }
 
-// Осьминог: купол-голова + прямоугольное туловище, 6 синус-щупалец, характер
-// под состояние. Алгоритм 1:1 с веб-симулятором (GFXcanvas клипует лишнее).
+// Линейная интерполяция двух RGB565 (для градиентов тела/щупалец).
+uint16_t lerp565(uint16_t a, uint16_t b, float t) {
+  if (t < 0) t = 0; if (t > 1) t = 1;
+  int r = (a >> 11) & 31, g = (a >> 5) & 63, bl = a & 31;
+  int r2 = (b >> 11) & 31, g2 = (b >> 5) & 63, b2 = b & 31;
+  r += (int)((r2 - r) * t); g += (int)((g2 - g) * t); bl += (int)((b2 - bl) * t);
+  return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+// Глянцевая сфера: радиальный градиент (свет сверху-слева) + блики. Пиксельно —
+// на ESP тянет (WiFi выключен). Это «вариант 3» из style-lab.
+void sphereBody(GFXcanvas16 &g, int cx, int hy, int R) {
+  const float lx = -R * 0.34f, ly = -R * 0.42f, spread = 1.5f;
+  for (int y = -R; y <= R; y++) {
+    int dx = (int)floorf(sqrtf((float)(R * R - y * y)));
+    for (int x = -dx; x <= dx; x++) {
+      float nx = (x - lx) / R, ny = (y - ly) / R;
+      float d = sqrtf(nx * nx + ny * ny) / spread;
+      g.drawPixel(cx + x, hy + y, lerp565(BODY_LIGHT, BODY_BOT, d));
+    }
+  }
+  g.fillCircle(cx - (int)(R * 0.32f), hy - (int)(R * 0.38f), (int)(R * 0.26f), lerp565(BODY_LIGHT, 0xFFFF, 0.6f));
+  g.fillCircle(cx - (int)(R * 0.30f), hy - (int)(R * 0.36f), (int)(R * 0.12f), 0xFFFF);
+  g.fillCircle(cx + (int)(R * 0.34f), hy + (int)(R * 0.20f), 2, lerp565(BODY_MID, BODY_LIGHT, 0.5f));
+}
+
+// Осьминог: глянцевая сфера-тело + 6 синус-щупалец, характер под состояние.
+// Алгоритм 1:1 с веб-эмулятором (GFXcanvas клипует лишнее).
 void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
-  float tt = phase * 0.14f;                 // ~секунды (TICK_MS=140)
+  float tt = phase * (TICK_MS / 1000.0f);   // секунды (скорость не зависит от FPS)
   bool flipped = (state == ERR);
   int dir = flipped ? -1 : 1;
 
@@ -138,36 +168,29 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
   int hy = cy + bob + (flipped ? 5 : 0);
   int R = 17 + (int)roundf(breath * (state == IDLE ? 0.6f : 1.0f));
 
-  // прямоугольное туловище ниже купола; щупальца растут от его низа
-  const int torsoDrop = 9;
-  const int seg = 7;
-  int baseY = hy + dir * (R + torsoDrop);
-
-  // щупальца (за телом): тейперятся и колышутся синусом с фазовым сдвигом
-  const int legs = 6;
-  float step = (2 * R - 8) / (float)(legs - 1);
+  // щупальца: корни ВНУТРИ тела (прикрыты сферой), тёмные у основания → светлые
+  // к кончику. Тело рисуется поверх → бесшовное крепление без светлого канта.
+  const int seg = 9, legs = 6;
+  const int baseHW = (int)roundf(R * 0.66f);
+  const int rootY = hy + dir * (R - 4);
+  const float step = (2.0f * baseHW - 2) / (legs - 1);
   for (int i = 0; i < legs; i++) {
-    float bx = cx - R + 4 + i * step;
-    float ph = tt * speed + i * 0.75f;
+    float bx = cx - baseHW + 1 + i * step;
+    float ph = tt * speed + i * 0.7f;
     for (int s = 0; s < seg; s++) {
-      float sway = sinf(ph + s * 0.55f) * amp * (0.25f + (float)s / seg);
-      int yy = baseY + dir * (s * 2);
-      int w = (s < 2) ? 3 : (s < 4 ? 2 : 1);
-      g.fillRect((int)(bx + sway) - (w >> 1), yy, w, 2, BODY_DARK);
+      float sway = sinf(ph + s * 0.5f) * amp * (0.2f + (float)s / seg);
+      int w = (s < 3) ? 3 : (s < 6 ? 2 : 1);
+      uint16_t col = lerp565(BODY_DK, TENT_TIP, (s < 3) ? 0.0f : (float)(s - 3) / (seg - 3));
+      g.fillRect((int)roundf(bx + sway) - (w >> 1), rootY + dir * (s * 2), w, 2, col);
     }
-    int kx = (int)(bx + sinf(ph + seg * 0.55f) * amp);
-    g.drawPixel(kx, baseY + dir * (seg * 2), BODY);
+    int kx = (int)roundf(bx + sinf(ph + seg * 0.5f) * amp);
+    g.drawPixel(kx, rootY + dir * (seg * 2), TENT_TIP);
   }
 
-  // тело: купол-голова + прямоугольное туловище + блик
-  int halfW = R - 3;
-  int ty = (baseY < hy) ? baseY : hy, th = abs(baseY - hy);
-  g.fillRect(cx - halfW, ty, halfW * 2, th, BODY);       // прямые бока туловища
-  g.fillCircle(cx, hy, R, BODY);                          // купол-голова
-  if (dir > 0) g.fillRect(cx - halfW + 1, baseY - 3, halfW * 2 - 2, 3, BODY_DARK); // тень
-  g.fillCircle(cx - 5, hy - 6, 4, BELLY);                 // блик
+  // тело: глянцевая сфера (одинакова для всех состояний; сверху — лицо/акценты)
+  sphereBody(g, cx, hy, R);
 
-  int eyY = hy - (flipped ? -5 : 5);
+  int eyY = hy - dir * 4;
   drawEyes(g, cx, eyY, state, tt);
 
   // акценты по состоянию
@@ -230,6 +253,27 @@ void redrawAll() {
   }
 }
 
+// Очистить одну ячейку под фон, восстановив пару гридлайнов на её левой/верхней
+// границе (их затирает fillRect). Правый/нижний край принадлежат соседям — их
+// fillRect не трогает, восстанавливать не нужно.
+void clearCell(int col, int row) {
+  int x = col * cellW, y = row * cellH;
+  tft.fillRect(x, y, cellW, cellH, BG);
+  if (col > 0) tft.drawFastVLine(x, y, cellH, GRIDLINE);
+  if (row > 0) tft.drawFastHLine(x, y, cellW, GRIDLINE);
+}
+
+// Перерисовать ОДНУ ячейку (без касания соседей и без fillScreen): фон + гридлайны,
+// затем рамка и осьминог в новом состоянии сразу (не ждём следующего тика анимации).
+void redrawCell(int i) {
+  int col = i % COLS, row = i / COLS;
+  clearCell(col, row);
+  if (sessions[i].active) {
+    drawCardFrame(col, row, sessions[i]);
+    updateOctopusArea(col, row, sessions[i], t + i * 2);
+  }
+}
+
 // --- Приём снэпшота по serial ------------------------------------------------
 void readSerial() {
   while (Serial.available()) {
@@ -266,21 +310,19 @@ void handleLine(const char* line) {
   applySnapshot();
 }
 
-// Diff: состав / имя / статус изменились → полная перерисовка (цвет рамки завязан
-// на статус). Иначе — ничего, loop() продолжает анимировать существующие карточки.
+// Diff по-ячеечно: перерисовываем ТОЛЬКО те клетки, где сменился состав / имя /
+// статус (цвет рамки завязан на статус) — без fillScreen и без касания соседей.
+// Неизменившиеся карточки loop() продолжает анимировать как ни в чём не бывало.
 void applySnapshot() {
-  bool changed = false;
   for (int i = 0; i < MAX_SESSIONS; i++) {
     Session &a = sessions[i], &b = incoming[i];
-    if (a.active != b.active ||
+    bool cellChanged = a.active != b.active ||
         (b.active && (a.state != b.state ||
                       strcmp(a.id, b.id) != 0 ||
-                      strcmp(a.name, b.name) != 0))) {
-      changed = true;
-    }
+                      strcmp(a.name, b.name) != 0));
     sessions[i] = b;
+    if (cellChanged) redrawCell(i);
   }
-  if (changed) redrawAll();
 }
 
 void setup() {
