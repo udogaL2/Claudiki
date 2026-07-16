@@ -85,8 +85,10 @@ class Config:
     # канала от ESP. Отдельно от OCTO_DEBUG (тот только сыпет снэпшоты в DEBUG).
     diag: bool = field(default_factory=lambda: _env_bool("OCTO_DIAG"))
     # Открывать serial, НЕ дёргая DTR/RTS — чтобы открытие/переоткрытие порта не
-    # ресетило ESP (авто-reset схема Wemos/NodeMCU). Кандидат-фикс «моргания».
-    serial_no_reset: bool = field(default_factory=lambda: _env_bool("OCTO_SERIAL_NO_RESET"))
+    # ресетило ESP (авто-reset схема Wemos/NodeMCU). Дефолт ВКЛ: дисплею незачем
+    # ребутиться при (пере)подключении моста. Отключить: OCTO_SERIAL_NO_RESET=0.
+    serial_no_reset: bool = field(
+        default_factory=lambda: _env("OCTO_SERIAL_NO_RESET", "1") not in ("0", "false", "False"))
     # Дублировать логи в файл (чтобы «сыпались локально» и переживали сессию).
     log_file: str = field(default_factory=lambda: _env("OCTO_LOG_FILE", ""))
 
