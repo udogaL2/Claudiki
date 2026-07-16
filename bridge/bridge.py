@@ -79,6 +79,7 @@ class Config:
     reaper_sec: float = field(default_factory=lambda: float(_env("OCTO_REAPER_SEC", "2")))
     debounce_ms: int = field(default_factory=lambda: int(_env("OCTO_DEBOUNCE_MS", "100")))
     max_sessions: int = field(default_factory=lambda: int(_env("OCTO_MAX_SESSIONS", "6")))
+    name_max: int = field(default_factory=lambda: int(_env("OCTO_NAME_MAX", "16")))
     mock: bool = field(default_factory=lambda: _env_bool("OCTO_MOCK"))
 
 
@@ -98,6 +99,55 @@ def basename_of(cwd: str) -> str:
     cleaned = (cwd or "").replace("\\", "/").rstrip("/")
     base = cleaned.rsplit("/", 1)[-1] if cleaned else ""
     return base or "session"
+
+
+# Классический шрифт Adafruit GFX — CP437, без Unicode. Кириллицу он не умеет
+# (каждый UTF-8 байт → чужой глиф), поэтому имена транслитерируем в ASCII на мосту.
+_RU_MAP = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+_TRANSLIT = dict(_RU_MAP)
+for _k, _v in _RU_MAP.items():
+    _TRANSLIT[_k.upper()] = _v.capitalize()  # 'ж'->'zh' => 'Ж'->'Zh'; '' остаётся ''
+
+
+def transliterate(s: str) -> str:
+    """RU → латиница. ASCII сохраняется как есть, прочий не-ASCII отбрасывается."""
+    out = []
+    for ch in s:
+        if ch in _TRANSLIT:
+            out.append(_TRANSLIT[ch])
+        elif ord(ch) < 128:
+            out.append(ch)
+        # иначе символ невыразим классическим шрифтом → выкидываем
+    return "".join(out)
+
+
+def shorten_middle(s: str, n: int) -> str:
+    """Обрезка по середине с маркером '~': сохраняет и голову, и хвост.
+
+    Для worktree с общим префиксом это единственный способ оставить карточки
+    различимыми (обрезка с головы схлопнула бы их в одинаковые огрызки).
+    """
+    if n <= 0:
+        return ""
+    if len(s) <= n:
+        return s
+    if n <= 3:  # слишком мало для маркера — просто режем
+        return s[:n]
+    keep = n - 1  # один символ на маркер '~'
+    head = (keep + 1) // 2
+    tail = keep - head
+    return s[:head] + "~" + (s[-tail:] if tail else "")
+
+
+def display_name(cwd: str, max_len: int = 16) -> str:
+    """Готовое к выводу на ESP имя карточки: basename → транслит → обрезка по центру."""
+    return shorten_middle(transliterate(basename_of(cwd)), max_len)
 
 
 def coerce_pid(value: object) -> int | None:
@@ -308,6 +358,7 @@ class Bridge:
 
         now = self._clock()
         cwd = data.get("cwd", "")
+        name = self._name(cwd)
         pid = coerce_pid(data.get("pid"))
 
         with self.lock:
@@ -321,17 +372,15 @@ class Bridge:
 
             if event == "start":
                 if sess is None:
-                    self.sessions[session_id] = Session(
-                        session_id, basename_of(cwd), IDLE, pid, now, now
-                    )
-                    self.log.info("start: %s (%s) pid=%s", session_id, basename_of(cwd), pid)
+                    self.sessions[session_id] = Session(session_id, name, IDLE, pid, now, now)
+                    self.log.info("start: %s (%s) pid=%s", session_id, name, pid)
                 else:
                     sess.state = IDLE
                     sess.last_event = now
                     if pid is not None:
                         sess.pid = pid
                     if cwd:
-                        sess.name = basename_of(cwd)
+                        sess.name = name
                 return self._dirty_set()
 
             new_state = EVENT_TO_STATE.get(event)
@@ -341,23 +390,22 @@ class Bridge:
 
             if sess is None:
                 # событие для незнакомой сессии — создаём на лету (мост мог рестартнуть)
-                self.sessions[session_id] = Session(
-                    session_id, basename_of(cwd), new_state, pid, now, now
-                )
-                self.log.info(
-                    "создана на лету: %s (%s) state=%d", session_id, basename_of(cwd), new_state
-                )
+                self.sessions[session_id] = Session(session_id, name, new_state, pid, now, now)
+                self.log.info("создана на лету: %s (%s) state=%d", session_id, name, new_state)
                 return self._dirty_set()
 
             sess.last_event = now
             if cwd:
-                sess.name = basename_of(cwd)
+                sess.name = name
             if pid is not None:
                 sess.pid = pid
             if sess.state != new_state:
                 sess.state = new_state
                 return self._dirty_set()
             return False
+
+    def _name(self, cwd: str) -> str:
+        return display_name(cwd, self.cfg.name_max)
 
     def _dirty_set(self) -> bool:
         self._dirty.set()

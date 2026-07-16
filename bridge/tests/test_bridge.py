@@ -89,6 +89,53 @@ def test_basename_of(cwd, expected):
     assert b.basename_of(cwd) == expected
 
 
+# --- transliterate ------------------------------------------------------------
+@pytest.mark.parametrize("src,expected", [
+    ("каталог", "katalog"),
+    ("проект", "proekt"),
+    ("Проект", "Proekt"),
+    ("bitrixpet", "bitrixpet"),        # ASCII без изменений
+    ("api-рефактор", "api-refaktor"),  # смесь
+    ("щи", "shchi"),                    # многобуквенный маппинг
+    ("объект", "obekt"),                # ъ выкидывается
+    ("", ""),
+])
+def test_transliterate(src, expected):
+    assert b.transliterate(src) == expected
+
+
+def test_transliterate_drops_other_non_ascii():
+    assert b.transliterate("café→π") == "caf"  # é, →, π невыразимы → выкинуты
+
+
+# --- shorten_middle -----------------------------------------------------------
+@pytest.mark.parametrize("s,n,expected", [
+    ("short", 16, "short"),                 # короче лимита — как есть
+    ("exactly-sixteen!", 16, "exactly-sixteen!"),  # ровно лимит
+    ("feature-knowledgebase-migration-v2", 16, "feature-~tion-v2"),
+    ("abcdefghijklmnop", 8, "abcd~nop"),
+    ("toolongname", 3, "too"),              # слишком мало для маркера
+    ("x", 0, ""),
+])
+def test_shorten_middle(s, n, expected):
+    result = b.shorten_middle(s, n)
+    assert result == expected
+    assert len(result) <= n or n <= 0
+
+
+def test_shorten_middle_keeps_worktrees_distinguishable():
+    a = b.shorten_middle("feature-knowledgebase-migration-v2", 16)
+    c = b.shorten_middle("feature-knowledgebase-migration-v3", 16)
+    assert a != c  # общий префикс, но различимы по хвосту
+
+
+# --- display_name (basename → транслит → обрезка) -----------------------------
+def test_display_name_cyrillic_and_long():
+    assert b.display_name("/home/e/проекты/каталог", 16) == "katalog"
+    long = b.display_name("/repo/.worktrees/feature-knowledgebase-migration-v2", 16)
+    assert long == "feature-~tion-v2" and len(long) <= 16
+
+
 # --- coerce_pid ---------------------------------------------------------------
 @pytest.mark.parametrize("value,expected", [
     (None, None),
@@ -103,6 +150,15 @@ def test_coerce_pid(value, expected):
 
 
 # --- Автомат: start и переходы ------------------------------------------------
+def test_handle_event_stores_display_name(bridge):
+    # кириллица транслитерируется, длинное worktree-имя режется по центру
+    bridge.handle_event({"session_id": "ru", "event": "start", "cwd": "/home/e/проекты/каталог"})
+    assert bridge.sessions["ru"].name == "katalog"
+    bridge.handle_event({"session_id": "wt", "event": "start",
+                         "cwd": "/repo/.worktrees/feature-knowledgebase-migration-v2"})
+    assert bridge.sessions["wt"].name == "feature-~tion-v2"
+
+
 def test_start_creates_idle_session(bridge):
     dirty = bridge.handle_event({"session_id": "a", "event": "start",
                                  "cwd": "/p/proj", "pid": 42})
