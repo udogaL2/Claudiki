@@ -36,11 +36,11 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 #define C_IDLE    0x5AEB
 #define C_ERROR   0xF8AC
 
-// Off-screen буфер: зона одного осьминога. Локальный центр = (30, 44).
-#define BUF_W 60
-#define BUF_H 72
-#define LCX   30
-#define LCY   44
+// Off-screen буфер: зона одного осьминога (~15 КБ RAM, WiFi не используется).
+#define BUF_W 80
+#define BUF_H 96
+#define LCX   40
+#define LCY   48
 GFXcanvas16 octoBuf(BUF_W, BUF_H);
 
 enum State { WORKING, WAITING, IDLE, ERR };
@@ -124,8 +124,8 @@ void drawEyes(GFXcanvas16 &g, int cx, int eyY, State state, float tt) {
   g.drawPixel(exR + look - 1, eyY - 1, GLINT);
 }
 
-// Осьминог: круглое тельце, 6 синус-щупалец, характер под состояние.
-// Алгоритм 1:1 с веб-симулятором, масштаб под буфер 60x72 (GFXcanvas клипует).
+// Осьминог: купол-голова + прямоугольное туловище, 6 синус-щупалец, характер
+// под состояние. Алгоритм 1:1 с веб-симулятором (GFXcanvas клипует лишнее).
 void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
   float tt = phase * 0.14f;                 // ~секунды (TICK_MS=140)
   bool flipped = (state == ERR);
@@ -136,30 +136,36 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
   float breath = sinf(tt * (state == IDLE ? 1.6f : 3.0f));
   int bob = (state == IDLE) ? 0 : (int)roundf(sinf(tt * (state == WORKING ? 4.4f : 2.4f)) * 1.2f);
   int hy = cy + bob + (flipped ? 5 : 0);
-  int R = 13 + (int)roundf(breath * (state == IDLE ? 0.6f : 1.0f));
+  int R = 17 + (int)roundf(breath * (state == IDLE ? 0.6f : 1.0f));
+
+  // прямоугольное туловище ниже купола; щупальца растут от его низа
+  const int torsoDrop = 9;
+  const int seg = 7;
+  int baseY = hy + dir * (R + torsoDrop);
 
   // щупальца (за телом): тейперятся и колышутся синусом с фазовым сдвигом
   const int legs = 6;
-  float step = (2 * R - 6) / (float)(legs - 1);
-  int baseY = hy + dir * (R - 3);
+  float step = (2 * R - 8) / (float)(legs - 1);
   for (int i = 0; i < legs; i++) {
-    float bx = cx - R + 3 + i * step;
+    float bx = cx - R + 4 + i * step;
     float ph = tt * speed + i * 0.75f;
-    for (int s = 0; s < 6; s++) {
-      float sway = sinf(ph + s * 0.55f) * amp * (0.25f + s / 6.0f);
+    for (int s = 0; s < seg; s++) {
+      float sway = sinf(ph + s * 0.55f) * amp * (0.25f + (float)s / seg);
       int yy = baseY + dir * (s * 2);
       int w = (s < 2) ? 3 : (s < 4 ? 2 : 1);
       g.fillRect((int)(bx + sway) - (w >> 1), yy, w, 2, BODY_DARK);
     }
-    int kx = (int)(bx + sinf(ph + 6 * 0.55f) * amp);
-    g.drawPixel(kx, baseY + dir * 12, BODY);
+    int kx = (int)(bx + sinf(ph + seg * 0.55f) * amp);
+    g.drawPixel(kx, baseY + dir * (seg * 2), BODY);
   }
 
-  // тельце + юбка + блик
-  g.fillCircle(cx, hy, R, BODY);
-  if (dir > 0) g.fillRect(cx - R + 2, hy, (R - 2) * 2, R - 4, BODY);
-  else         g.fillRect(cx - R + 2, hy - 1, (R - 2) * 2, 2, BODY);
-  g.fillCircle(cx - 4, hy - 5, 3, BELLY);
+  // тело: купол-голова + прямоугольное туловище + блик
+  int halfW = R - 3;
+  int ty = (baseY < hy) ? baseY : hy, th = abs(baseY - hy);
+  g.fillRect(cx - halfW, ty, halfW * 2, th, BODY);       // прямые бока туловища
+  g.fillCircle(cx, hy, R, BODY);                          // купол-голова
+  if (dir > 0) g.fillRect(cx - halfW + 1, baseY - 3, halfW * 2 - 2, 3, BODY_DARK); // тень
+  g.fillCircle(cx - 5, hy - 6, 4, BELLY);                 // блик
 
   int eyY = hy - (flipped ? -5 : 5);
   drawEyes(g, cx, eyY, state, tt);
