@@ -83,8 +83,9 @@ UART-чипов (CH340 у WeMos D1 mini, CH9102, CP210x, FTDI). Если сов�
    `hooks-settings.example.json`. Путь к скрипту в `command` заменить на реальный.
 
 Маппинг событий: `SessionStart→start` (+pid), `UserPromptSubmit→working`,
-`Notification→waiting`, `Stop→idle`, `SessionEnd→end`, `StopFailure→error`.
-`PreToolUse`/`PostToolUse` намеренно не используются (иначе хук спамил бы на каждый ход).
+`PostToolUse→working`, `Notification→waiting`, `Stop→idle`, `SessionEnd→end`,
+`StopFailure→error`. `PostToolUse→working` возвращает карточку в зелёный после одобрения
+тула (иначе «застряла бы» на жёлтом). `PreToolUse` не вешаем — дублировал бы без пользы.
 
 ## Команда запуска
 

@@ -2,9 +2,13 @@
 """OctoDash hook wrapper.
 
 Тонкая обёртка-хук Claude Code. Читает JSON-конверт хука со stdin, определяет
-событие по hook_event_name, шлёт POST /event на мост. Для SessionStart добавляет
-pid = os.getppid() (родитель обёртки = процесс claude) — единственный захват PID
-за сессию, нужен для liveness в мосту.
+событие по hook_event_name, шлёт POST /event на мост.
+
+Для SessionStart один раз за сессию определяется PID процесса claude (для liveness
+в мосту): обходим дерево процессов вверх и берём ближайшего предка, чья командная
+строка содержит "claude" (устойчиво к промежуточному шеллу). Фолбэк — os.getppid().
+psutil импортируется лениво и только на SessionStart, чтобы частые события
+(working/waiting/idle) оставались лёгкими.
 
 Требования: быстрый, неблокирующий, короткий таймаут, ЛЮБЫЕ ошибки глотаются,
 скрипт ВСЕГДА завершается кодом 0 — хук не должен мешать Claude.
@@ -22,6 +26,7 @@ import urllib.request
 HOOK_TO_EVENT = {
     "SessionStart": "start",
     "UserPromptSubmit": "working",
+    "PostToolUse": "working",   # тул отработал → снова активны (снимает «застревание» на WAITING)
     "Notification": "waiting",
     "Stop": "idle",
     "SessionEnd": "end",
@@ -31,6 +36,62 @@ HOOK_TO_EVENT = {
 HOST = os.environ.get("OCTO_BRIDGE_HOST", "127.0.0.1")
 PORT = os.environ.get("OCTO_BRIDGE_PORT", "8787")
 TIMEOUT = float(os.environ.get("OCTO_HOOK_TIMEOUT", "0.5"))
+
+
+def _looks_like_claude(proc) -> bool:
+    """True, если процесс — это долгоживущий claude, а не транзиентный шелл/хук.
+
+    ВАЖНО: нельзя матчить по подстроке "claude" во всей cmdline — тогда ложно
+    срабатывают предки, у которых в аргументах есть путь к каталогу конфига
+    (~/.claude/shell-snapshots/..., ~/.claude/hooks/octo-notify.py). Именно такой
+    шелл запускает хук и умирает сразу после — reaper убил бы карточку через ~2с.
+    Поэтому смотрим на ИМЯ процесса и basename исполняемого файла/CLI-скрипта.
+    """
+    try:
+        name = (proc.name() or "").lower()
+    except Exception:
+        name = ""
+    if name in ("claude", "claude.exe"):
+        return True  # нативный бинарь (Windows/standalone)
+    try:
+        argv = proc.cmdline()
+    except Exception:
+        argv = []
+    for tok in argv:
+        low = tok.lower().replace("\\", "/")
+        base = low.rsplit("/", 1)[-1]
+        if base in ("claude", "claude.exe"):
+            return True  # запуск скрипта claude напрямую
+        if "claude-code" in low:
+            return True  # node/bun: .../@anthropic-ai/claude-code/cli.js
+    return False
+
+
+def resolve_claude_pid() -> int | None:
+    """PID долгоживущего процесса claude через обход дерева вверх (psutil).
+
+    claude живёт всю сессию; промежуточный шелл, запустивший хук, — нет. Ищем
+    ближайшего предка, который действительно является claude (см. _looks_like_claude).
+    Если уверенно найти не удалось — возвращаем None: мост трактует None как
+    «PID неизвестен» и НЕ реапит сессию по liveness (лучше, чем вернуть PID
+    транзиентного шелла и гарантированно убить карточку через пару секунд).
+    """
+    try:
+        import psutil
+    except Exception:
+        return None  # без psutil дерево не обойти; None безопаснее, чем getppid()
+    try:
+        proc = psutil.Process(os.getppid())
+        for _ in range(12):  # не более 12 уровней вверх
+            if _looks_like_claude(proc):
+                return proc.pid
+            parent = proc.parent()
+            if parent is None:
+                break
+            proc = parent
+    except Exception:
+        pass
+    return None
 
 
 def main() -> None:
@@ -51,8 +112,7 @@ def main() -> None:
         "cwd": envelope.get("cwd", ""),
     }
     if event == "start":
-        # родитель обёртки — процесс claude; ловим его PID один раз за сессию
-        payload["pid"] = os.getppid()
+        payload["pid"] = resolve_claude_pid()  # захват PID claude один раз за сессию
 
     try:
         data = json.dumps(payload).encode("utf-8")

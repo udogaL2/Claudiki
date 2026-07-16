@@ -12,6 +12,7 @@
 // Зависимости (Arduino Library Manager): Adafruit GFX, Adafruit ILI9341, ArduinoJson (v6).
 
 #include <SPI.h>
+#include <math.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <ArduinoJson.h>
@@ -24,11 +25,13 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
 #define BG        0x0000
 #define GRIDLINE  0x0861
-#define BODY      0x9CD3
-#define BODY_DARK 0x4A15
-#define EYE_LIGHT 0xE73C
-#define EYE_DARK  0x18E3
-#define C_WORKING 0x37E7
+#define BODY      0xBC7F   // фиолетовое тельце
+#define BODY_DARK 0x7A9A   // тёмно-фиолетовый (щупальца/тень)
+#define BELLY     0xDE1F   // светлый блик на тельце
+#define EYE_LIGHT 0xF7BF
+#define EYE_DARK  0x10C4
+#define GLINT     0x8FBD   // бирюзовый блик в глазу
+#define C_WORKING 0x37E7   // статусные цвета = палитра симулятора (RGB565)
 #define C_WAITING 0xFEA0
 #define C_IDLE    0x5AEB
 #define C_ERROR   0xF8AC
@@ -96,64 +99,99 @@ void drawCardFrame(int col, int row, Session &s) {
 }
 
 // Рисуем в буфер g (а не на экран). Координаты — локальные для буфера.
-void drawEyes(GFXcanvas16 &g, int cx, int oy, State state) {
-  if (state == ERR) {
-    g.drawLine(cx - 6, oy - 4, cx - 2, oy, C_ERROR);
-    g.drawLine(cx - 2, oy - 4, cx - 6, oy, C_ERROR);
-    g.drawLine(cx + 2, oy - 4, cx + 6, oy, C_ERROR);
-    g.drawLine(cx + 6, oy - 4, cx + 2, oy, C_ERROR);
-  } else if (state == IDLE) {
-    g.drawFastHLine(cx - 7, oy - 2, 4, EYE_LIGHT);
-    g.drawFastHLine(cx + 3, oy - 2, 4, EYE_LIGHT);
-  } else {
-    g.fillRect(cx - 7, oy - 5, 4, 4, EYE_LIGHT);
-    g.fillRect(cx + 3, oy - 5, 4, 4, EYE_LIGHT);
-    g.fillRect(cx - 6, oy - 4, 2, 2, EYE_DARK);
-    g.fillRect(cx + 4, oy - 4, 2, 2, EYE_DARK);
-  }
-}
-
-void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
-  if (state == ERR) {
-    int oy = cy + 6;
-    for (int i = 0; i < 4; i++) {
-      int tx = cx - 9 + i * 6;
-      g.fillRect(tx - 1, oy - 12, 3, 8, BODY_DARK);
-    }
-    g.fillRect(cx - 12, oy - 4, 24, 16, BODY);
-    g.fillRect(cx - 9, oy + 9, 18, 4, BODY);
-    drawEyes(g, cx, oy, state);
+// Глаза в координатах буфера. tt — время (сек) для «взгляда» в WORKING.
+void drawEyes(GFXcanvas16 &g, int cx, int eyY, State state, float tt) {
+  int exL = cx - 6, exR = cx + 6;
+  if (state == ERR) {                       // крестики
+    g.drawLine(exL - 3, eyY - 3, exL + 3, eyY + 3, C_ERROR);
+    g.drawLine(exL + 3, eyY - 3, exL - 3, eyY + 3, C_ERROR);
+    g.drawLine(exR - 3, eyY - 3, exR + 3, eyY + 3, C_ERROR);
+    g.drawLine(exR + 3, eyY - 3, exR - 3, eyY + 3, C_ERROR);
     return;
   }
-
-  int bob = (state == IDLE) ? 0 : (sin(phase * 0.6) >= 0 ? -1 : 1);
-  int oy = cy + bob;
-
-  for (int i = 0; i < 4; i++) {
-    int tx = cx - 9 + i * 6;
-    int sway = 0;
-    if (state == WORKING) sway = (sin(phase * 0.7 + i) >= 0) ? 2 : -2;
-    else if (state != IDLE) sway = (sin(phase * 0.7 + i) >= 0) ? 1 : -1;
-    g.fillRect(tx - 1 + sway, oy + 4, 3, 8, BODY_DARK);
+  if (state == IDLE) {                      // закрытые глаза
+    g.drawFastHLine(exL - 3, eyY, 6, EYE_LIGHT);
+    g.drawFastHLine(exR - 3, eyY, 6, EYE_LIGHT);
+    return;
   }
+  int look = (state == WORKING) ? (int)roundf(sinf(tt * 2.2f) * 1.4f) : 0;
+  int r = (state == WAITING) ? 4 : 3;       // WAITING — глаза шире
+  g.fillCircle(exL, eyY, r, EYE_LIGHT);
+  g.fillCircle(exR, eyY, r, EYE_LIGHT);
+  g.fillCircle(exL + look, eyY + 1, 1, EYE_DARK);
+  g.fillCircle(exR + look, eyY + 1, 1, EYE_DARK);
+  g.drawPixel(exL + look - 1, eyY - 1, GLINT);
+  g.drawPixel(exR + look - 1, eyY - 1, GLINT);
+}
 
-  g.fillRect(cx - 12, oy - 10, 24, 16, BODY);
-  g.fillRect(cx - 9, oy - 13, 18, 4, BODY);
+// Осьминог: круглое тельце, 6 синус-щупалец, характер под состояние.
+// Алгоритм 1:1 с веб-симулятором, масштаб под буфер 60x72 (GFXcanvas клипует).
+void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
+  float tt = phase * 0.14f;                 // ~секунды (TICK_MS=140)
+  bool flipped = (state == ERR);
+  int dir = flipped ? -1 : 1;
 
-  drawEyes(g, cx, oy, state);
+  float speed = state == WORKING ? 7.5f : state == WAITING ? 2.2f : state == IDLE ? 1.4f : 5.5f;
+  float amp   = state == WORKING ? 2.6f : state == WAITING ? 1.0f : state == IDLE ? 0.7f : 2.0f;
+  float breath = sinf(tt * (state == IDLE ? 1.6f : 3.0f));
+  int bob = (state == IDLE) ? 0 : (int)roundf(sinf(tt * (state == WORKING ? 4.4f : 2.4f)) * 1.2f);
+  int hy = cy + bob + (flipped ? 5 : 0);
+  int R = 13 + (int)roundf(breath * (state == IDLE ? 0.6f : 1.0f));
 
-  if (state == WAITING) {
-    for (int k = 0; k < 3; k++) {
-      int p = (phase + k * 4) % 12;
-      int yy = cy - 14 - p * 2;
-      int size = 2 + p / 4;
-      g.drawRect(cx + 10 - size / 2, yy, size, size, 0xAD75);
+  // щупальца (за телом): тейперятся и колышутся синусом с фазовым сдвигом
+  const int legs = 6;
+  float step = (2 * R - 6) / (float)(legs - 1);
+  int baseY = hy + dir * (R - 3);
+  for (int i = 0; i < legs; i++) {
+    float bx = cx - R + 3 + i * step;
+    float ph = tt * speed + i * 0.75f;
+    for (int s = 0; s < 6; s++) {
+      float sway = sinf(ph + s * 0.55f) * amp * (0.25f + s / 6.0f);
+      int yy = baseY + dir * (s * 2);
+      int w = (s < 2) ? 3 : (s < 4 ? 2 : 1);
+      g.fillRect((int)(bx + sway) - (w >> 1), yy, w, 2, BODY_DARK);
     }
+    int kx = (int)(bx + sinf(ph + 6 * 0.55f) * amp);
+    g.drawPixel(kx, baseY + dir * 12, BODY);
   }
-  if (state == WORKING) {
-    int p = phase % 3;
-    for (int k = 0; k < 3; k++) {
-      if (k == p) g.fillRect(cx + 12, cy - 10 + k * 4, 2, 2, C_WORKING);
+
+  // тельце + юбка + блик
+  g.fillCircle(cx, hy, R, BODY);
+  if (dir > 0) g.fillRect(cx - R + 2, hy, (R - 2) * 2, R - 4, BODY);
+  else         g.fillRect(cx - R + 2, hy - 1, (R - 2) * 2, 2, BODY);
+  g.fillCircle(cx - 4, hy - 5, 3, BELLY);
+
+  int eyY = hy - (flipped ? -5 : 5);
+  drawEyes(g, cx, eyY, state, tt);
+
+  // акценты по состоянию
+  if (state == WORKING) {                   // 🚬 сигарета у рта + дым
+    int mx = cx + 1, my = hy + 5;
+    g.fillRect(mx, my, 3, 3, 0xCD0B);                 // фильтр у рта (охра)
+    g.fillRect(mx + 3, my, 15, 3, EYE_LIGHT);         // толстый длинный корпус
+    g.drawFastHLine(mx + 4, my, 11, 0xFFFF);          // блик
+    bool hot = (((int)(tt * 3)) % 2) == 0;            // уголёк подрагивает
+    g.fillRect(mx + 18, my, 3, 3, hot ? 0xFF0C : 0xFC00); // большой тлеющий уголёк
+    int tipx = mx + 22, tipy = my - 1;
+    for (int s = 0; s < 6; s++) {                     // густой дым волнами вверх
+      float st = fmodf(tt * 1.2f + s * 0.4f, 1.0f);
+      int yy = tipy - 1 - (int)(st * 26);
+      int xx = tipx + (int)roundf(sinf(tt * 2.1f + s * 1.1f + st * 3.2f) * 5);
+      g.fillCircle(xx, yy, st < 0.4f ? 1 : (st < 0.75f ? 2 : 3), 0x9CD3); // серый дым
+    }
+  } else if (state == WAITING) {            // «?» — ждёт тебя
+    int yy = hy - R - 8;
+    g.fillRect(cx + 8, yy, 4, 1, C_WAITING);
+    g.drawPixel(cx + 11, yy + 1, C_WAITING);
+    g.drawPixel(cx + 10, yy + 2, C_WAITING);
+    g.drawPixel(cx + 10, yy + 4, C_WAITING);
+  } else if (state == IDLE) {               // «z z» — спит
+    int zt = ((int)(tt * 1.2f)) % 3;
+    for (int z = 0; z <= zt; z++) {
+      int zx = cx + 7 + z * 4, zy = hy - R - 2 - z * 5;
+      g.fillRect(zx, zy, 3, 1, C_IDLE);
+      g.fillRect(zx, zy + 2, 3, 1, C_IDLE);
+      g.drawLine(zx + 2, zy, zx, zy + 2, C_IDLE);
     }
   }
 }

@@ -437,12 +437,22 @@ class Bridge:
                 "сессий больше %d, не влезли: %s", limit, [s.name for s in ordered[limit:]]
             )
         visible = ordered[:limit]
-        return {
-            "v": 1,
-            "sessions": [
-                {"id": s.session_id, "name": s.name, "state": s.state} for s in visible
-            ],
-        }
+        return {"v": 1, "sessions": self._disambiguate(visible)}
+
+    def _disambiguate(self, visible: list[Session]) -> list[dict]:
+        """Готовит карточки; при совпадении имён (несколько сессий в одном репо/
+        worktree) добавляет короткий суффикс из session_id, чтобы различать."""
+        names = [s.name for s in visible]
+        dups = {n for n in names if names.count(n) > 1}
+        out = []
+        for s in visible:
+            name = s.name
+            if name in dups:
+                suffix = "#" + s.session_id[:4]
+                base = shorten_middle(name, max(1, self.cfg.name_max - len(suffix)))
+                name = base + suffix
+            out.append({"id": s.session_id, "name": name, "state": s.state})
+        return out
 
     def snapshot_line(self) -> str:
         return json.dumps(self.build_snapshot(), separators=(",", ":"), ensure_ascii=False) + "\n"
@@ -548,6 +558,8 @@ def bind_singleton(cfg: Config) -> ThreadingHTTPServer | None:
     """Биндим порт. Успех → мы единственный инстанс. EADDRINUSE → мост уже есть."""
     # НЕ включаем SO_REUSEADDR: иначе на Windows второй инстанс тоже забиндится
     ThreadingHTTPServer.allow_reuse_address = False
+    # daemon-потоки запросов: не копятся и не блокируют завершение за долгую сессию
+    ThreadingHTTPServer.daemon_threads = True
     try:
         return ThreadingHTTPServer((cfg.host, cfg.port), Handler)
     except OSError as exc:

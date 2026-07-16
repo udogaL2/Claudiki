@@ -5,6 +5,7 @@
     "hooks": {
       "SessionStart":     [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
       "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
+      "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
       "Notification":     [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
       "Stop":             [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
       "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }]
@@ -15,6 +16,7 @@
     "hooks": {
       "SessionStart":     [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
       "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
+      "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
       "Notification":     [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
       "Stop":             [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
       "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }]

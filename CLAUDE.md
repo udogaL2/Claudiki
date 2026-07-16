@@ -129,10 +129,16 @@ python -m pytest tests/test_bridge.py::test_reap_removes_dead_pids   # один 
 нужен для liveness).
 
 Маппинг хук Claude Code → `event` моста:
-`SessionStart`→`start` (+pid), `UserPromptSubmit`→`working`, `Notification`→`waiting`,
-`Stop`→`idle`, `SessionEnd`→`end`, `StopFailure`→`error` (опционально).
-Регистрировать на **user-уровне** (`~/.claude/settings.json`), чтобы работало во всех проектах и
-worktree. **Не** вешать `PreToolUse`/`PostToolUse` — события должны идти раз в ход, а не на каждый токен.
+`SessionStart`→`start` (+pid), `UserPromptSubmit`→`working`, `PostToolUse`→`working`,
+`Notification`→`waiting`, `Stop`→`idle`, `SessionEnd`→`end`, `StopFailure`→`error` (опц.).
+`PostToolUse`→`working` снимает «застревание» на `WAITING` после одобрения тула. `PreToolUse`
+намеренно НЕ вешаем (дублировал бы события без пользы). Регистрировать на **user-уровне**
+(`~/.claude/settings.json`), чтобы работало во всех проектах и worktree.
+
+PID для liveness определяет `resolve_claude_pid()` в обёртке: обход дерева процессов вверх и
+матч по **имени** процесса/basename (`claude`/`claude.exe`/`claude-code`), не по подстроке во
+всей cmdline (иначе ложно ловятся предки с `~/.claude/...` в аргументах). Не нашли уверенно →
+`pid=None` (мост не реапит по liveness — безопаснее, чем убить карточку по PID транзиентного шелла).
 
 ## Конфигурация (env-переменные с дефолтами)
 

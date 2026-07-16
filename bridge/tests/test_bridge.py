@@ -252,6 +252,35 @@ def test_snapshot_respects_max_sessions(clock, liveness, sink):
     assert [s["id"] for s in snap["sessions"]] == ["s0", "s1", "s2"]
 
 
+def test_duplicate_names_get_session_suffix(clock, liveness, sink):
+    # два claude в одном репо → одинаковый basename → добавляем суффикс session_id
+    cfg = b.Config(max_sessions=6)
+    br = b.Bridge(cfg, sink=sink, clock=clock, is_alive=liveness)
+    br.handle_event({"session_id": "99ce5dce-aaaa", "event": "working", "cwd": "/x/Claudiki"})
+    br.handle_event({"session_id": "8d7d7c21-bbbb", "event": "waiting", "cwd": "/x/Claudiki"})
+    names = {s["id"]: s["name"] for s in br.build_snapshot()["sessions"]}
+    assert names["99ce5dce-aaaa"] == "Claudiki#99ce"
+    assert names["8d7d7c21-bbbb"] == "Claudiki#8d7d"
+    assert names["99ce5dce-aaaa"] != names["8d7d7c21-bbbb"]
+
+
+def test_unique_names_keep_no_suffix(bridge):
+    bridge.handle_event({"session_id": "a1", "event": "idle", "cwd": "/x/alpha"})
+    bridge.handle_event({"session_id": "b2", "event": "idle", "cwd": "/x/beta"})
+    names = {s["name"] for s in bridge.build_snapshot()["sessions"]}
+    assert names == {"alpha", "beta"}  # без суффиксов
+
+
+def test_duplicate_long_names_stay_within_limit(clock, liveness, sink):
+    cfg = b.Config(max_sessions=6, name_max=16)
+    br = b.Bridge(cfg, sink=sink, clock=clock, is_alive=liveness)
+    cwd = "/repo/.worktrees/feature-knowledgebase-migration"
+    br.handle_event({"session_id": "aaaa1111", "event": "working", "cwd": cwd})
+    br.handle_event({"session_id": "bbbb2222", "event": "working", "cwd": cwd})
+    for s in br.build_snapshot()["sessions"]:
+        assert len(s["name"]) <= 16
+
+
 def test_snapshot_field_shape(bridge):
     bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/proj"})
     snap = bridge.build_snapshot()
