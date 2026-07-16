@@ -24,7 +24,7 @@
 //           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
 //   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
 #define ESP_DIAG 1
-#define FW_VER   3   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
+#define FW_VER   4   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
 
 #define TFT_CS   D8
 #define TFT_DC   D4
@@ -96,6 +96,8 @@ size_t lineLen = 0;
 #if ESP_DIAG
 unsigned long lastStat = 0;         // когда последний раз печатали stat
 unsigned long maxFrameUs = 0;       // макс. время рендера кадра за интервал (мкс)
+unsigned long maxDrawUs = 0;        // макс. время рисования ОДНОГО осьминога в буфер (CPU)
+unsigned long maxBlitUs = 0;        // макс. время блита ОДНОГО осьминога на экран (SPI)
 uint16_t diagSnaps = 0;             // принято снэпшотов
 uint16_t diagBadJson = 0;           // снэпшотов не распарсилось
 uint16_t diagCells = 0;             // перерисовано ячеек (diff)
@@ -117,11 +119,13 @@ void diagPrintStat() {
   Serial.print(F(",\"heap\":"));                     Serial.print(ESP.getFreeHeap());
   Serial.print(F(",\"frag\":"));                     Serial.print(ESP.getHeapFragmentation());
   Serial.print(F(",\"maxframe_us\":"));              Serial.print(maxFrameUs);
+  Serial.print(F(",\"draw_us\":"));                  Serial.print(maxDrawUs);
+  Serial.print(F(",\"blit_us\":"));                  Serial.print(maxBlitUs);
   Serial.print(F(",\"snaps\":"));                    Serial.print(diagSnaps);
   Serial.print(F(",\"cells\":"));                    Serial.print(diagCells);
   Serial.print(F(",\"badjson\":"));                  Serial.print(diagBadJson);
   Serial.println(F("}"));
-  maxFrameUs = 0;   // окно замера обнуляем; счётчики snaps/cells/badjson — накопительные
+  maxFrameUs = 0; maxDrawUs = 0; maxBlitUs = 0;   // окна замеров обнуляем
 }
 #endif
 
@@ -307,15 +311,25 @@ void updateOctopusArea(int col, int row, Session &s, float tt) {
   int cx = x0 + bw / 2, cy = y0 + bh / 2 - 6;
 
   // 1. собираем кадр в буфере (в RAM)
+#if ESP_DIAG
+  unsigned long _d0 = micros();
+#endif
   octoBuf.fillScreen(BG);
   drawOctopus(octoBuf, LCX, LCY, s.state, tt, s.sub);
+#if ESP_DIAG
+  unsigned long _d1 = micros();
+#endif
 
   // 2. выкидываем буфер ОДНИМ блоком: одно окно + потоковый writePixels.
-  //    (drawRGBBitmap у Adafruit_ILI9341 идёт пиксель-за-пикселем → ~40мс/осьминог!)
   tft.startWrite();
   tft.setAddrWindow(cx - LCX, cy - LCY, BUF_W, BUF_H);
   tft.writePixels(octoBuf.getBuffer(), (uint32_t)BUF_W * BUF_H);
   tft.endWrite();
+#if ESP_DIAG
+  unsigned long _d2 = micros();
+  if (_d1 - _d0 > maxDrawUs) maxDrawUs = _d1 - _d0;   // рисование в буфер (CPU)
+  if (_d2 - _d1 > maxBlitUs) maxBlitUs = _d2 - _d1;   // блит на экран (SPI)
+#endif
 
   // 3. точка-статус (вне буфера, крошечная) — рисуем напрямую
   bool blink = (s.state != WAITING) || (((int)(tt * 3)) & 1);
