@@ -1,0 +1,23 @@
+{
+  "_comment": "Скопируйте блок hooks в ~/.claude/settings.json (user-level). Замените путь на реальный до octo-notify.py. Windows: используйте python и абсолютный путь.",
+
+  "_example_linux": {
+    "hooks": {
+      "SessionStart":     [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
+      "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
+      "Notification":     [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
+      "Stop":             [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }],
+      "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "python3 ~/.claude/hooks/octo-notify.py" }] }]
+    }
+  },
+
+  "_example_windows": {
+    "hooks": {
+      "SessionStart":     [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
+      "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
+      "Notification":     [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
+      "Stop":             [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }],
+      "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "python C:\\Users\\Evgenii\\.claude\\hooks\\octo-notify.py" }] }]
+    }
+  }
+}

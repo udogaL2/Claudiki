@@ -1,0 +1,3 @@
+# OctoDash bridge dependencies
+pyserial>=3.5      # обязателен: отдача снэпшотов на ESP по USB serial
+psutil>=5.9        # опционально: проверка живости PID (есть ctypes/os.kill фолбэк)
