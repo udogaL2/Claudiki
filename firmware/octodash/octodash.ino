@@ -24,6 +24,7 @@
 //           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
 //   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
 #define ESP_DIAG 1
+#define FW_VER   3   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
 
 #define TFT_CS   D8
 #define TFT_DC   D4
@@ -111,7 +112,8 @@ void diagPrintBoot() {
 void diagPrintStat() {
   int nActive = 0;
   for (int i = 0; i < MAX_SESSIONS; i++) if (sessions[i].active) nActive++;
-  Serial.print(F("{\"esp\":\"stat\",\"n\":"));       Serial.print(nActive);
+  Serial.print(F("{\"esp\":\"stat\",\"ver\":"));     Serial.print(FW_VER);
+  Serial.print(F(",\"n\":"));                        Serial.print(nActive);
   Serial.print(F(",\"heap\":"));                     Serial.print(ESP.getFreeHeap());
   Serial.print(F(",\"frag\":"));                     Serial.print(ESP.getHeapFragmentation());
   Serial.print(F(",\"maxframe_us\":"));              Serial.print(maxFrameUs);
@@ -368,7 +370,7 @@ void readSerial() {
 }
 
 void handleLine(const char* line) {
-  StaticJsonDocument<1024> doc;
+  StaticJsonDocument<2048> doc;   // запас на 6 сессий + суб-агенты (иначе NoMemory → пусто)
   if (deserializeJson(doc, line)) {         // не JSON — игнор (переполнение UART/буфера?)
 #if ESP_DIAG
     diagBadJson++;
@@ -417,6 +419,9 @@ void applySnapshot() {
 }
 
 void setup() {
+  // RX-буфер больше дефолтных 256Б: снэпшот 6 сессий ~300+Б, и пока идёт долгий
+  // рендер, входящие байты копятся — иначе теряются/склеиваются → битый/пустой JSON.
+  Serial.setRxBufferSize(1024);
   Serial.begin(115200);
 #if ESP_DIAG
   diagPrintBoot();   // причина сброса + heap — первым делом после старта serial
