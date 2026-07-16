@@ -247,7 +247,7 @@
     const breath= Math.sin(tt*(state===I?1.6:3.0));
     const bob   = state===I?0 : Math.round(Math.sin(tt*(state===W?4.4:2.4))*1.2);
     const hy = cy + bob + (flipped?5:0);
-    const R  = 17 + Math.round(breath*(state===I?0.6:1.1));
+    const R  = 17;   // фикс. радиус (в прошивке сфера предрасчитана под этот R)
     // --- щупальца: корни тёмные (прячутся под телом) → светлые к кончику ---
     const baseHW = Math.round(R*0.66), rootY = hy + dir*(R-4);
     const legs=6, seg=9, step=(2*baseHW-2)/(legs-1);

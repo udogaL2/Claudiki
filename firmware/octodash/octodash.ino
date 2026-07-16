@@ -40,12 +40,20 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 #define C_IDLE    0x5AEB
 #define C_ERROR   0xF8AC
 
-// Off-screen буфер: зона одного осьминога (~15 КБ RAM, WiFi не используется).
-#define BUF_W 80
-#define BUF_H 96
-#define LCX   40
-#define LCY   48
+// Off-screen буфер: зона одного осьминога. Ужат под реальный силуэт (меньше пустого
+// чёрного → меньше пикселей по SPI за кадр). ~9 КБ RAM, WiFi не используется.
+#define BUF_W 64
+#define BUF_H 72
+#define LCX   24
+#define LCY   30
 GFXcanvas16 octoBuf(BUF_W, BUF_H);
+
+// Предрасчёт глянцевой сферы: считается ОДИН раз в setup() (дорогой per-pixel
+// sqrt/float), в кадре только копируется — иначе 6 сфер = слайдшоу.
+#define SPH_R 17
+#define SPH_D (2 * SPH_R + 1)
+uint16_t sphereTile[SPH_D * SPH_D];
+bool     sphereMask[SPH_D * SPH_D];
 
 enum State { WORKING, WAITING, IDLE, ERR };
 
@@ -66,8 +74,7 @@ Session sessions[MAX_SESSIONS];   // то, что сейчас на экране
 Session incoming[MAX_SESSIONS];   // распарсенный снэпшот
 
 unsigned long lastTick = 0;
-const unsigned long TICK_MS = 50;   // ~20 fps (плавнее прежних 140мс/~7fps)
-int t = 0;
+const unsigned long TICK_MS = 40;   // цель ~25 fps; время анимации от millis() (см. loop)
 
 // --- Serial line reader ------------------------------------------------------
 static const size_t LINE_MAX = 512;
@@ -137,18 +144,31 @@ uint16_t lerp565(uint16_t a, uint16_t b, float t) {
   return (uint16_t)((r << 11) | (g << 5) | bl);
 }
 
-// Глянцевая сфера: радиальный градиент (свет сверху-слева) + блики. Пиксельно —
-// на ESP тянет (WiFi выключен). Это «вариант 3» из style-lab.
-void sphereBody(GFXcanvas16 &g, int cx, int hy, int R) {
+// Один раз считаем радиальный градиент сферы в тайл (свет сверху-слева).
+void buildSphere() {
+  const int R = SPH_R;
   const float lx = -R * 0.34f, ly = -R * 0.42f, spread = 1.5f;
   for (int y = -R; y <= R; y++) {
-    int dx = (int)floorf(sqrtf((float)(R * R - y * y)));
-    for (int x = -dx; x <= dx; x++) {
-      float nx = (x - lx) / R, ny = (y - ly) / R;
+    for (int x = -R; x <= R; x++) {
+      int idx = (y + R) * SPH_D + (x + R);
+      if (x * x + y * y > R * R) { sphereMask[idx] = false; continue; }
+      float nx = (x - lx) / (float)R, ny = (y - ly) / (float)R;
       float d = sqrtf(nx * nx + ny * ny) / spread;
-      g.drawPixel(cx + x, hy + y, lerp565(BODY_LIGHT, BODY_BOT, d));
+      sphereTile[idx] = lerp565(BODY_LIGHT, BODY_BOT, d);
+      sphereMask[idx] = true;
     }
   }
+}
+
+// Тело: копируем предрасчитанный тайл (целочисленно, быстро) + блик поверх.
+void sphereBody(GFXcanvas16 &g, int cx, int hy) {
+  for (int yy = 0; yy < SPH_D; yy++) {
+    for (int xx = 0; xx < SPH_D; xx++) {
+      int idx = yy * SPH_D + xx;
+      if (sphereMask[idx]) g.drawPixel(cx - SPH_R + xx, hy - SPH_R + yy, sphereTile[idx]);
+    }
+  }
+  const int R = SPH_R;
   g.fillCircle(cx - (int)(R * 0.32f), hy - (int)(R * 0.38f), (int)(R * 0.26f), lerp565(BODY_LIGHT, 0xFFFF, 0.6f));
   g.fillCircle(cx - (int)(R * 0.30f), hy - (int)(R * 0.36f), (int)(R * 0.12f), 0xFFFF);
   g.fillCircle(cx + (int)(R * 0.34f), hy + (int)(R * 0.20f), 2, lerp565(BODY_MID, BODY_LIGHT, 0.5f));
@@ -156,17 +176,15 @@ void sphereBody(GFXcanvas16 &g, int cx, int hy, int R) {
 
 // Осьминог: глянцевая сфера-тело + 6 синус-щупалец, характер под состояние.
 // Алгоритм 1:1 с веб-эмулятором (GFXcanvas клипует лишнее).
-void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
-  float tt = phase * (TICK_MS / 1000.0f);   // секунды (скорость не зависит от FPS)
+void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt) {
   bool flipped = (state == ERR);
   int dir = flipped ? -1 : 1;
 
   float speed = state == WORKING ? 7.5f : state == WAITING ? 2.2f : state == IDLE ? 1.4f : 5.5f;
   float amp   = state == WORKING ? 2.6f : state == WAITING ? 1.0f : state == IDLE ? 0.7f : 2.0f;
-  float breath = sinf(tt * (state == IDLE ? 1.6f : 3.0f));
   int bob = (state == IDLE) ? 0 : (int)roundf(sinf(tt * (state == WORKING ? 4.4f : 2.4f)) * 1.2f);
   int hy = cy + bob + (flipped ? 5 : 0);
-  int R = 17 + (int)roundf(breath * (state == IDLE ? 0.6f : 1.0f));
+  const int R = SPH_R;                       // фикс. радиус — сфера предрасчитана
 
   // щупальца: корни ВНУТРИ тела (прикрыты сферой), тёмные у основания → светлые
   // к кончику. Тело рисуется поверх → бесшовное крепление без светлого канта.
@@ -188,7 +206,7 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
   }
 
   // тело: глянцевая сфера (одинакова для всех состояний; сверху — лицо/акценты)
-  sphereBody(g, cx, hy, R);
+  sphereBody(g, cx, hy);
 
   int eyY = hy - dir * 4;
   drawEyes(g, cx, eyY, state, tt);
@@ -225,7 +243,7 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, int phase) {
   }
 }
 
-void updateOctopusArea(int col, int row, Session &s, int phase) {
+void updateOctopusArea(int col, int row, Session &s, float tt) {
   int bw = cellW - 4, bh = cellH - 4;
   int x0 = col * cellW + 2, y0 = row * cellH + 2;
   uint16_t c = stateColor(s.state);
@@ -233,13 +251,13 @@ void updateOctopusArea(int col, int row, Session &s, int phase) {
 
   // 1. собираем кадр в буфере (в RAM)
   octoBuf.fillScreen(BG);
-  drawOctopus(octoBuf, LCX, LCY, s.state, phase);
+  drawOctopus(octoBuf, LCX, LCY, s.state, tt);
 
   // 2. выкидываем весь буфер на экран одной операцией — без чёрной вспышки
   tft.drawRGBBitmap(cx - LCX, cy - LCY, octoBuf.getBuffer(), BUF_W, BUF_H);
 
   // 3. точка-статус (вне буфера, крошечная) — рисуем напрямую
-  bool blink = (s.state != WAITING) || ((phase % 6) < 3);
+  bool blink = (s.state != WAITING) || (((int)(tt * 3)) & 1);
   tft.fillRect(x0 + 3, y0 + 3, 3, 3, blink ? c : BG);
 }
 
@@ -270,7 +288,7 @@ void redrawCell(int i) {
   clearCell(col, row);
   if (sessions[i].active) {
     drawCardFrame(col, row, sessions[i]);
-    updateOctopusArea(col, row, sessions[i], t + i * 2);
+    updateOctopusArea(col, row, sessions[i], millis() / 1000.0f + i * 0.4f);
   }
 }
 
@@ -333,6 +351,7 @@ void setup() {
   tft.begin();
   tft.setRotation(3);
 
+  buildSphere();  // предрасчёт тела один раз
   for (int i = 0; i < MAX_SESSIONS; i++) sessions[i].active = false;
   redrawAll();   // пустая сетка до первого снэпшота
 }
@@ -343,10 +362,12 @@ void loop() {
   unsigned long now = millis();
   if (now - lastTick > TICK_MS) {
     lastTick = now;
-    t++;
+    // Время анимации — от millis() (wall-clock), НЕ от числа тиков: под нагрузкой
+    // кадры пропускаются, но скорость остаётся правильной (без слоу-мо).
+    float tt = now / 1000.0f;
     for (int i = 0; i < MAX_SESSIONS; i++) {
       if (sessions[i].active) {
-        updateOctopusArea(i % COLS, i / COLS, sessions[i], t + i * 2);
+        updateOctopusArea(i % COLS, i / COLS, sessions[i], tt + i * 0.4f);
       }
     }
   }
