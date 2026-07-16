@@ -308,8 +308,12 @@ void updateOctopusArea(int col, int row, Session &s, float tt) {
   octoBuf.fillScreen(BG);
   drawOctopus(octoBuf, LCX, LCY, s.state, tt, s.sub);
 
-  // 2. выкидываем весь буфер на экран одной операцией — без чёрной вспышки
-  tft.drawRGBBitmap(cx - LCX, cy - LCY, octoBuf.getBuffer(), BUF_W, BUF_H);
+  // 2. выкидываем буфер ОДНИМ блоком: одно окно + потоковый writePixels.
+  //    (drawRGBBitmap у Adafruit_ILI9341 идёт пиксель-за-пикселем → ~40мс/осьминог!)
+  tft.startWrite();
+  tft.setAddrWindow(cx - LCX, cy - LCY, BUF_W, BUF_H);
+  tft.writePixels(octoBuf.getBuffer(), (uint32_t)BUF_W * BUF_H);
+  tft.endWrite();
 
   // 3. точка-статус (вне буфера, крошечная) — рисуем напрямую
   bool blink = (s.state != WAITING) || (((int)(tt * 3)) & 1);
@@ -420,7 +424,7 @@ void setup() {
   cellW = W / COLS;
   cellH = H / ROWS;
 
-  tft.begin();
+  tft.begin(40000000);   // 40 МГц SPI — быстрый блочный вывод буфера
   tft.setRotation(3);
 
   buildSphere();  // предрасчёт тела один раз
