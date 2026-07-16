@@ -130,10 +130,16 @@ python -m pytest tests/test_bridge.py::test_reap_removes_dead_pids   # один 
 
 Маппинг хук Claude Code → `event` моста:
 `SessionStart`→`start` (+pid), `UserPromptSubmit`→`working`, `PostToolUse`→`working`,
-`Notification`→`waiting`, `Stop`→`idle`, `SessionEnd`→`end`, `StopFailure`→`error` (опц.).
-`PostToolUse`→`working` снимает «застревание» на `WAITING` после одобрения тула. `PreToolUse`
-намеренно НЕ вешаем (дублировал бы события без пользы). Регистрировать на **user-уровне**
-(`~/.claude/settings.json`), чтобы работало во всех проектах и worktree.
+`Notification`→`waiting`, `Stop`→`idle`, `SessionEnd`→`end`, `StopFailure`→`error` (опц.),
+`PreToolUse` (matcher `Task`)→`subagent`, `SubagentStop`→`subagent_done`.
+`PostToolUse`→`working` снимает «застревание» на `WAITING` после одобрения тула.
+Регистрировать на **user-уровне** (`~/.claude/settings.json`), чтобы работало во всех
+проектах и worktree.
+
+**Суб-агенты.** `PreToolUse` вешается с **matcher `Task`** (фильтр по имени инструмента →
+хук срабатывает только на спавн суб-агента, без спама). Мост держит `Session.subagents`:
+`subagent` +1, `subagent_done` −1, сброс в 0 на `idle`/`start` (страховка). В снэпшот идёт
+`"sub":N` (кап 5), прошивка рисует N пузырьков-искр на орбите вокруг осьминога.
 
 PID для liveness определяет `resolve_claude_pid()` в обёртке: обход дерева процессов вверх и
 матч по **имени** процесса/basename (`claude`/`claude.exe`/`claude-code`), не по подстроке во
@@ -153,6 +159,11 @@ OCTO_DEBOUNCE_MS   = 100
 OCTO_MAX_SESSIONS  = 6
 OCTO_NAME_MAX      = 16  # лимит имени карточки: транслит RU→латиница + обрезка по центру ('~')
 OCTO_MOCK          = 0   # 1 = генерить 6 фейковых сессий с меняющимися состояниями, без реальных хуков
+OCTO_DIAG          = 0   # 1 = диаг-логи: PUSH #N (reason/dt/n/serial/статусы), переоткрытия serial,
+                         #     чтение обратного канала ESP («← ESP: {boot/stat/badjson}»). Включает DEBUG.
+OCTO_SERIAL_NO_RESET = 0 # 1 = открывать serial без дёргания DTR/RTS — чтобы (пере)открытие порта
+                         #     не ресетило ESP (кандидат-фикс редких «чёрных морганий»)
+OCTO_LOG_FILE      =     # путь к файлу — дублировать логи туда (чтобы «сыпались локально»)
 ```
 
 ## Прошивка (firmware/octodash/octodash.ino)

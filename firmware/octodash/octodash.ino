@@ -17,6 +17,14 @@
 #include <Adafruit_ILI9341.h>
 #include <ArduinoJson.h>
 
+// --- Диагностика (для отладки «моргания»; выключи ESP_DIAG 0 в проде) ---------
+// Печатает в serial маркеры, которые мост читает и логирует (см. OCTO_DIAG):
+//   boot  — при старте: причина сброса + free heap  → видно РЕБУТЫ и их причину
+//   stat  — раз в 2с: активных сессий, heap, фрагментация, макс. фрейм-тайм,
+//           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
+//   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
+#define ESP_DIAG 1
+
 #define TFT_CS   D8
 #define TFT_DC   D4
 #define TFT_RST  D3
@@ -42,11 +50,13 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
 // Off-screen буфер: зона одного осьминога. Ужат под реальный силуэт (меньше пустого
 // чёрного → меньше пикселей по SPI за кадр). ~9 КБ RAM, WiFi не используется.
-#define BUF_W 64
+#define BUF_W 68
 #define BUF_H 72
-#define LCX   24
+#define LCX   32
 #define LCY   30
 GFXcanvas16 octoBuf(BUF_W, BUF_H);
+#define SUBA    0x475B   // суб-агент: бирюзовая искра
+#define SUBA_D  0x1BD2   // тёмный хвост искры
 
 // Предрасчёт глянцевой сферы: считается ОДИН раз в setup() (дорогой per-pixel
 // sqrt/float), в кадре только копируется — иначе 6 сфер = слайдшоу.
@@ -63,6 +73,7 @@ struct Session {
   char  id[24];
   char  name[20];
   State state;
+  int   sub;      // число активных суб-агентов
 };
 
 const int COLS = 3, ROWS = 2;
@@ -80,6 +91,37 @@ const unsigned long TICK_MS = 40;   // цель ~25 fps; время анимац
 static const size_t LINE_MAX = 512;
 char lineBuf[LINE_MAX];
 size_t lineLen = 0;
+
+#if ESP_DIAG
+unsigned long lastStat = 0;         // когда последний раз печатали stat
+unsigned long maxFrameUs = 0;       // макс. время рендера кадра за интервал (мкс)
+uint16_t diagSnaps = 0;             // принято снэпшотов
+uint16_t diagBadJson = 0;           // снэпшотов не распарсилось
+uint16_t diagCells = 0;             // перерисовано ячеек (diff)
+
+void diagPrintBoot() {
+  Serial.println();
+  Serial.print(F("{\"esp\":\"boot\",\"reason\":\""));
+  Serial.print(ESP.getResetReason());   // "External System"=DTR, "Software Watchdog", "Exception"...
+  Serial.print(F("\",\"heap\":"));
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(F("}"));
+}
+
+void diagPrintStat() {
+  int nActive = 0;
+  for (int i = 0; i < MAX_SESSIONS; i++) if (sessions[i].active) nActive++;
+  Serial.print(F("{\"esp\":\"stat\",\"n\":"));       Serial.print(nActive);
+  Serial.print(F(",\"heap\":"));                     Serial.print(ESP.getFreeHeap());
+  Serial.print(F(",\"frag\":"));                     Serial.print(ESP.getHeapFragmentation());
+  Serial.print(F(",\"maxframe_us\":"));              Serial.print(maxFrameUs);
+  Serial.print(F(",\"snaps\":"));                    Serial.print(diagSnaps);
+  Serial.print(F(",\"cells\":"));                    Serial.print(diagCells);
+  Serial.print(F(",\"badjson\":"));                  Serial.print(diagBadJson);
+  Serial.println(F("}"));
+  maxFrameUs = 0;   // окно замера обнуляем; счётчики snaps/cells/badjson — накопительные
+}
+#endif
 
 uint16_t stateColor(State s) {
   switch (s) {
@@ -176,7 +218,7 @@ void sphereBody(GFXcanvas16 &g, int cx, int hy) {
 
 // Осьминог: глянцевая сфера-тело + 6 синус-щупалец, характер под состояние.
 // Алгоритм 1:1 с веб-эмулятором (GFXcanvas клипует лишнее).
-void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt) {
+void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub) {
   bool flipped = (state == ERR);
   int dir = flipped ? -1 : 1;
 
@@ -241,6 +283,19 @@ void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt) {
       g.drawLine(zx + 2, zy, zx, zy + 2, C_IDLE);
     }
   }
+
+  // суб-агенты: пузырьки-искры на медленной орбите вокруг головы (до 5)
+  int nsub = sub > 5 ? 5 : sub;
+  for (int k = 0; k < nsub; k++) {
+    float a = tt * 1.0f + k * (6.2832f / nsub);
+    int ox = cx + (int)roundf(cosf(a) * (R + 9));
+    int oy = hy - 2 + (int)roundf(sinf(a) * (R * 0.62f));
+    int tx = cx + (int)roundf(cosf(a - 0.4f) * (R + 9));   // хвост позади
+    int ty = hy - 2 + (int)roundf(sinf(a - 0.4f) * (R * 0.62f));
+    g.drawPixel(tx, ty, SUBA_D);
+    g.fillCircle(ox, oy, 2, SUBA);
+    g.drawPixel(ox - 1, oy - 1, 0xFFFF);
+  }
 }
 
 void updateOctopusArea(int col, int row, Session &s, float tt) {
@@ -251,7 +306,7 @@ void updateOctopusArea(int col, int row, Session &s, float tt) {
 
   // 1. собираем кадр в буфере (в RAM)
   octoBuf.fillScreen(BG);
-  drawOctopus(octoBuf, LCX, LCY, s.state, tt);
+  drawOctopus(octoBuf, LCX, LCY, s.state, tt, s.sub);
 
   // 2. выкидываем весь буфер на экран одной операцией — без чёрной вспышки
   tft.drawRGBBitmap(cx - LCX, cy - LCY, octoBuf.getBuffer(), BUF_W, BUF_H);
@@ -310,7 +365,15 @@ void readSerial() {
 
 void handleLine(const char* line) {
   StaticJsonDocument<1024> doc;
-  if (deserializeJson(doc, line)) return;   // не JSON — игнор
+  if (deserializeJson(doc, line)) {         // не JSON — игнор (переполнение UART/буфера?)
+#if ESP_DIAG
+    diagBadJson++;
+#endif
+    return;
+  }
+#if ESP_DIAG
+  diagSnaps++;
+#endif
 
   JsonArray arr = doc["sessions"].as<JsonArray>();
   int n = 0;
@@ -321,6 +384,7 @@ void handleLine(const char* line) {
     strlcpy(c.id, s["id"] | "", sizeof(c.id));
     strlcpy(c.name, s["name"] | "", sizeof(c.name));
     c.state = (State)(int)(s["state"] | (int)IDLE);
+    c.sub = s["sub"] | 0;
     n++;
   }
   for (int i = n; i < MAX_SESSIONS; i++) incoming[i].active = false;
@@ -339,12 +403,20 @@ void applySnapshot() {
                       strcmp(a.id, b.id) != 0 ||
                       strcmp(a.name, b.name) != 0));
     sessions[i] = b;
-    if (cellChanged) redrawCell(i);
+    if (cellChanged) {
+      redrawCell(i);
+#if ESP_DIAG
+      diagCells++;
+#endif
+    }
   }
 }
 
 void setup() {
   Serial.begin(115200);
+#if ESP_DIAG
+  diagPrintBoot();   // причина сброса + heap — первым делом после старта serial
+#endif
   cellW = W / COLS;
   cellH = H / ROWS;
 
@@ -365,10 +437,24 @@ void loop() {
     // Время анимации — от millis() (wall-clock), НЕ от числа тиков: под нагрузкой
     // кадры пропускаются, но скорость остаётся правильной (без слоу-мо).
     float tt = now / 1000.0f;
+#if ESP_DIAG
+    unsigned long frameT0 = micros();
+#endif
     for (int i = 0; i < MAX_SESSIONS; i++) {
       if (sessions[i].active) {
         updateOctopusArea(i % COLS, i / COLS, sessions[i], tt + i * 0.4f);
       }
     }
+#if ESP_DIAG
+    unsigned long frameUs = micros() - frameT0;   // сколько заняла отрисовка всех активных
+    if (frameUs > maxFrameUs) maxFrameUs = frameUs;
+#endif
   }
+
+#if ESP_DIAG
+  if (now - lastStat > 2000) {   // раз в 2с — телеметрия в serial (мост залогирует)
+    lastStat = now;
+    diagPrintStat();
+  }
+#endif
 }

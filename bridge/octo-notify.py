@@ -31,6 +31,7 @@ HOOK_TO_EVENT = {
     "Stop": "idle",
     "SessionEnd": "end",
     "StopFailure": "error",
+    "SubagentStop": "subagent_done",   # суб-агент (Task) завершился → −1
 }
 
 HOST = os.environ.get("OCTO_BRIDGE_HOST", "127.0.0.1")
@@ -102,9 +103,15 @@ def main() -> None:
         return  # нет валидного stdin — молча выходим
 
     hook_name = envelope.get("hook_event_name", "")
-    event = HOOK_TO_EVENT.get(hook_name)
-    if event is None:
-        return  # неизвестный/ненужный хук — игнор
+    if hook_name == "PreToolUse":
+        # Хук вешается с matcher "Task", но перепроверяем — спавн суб-агента.
+        if envelope.get("tool_name") != "Task":
+            return
+        event = "subagent"
+    else:
+        event = HOOK_TO_EVENT.get(hook_name)
+        if event is None:
+            return  # неизвестный/ненужный хук — игнор
 
     payload = {
         "session_id": envelope.get("session_id"),

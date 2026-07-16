@@ -240,8 +240,9 @@
     g.fillCircle(cx+Math.round(R*0.34), hy+Math.round(R*0.20), 2, lerp(M,L,0.5));
   }
 
-  function octo(cx, cy, state, tt){
+  function octo(cx, cy, state, tt, sub){
     const flipped = state===E, dir = flipped?-1:1;
+    const SUBA=rgb(64,232,220), SUBA_D=rgb(30,120,150);
     const speed = state===W?7.5 : state===A?2.2 : state===I?1.4 : 5.5;
     const amp   = state===W?2.6 : state===A?1.0 : state===I?0.7 : 2.0;
     const breath= Math.sin(tt*(state===I?1.6:3.0));
@@ -294,6 +295,15 @@
       for(let z=0;z<=zt;z++){ const zx=cx+7+z*4, zy=hy-R-2-z*5;
         g.fillRect(zx,zy,3,1,C_IDLE); g.fillRect(zx,zy+2,3,1,C_IDLE); g.drawLine(zx+2,zy,zx,zy+2,C_IDLE); }
     }
+
+    // суб-агенты: пузырьки-искры на медленной орбите (до 5)
+    const nsub = Math.min(sub||0, 5);
+    for(let k=0;k<nsub;k++){
+      const a=tt*1.0 + k*(2*Math.PI/nsub);
+      const ox=cx+Math.round(Math.cos(a)*(R+9)), oy=hy-2+Math.round(Math.sin(a)*(R*0.62));
+      const tx=cx+Math.round(Math.cos(a-0.4)*(R+9)), ty=hy-2+Math.round(Math.sin(a-0.4)*(R*0.62));
+      g.drawPixel(tx,ty,SUBA_D); g.fillCircle(ox,oy,2,SUBA); g.drawPixel(ox-1,oy-1,0xFFFF);
+    }
   }
 
   // ================= карточки / сетка =================
@@ -304,8 +314,8 @@
     {cls:"err",  nm:"ERROR",   meta:"кверху брюхом, крестики", hook:"StopFailure"},
   ];
   const DEFAULT=[
-    {name:"bitrixpet",state:W},{name:"worktree-4",state:A},{name:"core",state:I},
-    {name:"feature-~tion-v2",state:W},{name:"Claudiki#99ce",state:A},{name:"Claudiki#8d7d",state:E},
+    {name:"bitrixpet",state:W,sub:2},{name:"worktree-4",state:A},{name:"core",state:I},
+    {name:"feature-~tion-v2",state:W,sub:3},{name:"Claudiki#99ce",state:A},{name:"Claudiki#8d7d",state:E},
   ];
   let cards = DEFAULT.map(c=>({...c}));
   const cellOrigin = i => [ (i%COLS)*cw, ((i/COLS)|0)*ch ];

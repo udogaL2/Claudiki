@@ -81,6 +81,14 @@ class Config:
     max_sessions: int = field(default_factory=lambda: int(_env("OCTO_MAX_SESSIONS", "6")))
     name_max: int = field(default_factory=lambda: int(_env("OCTO_NAME_MAX", "16")))
     mock: bool = field(default_factory=lambda: _env_bool("OCTO_MOCK"))
+    # Диагностика: подробный лог пушей/переоткрытий serial + чтение обратного
+    # канала от ESP. Отдельно от OCTO_DEBUG (тот только сыпет снэпшоты в DEBUG).
+    diag: bool = field(default_factory=lambda: _env_bool("OCTO_DIAG"))
+    # Открывать serial, НЕ дёргая DTR/RTS — чтобы открытие/переоткрытие порта не
+    # ресетило ESP (авто-reset схема Wemos/NodeMCU). Кандидат-фикс «моргания».
+    serial_no_reset: bool = field(default_factory=lambda: _env_bool("OCTO_SERIAL_NO_RESET"))
+    # Дублировать логи в файл (чтобы «сыпались локально» и переживали сессию).
+    log_file: str = field(default_factory=lambda: _env("OCTO_LOG_FILE", ""))
 
 
 # --- Модель сессии ------------------------------------------------------------
@@ -92,6 +100,7 @@ class Session:
     pid: int | None
     first_seen: float
     last_event: float
+    subagents: int = 0   # число активных суб-агентов (Task) в этой сессии
 
 
 def basename_of(cwd: str) -> str:
@@ -261,13 +270,17 @@ class SerialSink:
         baud: int,
         logger: logging.Logger | None = None,
         list_ports_fn: Callable[[], list] | None = None,
+        no_reset: bool = False,
     ):
         self.port = port
         self.baud = baud
         self.log = logger or logging.getLogger("octo.serial")
         self._list_ports_fn = list_ports_fn
+        self.no_reset = no_reset
         self._ser = None
         self._last_warn = 0.0
+        self._opens = 0        # сколько раз открывали порт (>1 = переоткрытие)
+        self._rx = b""         # буфер обратного канала от ESP (до '\n')
 
     def _auto(self) -> bool:
         return self.port in ("", "auto", None)
@@ -293,13 +306,45 @@ class SerialSink:
             self._warn_throttled("serial не найден (автоопределение): ESP не воткнут?")
             return None
         try:
-            self._ser = serial.Serial(port, self.baud, timeout=1, write_timeout=1)
-            self.log.info("serial открыт: %s @ %d%s", port, self.baud, " (auto)" if self._auto() else "")
+            self._ser = self._open(port)
+            self._opens += 1
+            if self._opens == 1:
+                self.log.info(
+                    "serial открыт: %s @ %d%s%s",
+                    port, self.baud, " (auto)" if self._auto() else "",
+                    " (no-reset)" if self.no_reset else "",
+                )
+            else:
+                # Переоткрытие подозрительно: если не no_reset, оно ресетит ESP
+                # (DTR/RTS) → чёрный экран ~3с на время ребута. Кричим погромче.
+                self.log.warning(
+                    "SERIAL (RE)OPEN #%d: %s%s — ESP МОГ СБРОСИТЬСЯ (это причина моргания?)",
+                    self._opens, port, " [no-reset]" if self.no_reset else " [DTR/RTS reset!]",
+                )
             return self._ser
         except Exception as exc:  # порт недоступен — не падаем
             self._warn_throttled("не удалось открыть serial %s: %s", port, exc)
             self._ser = None
             return None
+
+    def _open(self, port: str):  # pragma: no cover - железо
+        """Открыть порт. При no_reset — не дёргать DTR/RTS, чтобы не ресетить ESP.
+
+        Классическая авто-reset схема Wemos/NodeMCU завязана на DTR+RTS от
+        USB-UART. Обычный serial.Serial(...) на открытии их дёргает и может
+        перезагрузить плату. Открываем закрытый порт, гасим dtr/rts, потом open().
+        """
+        if not self.no_reset:
+            return serial.Serial(port, self.baud, timeout=1, write_timeout=1)
+        s = serial.Serial()
+        s.port = port
+        s.baudrate = self.baud
+        s.timeout = 1
+        s.write_timeout = 1
+        s.dtr = False
+        s.rts = False
+        s.open()
+        return s
 
     def send(self, line: str) -> bool:
         ser = self._ensure()
@@ -315,6 +360,32 @@ class SerialSink:
             self.log.warning("ошибка записи в serial: %s — переоткрою", exc)
             self.close()
             return False
+
+    def read_lines(self) -> list[str]:  # pragma: no cover - железо
+        """Слить обратный канал от ESP и вернуть завершённые строки (без '\\n').
+
+        ESP печатает в serial свои маркеры (boot/reason/heap). Мост их читает,
+        чтобы диагностировать ребуты. Никогда не роняет пуш: любые ошибки глотаем.
+        """
+        ser = self._ser
+        if ser is None or not getattr(ser, "is_open", False):
+            return []
+        try:
+            waiting = ser.in_waiting
+            if not waiting:
+                return []
+            self._rx += ser.read(waiting)
+        except Exception:
+            return []
+        lines: list[str] = []
+        while b"\n" in self._rx:
+            raw, self._rx = self._rx.split(b"\n", 1)
+            text = raw.decode("utf-8", "replace").strip("\r ")
+            if text:
+                lines.append(text)
+        if len(self._rx) > 4096:   # защита от мусора без переводов строк
+            self._rx = b""
+        return lines
 
     def close(self) -> None:
         if self._ser is not None:
@@ -348,6 +419,9 @@ class Bridge:
         self._dirty = threading.Event()
         self._stop = threading.Event()
 
+        self._push_n = 0          # диагностика: счётчик пушей
+        self._last_push = 0.0     # монотонное время предыдущего пуша (для dt)
+
     # -- обработка события от хука; возвращает True, если снэпшот стал грязным --
     def handle_event(self, data: dict) -> bool:
         event = str(data.get("event", "")).lower()
@@ -377,10 +451,21 @@ class Bridge:
                 else:
                     sess.state = IDLE
                     sess.last_event = now
+                    sess.subagents = 0
                     if pid is not None:
                         sess.pid = pid
                     if cwd:
                         sess.name = name
+                return self._dirty_set()
+
+            # суб-агенты: PreToolUse matcher Task (+1) / SubagentStop (-1)
+            if event in ("subagent", "subagent_done"):
+                if sess is None:
+                    # спавн суб-агента у незнакомой сессии → создаём (родитель активен)
+                    sess = Session(session_id, name, WORKING, pid, now, now)
+                    self.sessions[session_id] = sess
+                sess.subagents = max(0, sess.subagents + (1 if event == "subagent" else -1))
+                sess.last_event = now
                 return self._dirty_set()
 
             new_state = EVENT_TO_STATE.get(event)
@@ -399,10 +484,14 @@ class Bridge:
                 sess.name = name
             if pid is not None:
                 sess.pid = pid
+            dirty = False
+            if new_state == IDLE and sess.subagents:   # конец хода → суб-агентов уже нет
+                sess.subagents = 0
+                dirty = True
             if sess.state != new_state:
                 sess.state = new_state
-                return self._dirty_set()
-            return False
+                dirty = True
+            return self._dirty_set() if dirty else False
 
     def _name(self, cwd: str) -> str:
         return display_name(cwd, self.cfg.name_max)
@@ -451,14 +540,44 @@ class Bridge:
                 suffix = "#" + s.session_id[:4]
                 base = shorten_middle(name, max(1, self.cfg.name_max - len(suffix)))
                 name = base + suffix
-            out.append({"id": s.session_id, "name": name, "state": s.state})
+            item = {"id": s.session_id, "name": name, "state": s.state}
+            if s.subagents:
+                item["sub"] = min(s.subagents, 5)   # число суб-агентов (кап под экран)
+            out.append(item)
         return out
 
     def snapshot_line(self) -> str:
         return json.dumps(self.build_snapshot(), separators=(",", ":"), ensure_ascii=False) + "\n"
 
-    def push(self) -> bool:
-        return self.sink.send(self.snapshot_line())
+    _STATE_CH = {WORKING: "W", WAITING: "?", IDLE: "I", ERROR: "E"}
+
+    def push(self, reason: str = "manual") -> bool:
+        line = self.snapshot_line()
+        ok = self.sink.send(line)
+        if self.cfg.diag:
+            self._log_push(reason, line, ok)
+        return ok
+
+    def _log_push(self, reason: str, line: str, ok: bool) -> None:
+        """Диаг-строка пуша: интервал, число сессий, статусы, дошло ли до serial.
+
+        Именно здесь ловится «моргнуло всё»: если n внезапно 0/меньше при
+        reason=heartbeat/event — это мост урезал снэпшот (reaper?), а не ESP.
+        """
+        now = self._clock()
+        dt_ms = (now - self._last_push) * 1000.0 if self._last_push else 0.0
+        self._last_push = now
+        self._push_n += 1
+        sessions = json.loads(line).get("sessions", [])
+        summary = ",".join(
+            f"{s['name']}:{self._STATE_CH.get(s['state'], '?')}"
+            + (f"+{s['sub']}" if s.get("sub") else "")
+            for s in sessions
+        )
+        self.log.info(
+            "PUSH #%d reason=%s dt=%.0fms n=%d serial=%s [%s]",
+            self._push_n, reason, dt_ms, len(sessions), "ok" if ok else "FAIL", summary,
+        )
 
     # -- фоновые циклы (тонкая обёртка над ядром; проверяются интеграционно) --
     def sender_loop(self) -> None:  # pragma: no cover
@@ -472,7 +591,7 @@ class Bridge:
                 self._dirty.clear()
                 time.sleep(debounce)
                 self._dirty.clear()
-            self.push()
+            self.push("event" if triggered else "heartbeat")
 
     def reaper_loop(self) -> None:  # pragma: no cover
         while not self._stop.wait(self.cfg.reaper_sec):
@@ -572,34 +691,58 @@ def bind_singleton(cfg: Config) -> ThreadingHTTPServer | None:
         raise
 
 
+def esp_reader_loop(sink: SerialSink, stop: threading.Event, poll_sec: float = 0.2) -> None:  # pragma: no cover
+    """Слушает обратный канал от ESP и логирует каждую строку как «← ESP: ...».
+
+    ESP печатает boot/reason/heap/stat/badjson — по ним видно ребуты и падение
+    памяти. Работает только в OCTO_DIAG; ошибки чтения не роняют мост.
+    """
+    log = logging.getLogger("octo.esp")
+    while not stop.wait(poll_sec):
+        for line in sink.read_lines():
+            log.info("← ESP: %s", line)
+
+
 def main() -> int:  # pragma: no cover
+    cfg = Config()
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if cfg.log_file:
+        handlers.append(logging.FileHandler(cfg.log_file, encoding="utf-8"))
     logging.basicConfig(
-        level=logging.DEBUG if os.environ.get("OCTO_DEBUG") else logging.INFO,
+        level=logging.DEBUG if (os.environ.get("OCTO_DEBUG") or cfg.diag) else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
     )
     log = logging.getLogger("octo")
-    cfg = Config()
 
     server = bind_singleton(cfg)
     if server is None:
         log.info("мост уже запущен на %s:%d — выходим", cfg.host, cfg.port)
         return 0
 
-    sink = SerialSink(cfg.serial_port, cfg.serial_baud)
+    sink = SerialSink(cfg.serial_port, cfg.serial_baud, no_reset=cfg.serial_no_reset)
     bridge = Bridge(cfg, sink=sink)
     server.bridge = bridge  # type: ignore[attr-defined]
     bridge.start_background()
 
+    esp_stop = threading.Event()
+    if cfg.diag and not cfg.mock:
+        threading.Thread(
+            target=esp_reader_loop, args=(sink, esp_stop), name="esp-reader", daemon=True
+        ).start()
+
     mode = "MOCK" if cfg.mock else "live"
     log.info(
-        "мост слушает %s:%d (%s), serial=%s @ %d",
+        "мост слушает %s:%d (%s), serial=%s @ %d%s%s",
         cfg.host, cfg.port, mode, cfg.serial_port, cfg.serial_baud,
+        " DIAG" if cfg.diag else "", f" log→{cfg.log_file}" if cfg.log_file else "",
     )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("остановка по Ctrl-C")
     finally:
+        esp_stop.set()
         bridge.stop()
         server.shutdown()
         server.server_close()

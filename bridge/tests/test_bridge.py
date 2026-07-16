@@ -281,6 +281,65 @@ def test_duplicate_long_names_stay_within_limit(clock, liveness, sink):
         assert len(s["name"]) <= 16
 
 
+# --- Суб-агенты ---------------------------------------------------------------
+def test_subagent_increment_decrement(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    assert bridge.handle_event({"session_id": "a", "event": "subagent"}) is True
+    assert bridge.sessions["a"].subagents == 1
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    assert bridge.sessions["a"].subagents == 2
+    bridge.handle_event({"session_id": "a", "event": "subagent_done"})
+    assert bridge.sessions["a"].subagents == 1
+
+
+def test_subagent_done_floors_at_zero(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent_done"})
+    assert bridge.sessions["a"].subagents == 0
+
+
+def test_working_preserves_subagents(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "working"})   # PostToolUse — не сбрасывает
+    assert bridge.sessions["a"].subagents == 1
+
+
+def test_idle_resets_subagents(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    assert bridge.handle_event({"session_id": "a", "event": "idle"}) is True
+    assert bridge.sessions["a"].subagents == 0 and bridge.sessions["a"].state == b.IDLE
+
+
+def test_start_resets_subagents(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "start", "cwd": "/p/x"})
+    assert bridge.sessions["a"].subagents == 0
+
+
+def test_subagent_unknown_session_created_working(bridge):
+    assert bridge.handle_event({"session_id": "z", "event": "subagent", "cwd": "/p/mcp"}) is True
+    assert bridge.sessions["z"].subagents == 1 and bridge.sessions["z"].state == b.WORKING
+
+
+def test_snapshot_includes_sub_and_omits_zero(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/proj"})
+    assert "sub" not in bridge.build_snapshot()["sessions"][0]   # 0 → не шлём
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    assert bridge.build_snapshot()["sessions"][0]["sub"] == 1
+
+
+def test_snapshot_sub_capped_at_5(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/proj"})
+    for _ in range(9):
+        bridge.handle_event({"session_id": "a", "event": "subagent"})
+    assert bridge.build_snapshot()["sessions"][0]["sub"] == 5   # в снэпшоте кап 5
+    assert bridge.sessions["a"].subagents == 9                   # внутри — реальное число
+
+
 def test_snapshot_field_shape(bridge):
     bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/proj"})
     snap = bridge.build_snapshot()
@@ -324,6 +383,31 @@ def test_push_sends_one_snapshot(bridge, sink):
     assert bridge.push() is True
     assert len(sink.lines) == 1
     assert json.loads(sink.lines[0])["sessions"][0]["id"] == "a"
+
+
+def test_push_diag_logs_and_counts(caplog):
+    import logging
+    cfg = b.Config(diag=True)
+    clock = FakeClock()
+    br = b.Bridge(cfg, sink=CollectingSink(), clock=clock, is_alive=FakeLiveness())
+    br.handle_event({"session_id": "a", "event": "working", "cwd": "/p/proj"})
+    with caplog.at_level(logging.INFO, logger="octo.bridge"):
+        assert br.push("event") is True
+        clock.advance(1.234)
+        br.push("heartbeat")
+    assert br._push_n == 2
+    assert "PUSH #1 reason=event" in caplog.text
+    assert "n=1" in caplog.text and "proj:W" in caplog.text
+    assert "dt=1234ms" in caplog.text  # интервал между пушами виден в логе
+
+
+def test_push_no_diag_is_silent(bridge, sink, caplog):
+    import logging
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    with caplog.at_level(logging.INFO, logger="octo.bridge"):
+        bridge.push()
+    assert "PUSH #" not in caplog.text  # без OCTO_DIAG — тихо
+    assert len(sink.lines) == 1
 
 
 def test_multiple_events_coalesce_into_one_push(bridge, sink):
