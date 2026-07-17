@@ -104,8 +104,9 @@ def main() -> None:
 
     hook_name = envelope.get("hook_event_name", "")
     if hook_name == "PreToolUse":
-        # Хук вешается с matcher "Task", но перепроверяем — спавн суб-агента.
-        if envelope.get("tool_name") != "Task":
+        # Хук вешается с matcher "Task|Agent", но перепроверяем — спавн суб-агента.
+        # "Task" — историческое имя тула, "Agent" — текущее (Claude Code переименовал).
+        if envelope.get("tool_name") not in ("Task", "Agent"):
             return
         event = "subagent"
     else:
@@ -120,6 +121,25 @@ def main() -> None:
     }
     if event == "start":
         payload["pid"] = resolve_claude_pid()  # захват PID claude один раз за сессию
+
+    # Stop/SubagentStop несут background_tasks — истинный список фоновой работы
+    # сессии. Шлём абсолютное число работающих субагентов для синхронизации
+    # счётчика в мосте: SubagentStop срабатывает на каждую остановку субагента
+    # (в т.ч. промежуточную), поэтому чистый ±1 занижает счётчик.
+    # Считаем строго type=="subagent": активно работающий субагент в списке есть.
+    # Известный трейд-офф: субагент, приостановленный с живым фоновым процессом,
+    # из списка исчезает (остаётся его дочерний shell) — его пузырёк погаснет до
+    # резюма. Считать все running-задачи нельзя: собственный фоновый shell сессии
+    # (dev-сервер и т.п.) давал бы вечный ложный пузырёк.
+    if hook_name in ("Stop", "SubagentStop"):
+        tasks = envelope.get("background_tasks")
+        if isinstance(tasks, list):
+            payload["subs"] = sum(
+                1 for t in tasks
+                if isinstance(t, dict)
+                and t.get("type") == "subagent"
+                and t.get("status") == "running"
+            )
 
     try:
         data = json.dumps(payload).encode("utf-8")

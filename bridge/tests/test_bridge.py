@@ -305,12 +305,65 @@ def test_working_preserves_subagents(bridge):
     assert bridge.sessions["a"].subagents == 1
 
 
-def test_idle_resets_subagents(bridge):
+def test_idle_preserves_subagents(bridge):
+    # Субагенты фоновые: Stop родителя (idle) приходит, пока они ещё работают.
+    # Пузырьки должны пережить конец хода — декремент только по subagent_done.
     bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
     bridge.handle_event({"session_id": "a", "event": "subagent"})
     bridge.handle_event({"session_id": "a", "event": "subagent"})
     assert bridge.handle_event({"session_id": "a", "event": "idle"}) is True
-    assert bridge.sessions["a"].subagents == 0 and bridge.sessions["a"].state == b.IDLE
+    assert bridge.sessions["a"].subagents == 2 and bridge.sessions["a"].state == b.IDLE
+
+
+def test_background_subagent_survives_parent_stop(bridge):
+    # Полный жизненный цикл фонового субагента: spawn → Stop родителя (серый,
+    # пузырёк жив) → PostToolUse субагента (снова WORKING) → финальный SubagentStop.
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "idle", "subs": 1})   # Stop родителя
+    snap = {s["id"]: s for s in bridge.build_snapshot()["sessions"]}
+    assert snap["a"]["state"] == b.IDLE and snap["a"]["sub"] == 1
+    bridge.handle_event({"session_id": "a", "event": "working"})    # PostToolUse субагента
+    assert bridge.sessions["a"].subagents == 1
+    bridge.handle_event({"session_id": "a", "event": "subagent_done", "subs": 0})
+    assert bridge.sessions["a"].subagents == 0
+    assert "sub" not in {s["id"]: s for s in bridge.build_snapshot()["sessions"]}["a"]
+
+
+def test_intermediate_subagent_stop_keeps_bubble(bridge):
+    # SubagentStop срабатывает на каждую остановку субагента, в т.ч. промежуточную
+    # (у него живые фоновые дети → в background_tasks он ещё running). Пузырёк
+    # должен пережить такой «ложный финиш» благодаря абсолютному subs из конверта.
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "subagent_done", "subs": 1})
+    assert bridge.sessions["a"].subagents == 1
+    bridge.handle_event({"session_id": "a", "event": "subagent_done", "subs": 0})
+    assert bridge.sessions["a"].subagents == 0
+
+
+def test_subagent_done_without_subs_falls_back_to_decrement(bridge):
+    # Старая обёртка (конверт без background_tasks) → прежний декремент.
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "subagent_done"})
+    assert bridge.sessions["a"].subagents == 0
+
+
+def test_idle_subs_sync_clears_leaked_counter(bridge):
+    # Утёкший счётчик (потерянный SubagentStop) лечится синхронизацией на Stop.
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    assert bridge.handle_event({"session_id": "a", "event": "idle", "subs": 0}) is True
+    assert bridge.sessions["a"].subagents == 0
+
+
+def test_subs_ignores_garbage(bridge):
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent"})
+    bridge.handle_event({"session_id": "a", "event": "idle", "subs": "мусор"})
+    assert bridge.sessions["a"].subagents == 1   # некорректный subs — игнор, счётчик цел
 
 
 def test_start_resets_subagents(bridge):

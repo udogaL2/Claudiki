@@ -131,14 +131,23 @@ python -m pytest tests/test_bridge.py::test_reap_removes_dead_pids   # один 
 Маппинг хук Claude Code → `event` моста:
 `SessionStart`→`start` (+pid), `UserPromptSubmit`→`working`, `PostToolUse`→`working`,
 `Notification`→`waiting`, `Stop`→`idle`, `SessionEnd`→`end`, `StopFailure`→`error` (опц.),
-`PreToolUse` (matcher `Task`)→`subagent`, `SubagentStop`→`subagent_done`.
+`PreToolUse` (matcher `Task|Agent`)→`subagent`, `SubagentStop`→`subagent_done`.
 `PostToolUse`→`working` снимает «застревание» на `WAITING` после одобрения тула.
 Регистрировать на **user-уровне** (`~/.claude/settings.json`), чтобы работало во всех
 проектах и worktree.
 
-**Суб-агенты.** `PreToolUse` вешается с **matcher `Task`** (фильтр по имени инструмента →
-хук срабатывает только на спавн суб-агента, без спама). Мост держит `Session.subagents`:
-`subagent` +1, `subagent_done` −1, сброс в 0 на `idle`/`start` (страховка). В снэпшот идёт
+**Суб-агенты.** `PreToolUse` вешается с **matcher `Task|Agent`** (фильтр по имени инструмента →
+хук срабатывает только на спавн суб-агента, без спама; `Task` — историческое имя тула,
+`Agent` — текущее). Мост держит `Session.subagents`: `subagent` +1 (мгновенный пузырёк при
+спавне), дальше — **абсолютная синхронизация**: конверты `Stop`/`SubagentStop` несут
+`background_tasks`, обёртка шлёт `"subs":N` (число задач type=subagent со status=running),
+мост выставляет счётчик по нему. Тип фильтруется намеренно: счёт всех running-задач дал бы
+вечный ложный пузырёк от собственного фонового shell'а сессии (dev-сервер и т.п.); цена —
+субагент, приостановленный с живым фоновым ребёнком, теряет пузырёк до резюма (экзотика). Чистый ±1 ненадёжен: субагенты фоновые, `SubagentStop`
+срабатывает на **каждую** остановку субагента (в т.ч. промежуточную, с живыми фоновыми
+детьми), а конец хода родителя (`Stop`→`idle`) не значит, что субагенты закончились —
+поэтому на `idle` счётчик НЕ сбрасывается (сброс только на `start`; `subagent_done` без
+`subs` — фолбэк-декремент для старых конвертов). В снэпшот идёт
 `"sub":N` (кап 5), прошивка рисует N пузырьков-искр на орбите вокруг осьминога.
 
 PID для liveness определяет `resolve_claude_pid()` в обёртке: обход дерева процессов вверх и

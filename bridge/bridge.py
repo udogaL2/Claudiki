@@ -436,6 +436,11 @@ class Bridge:
         cwd = data.get("cwd", "")
         name = self._name(cwd)
         pid = coerce_pid(data.get("pid"))
+        try:
+            # абсолютное число работающих субагентов из background_tasks конверта
+            subs = max(0, int(data["subs"])) if "subs" in data else None
+        except (TypeError, ValueError):
+            subs = None
 
         with self.lock:
             sess = self.sessions.get(session_id)
@@ -460,13 +465,21 @@ class Bridge:
                         sess.name = name
                 return self._dirty_set()
 
-            # суб-агенты: PreToolUse matcher Task (+1) / SubagentStop (-1)
+            # суб-агенты: PreToolUse matcher Task|Agent (+1) / SubagentStop (sync или -1)
             if event in ("subagent", "subagent_done"):
                 if sess is None:
                     # спавн суб-агента у незнакомой сессии → создаём (родитель активен)
                     sess = Session(session_id, name, WORKING, pid, now, now)
                     self.sessions[session_id] = sess
-                sess.subagents = max(0, sess.subagents + (1 if event == "subagent" else -1))
+                if event == "subagent":
+                    sess.subagents += 1
+                elif subs is not None:
+                    # SubagentStop срабатывает на КАЖДУЮ остановку субагента (в т.ч.
+                    # промежуточную, с живыми фоновыми детьми) — ±1 занижает счётчик.
+                    # Конверт несёт background_tasks; синхронизируемся по абсолюту.
+                    sess.subagents = subs
+                else:
+                    sess.subagents = max(0, sess.subagents - 1)   # старый хук без subs
                 sess.last_event = now
                 return self._dirty_set()
 
@@ -486,9 +499,12 @@ class Bridge:
                 sess.name = name
             if pid is not None:
                 sess.pid = pid
+            # NB: на IDLE счётчик суб-агентов НЕ сбрасываем: субагенты фоновые,
+            # конец хода родителя не означает их завершения. Правда — в subs
+            # (background_tasks из конверта Stop): синхронизируемся, если прислали.
             dirty = False
-            if new_state == IDLE and sess.subagents:   # конец хода → суб-агентов уже нет
-                sess.subagents = 0
+            if subs is not None and sess.subagents != subs:
+                sess.subagents = subs
                 dirty = True
             if sess.state != new_state:
                 sess.state = new_state
