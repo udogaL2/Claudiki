@@ -21,7 +21,7 @@
 #include <ArduinoJson.h>
 
 #define ESP_DIAG 0   // 1 = телеметрия boot/stat в serial (мост её логирует)
-#define FW_VER   24  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   25  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -97,7 +97,15 @@ class OffsetCanvas : public GFXcanvas16 {
   OffsetCanvas(int16_t w, int16_t h) : GFXcanvas16(w, h) {}
   int16_t offX = 0, offY = 0;
   void moveTo(int x, int y) { offX = x; offY = y; }
+  // Ограничение области в ЭКРАННЫХ координатах. Нужно, чтобы осьминог в полосе
+  // занимал ровно то же окно, что перерисовывает анимация: иначе клубы и щупальца
+  // выходят за окно, анимация их больше никогда не трогает — и они остаются
+  // мусором у имени карточки.
+  int16_t clipL = -32768, clipT = -32768, clipR = 32767, clipB = 32767;
+  void clipTo(int l, int t, int r, int b) { clipL = l; clipT = t; clipR = r; clipB = b; }
+  void clipOff() { clipTo(-32768, -32768, 32767, 32767); }
   void drawPixel(int16_t x, int16_t y, uint16_t c) override {
+    if (x < clipL || x > clipR || y < clipT || y > clipB) return;
     GFXcanvas16::drawPixel(x - offX, y - offY, c);
   }
   void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t c) override {
@@ -267,6 +275,7 @@ void sendShot();
 void redrawCell(int i);
 void cardFrame(Adafruit_GFX &g, int col, int row, Session &s);
 void smogRow(PixelSink &sink, const SmogP &p, int y);
+void octoWindow(int col, int row, int &wx, int &wy, int &wcx, int &wcy);
 void updateOctopusArea(int col, int row, Session &s, float tt);
 void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt);
 void applySnapshot();
@@ -776,10 +785,24 @@ TftSink tftSink;
 // Копоть наплывает сверху вниз по всему экрану как одно событие, а не переползает
 // с карточки на карточку.
 
+// Окно осьминога — ЕДИНСТВЕННОЕ определение на обе отрисовки: и на кадр анимации
+// (что она чистит и выливает), и на полную перерисовку (докуда осьминогу можно
+// рисовать). Пока границы задавались в двух местах, композиция рисовала шире окна,
+// анимация эти пиксели не обновляла, и у имени оставался мусор от клубов дыма.
+void octoWindow(int col, int row, int &wx, int &wy, int &wcx, int &wcy) {
+  int bw = cellW - 4, bh = cellH - 4;
+  int x0 = col * cellW + 2, y0 = row * cellH + 2;
+  wcx = x0 + bw / 2;                    // центр осьминога
+  wcy = y0 + bh / 2 - 6;
+  wx = wcx - LCX;                       // левый верхний угол окна
+  wy = wcy - LCY;
+}
+
 void updateOctopusArea(int col, int row, Session &s, float tt) {
   int bw = cellW - 4, bh = cellH - 4;
   int x0 = col * cellW + 2, y0 = row * cellH + 2;
-  int cx = x0 + bw / 2, cy = y0 + bh / 2 - 6;
+  int cx, cy, wx, wy;
+  octoWindow(col, row, wx, wy, cx, cy);
 
 #if ESP_DIAG
   unsigned long d0 = micros();
@@ -803,7 +826,7 @@ void updateOctopusArea(int col, int row, Session &s, float tt) {
   uint32_t px = (uint32_t)BUF_W * OCTO_H;
   for (uint32_t i = 0; i < px; i++) { uint16_t v = bb[i]; bb[i] = (uint16_t)((v << 8) | (v >> 8)); }
   tft.startWrite();
-  tft.setAddrWindow(cx - LCX, cy - LCY, BUF_W, OCTO_H);
+  tft.setAddrWindow(wx, wy, BUF_W, OCTO_H);
   SPI.writeBytes((uint8_t *)bb, px * 2);
   tft.endWrite();
   // обратный свап не нужен: следующий кадр начинается с fillScreen
@@ -1315,12 +1338,18 @@ void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, int left, int right
       for (int y = max(p.y0, top); y <= min(p.y1, bot); y++) smogRow(sink, p, y);
     usSmog += micros() - ts;
     cardFrame(g, col, row, sessions[i]);
-    int cx = col * cellW + 2 + (cellW - 4) / 2, cy = row * cellH + 2 + (cellH - 4) / 2 - 6;
-    // осьминог занимает ~72 строки и попадает в несколько полос; в те, где его
+    int cx, cy, wx, wy;
+    octoWindow(col, row, wx, wy, cx, cy);
+    // осьминог занимает 72 строки и попадает в несколько полос; в те, где его
     // нет, не лезем вовсе — иначе полная перерисовка считала бы его 15 раз впустую
-    if (cy + OCTO_H / 2 >= top && cy - OCTO_H / 2 <= bot) {
+    if (wy + OCTO_H - 1 >= top && wy <= bot) {
       unsigned long to = micros();
+      // рисуем РОВНО в то окно, которое обновляет анимация: то, что вышло бы за него
+      // (клубы дыма, кончики щупалец), анимация уже никогда не сотрёт — и это
+      // оставалось мусором у имени карточки
+      stripBuf.clipTo(wx, wy, wx + BUF_W - 1, wy + OCTO_H - 1);
       drawOctopus(g, cx, cy, sessions[i], tt + i * 0.4f);
+      stripBuf.clipOff();
       usOcto += micros() - to;
       nOcto++;
     }
