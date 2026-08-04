@@ -1,15 +1,18 @@
-// OctoDash firmware — ESP8266 (WeMos D1 mini) + ILI9341 320x240.
+// OctoDash firmware — ESP8266 (WeMos D1 mini) + ILI9341 320x240 + энкодер.
 //
-// Рендерер «аквариума» осьминогов. База анимации — рабочий скетч с захардкоженными
-// сессиями; сверху добавлен приём снэпшота по USB serial (одна строка JSON + '\n'),
-// парсинг и diff-перерисовка. Вся логика (какие сессии живы, статусы) — на стороне
-// моста; прошивка только рисует. Контракт — CLAUDE.md §«Контракт прошивки».
+// Рендерер «аквариума» осьминогов. Вся логика (какие сессии живы, какая страница,
+// какой экран, спать или нет, статус кофейни) — на стороне моста; прошивка рисует
+// и отправляет события ручки. Контракты — CLAUDE.md, бюджет кадра — RENDERING.md,
+// распиновка — WIRING.md, сборка — BUILD.md.
 //
-// Формат снэпшота (полный, не дельты):
-//   {"v":1,"sessions":[{"id":"abc","name":"proj","state":0}, ...]}\n
-// Коды состояний: WORKING=0, WAITING=1, IDLE=2, ERR=3.
+// Снэпшот (полный, одна строка + '\n'):
+//   {"v":1,"scr":0,"p":2,"pn":3,"nl":40,"sessions":[{"id","name","state","sub","mb"}]}
+//   {"v":1,"scr":1,"cafe":{"st","nm","dow","till","om","cm","net","br":[[от,до,тип]]}}
+//   {"v":1,"slp":1}                                   — экран спит
+// Обратно (событие ручки):
+//   {"enc":"cw"} {"enc":"ccw"} {"enc":"key"} {"enc":"hold"} {"enc":"cw","k":1}
 //
-// Зависимости (Arduino Library Manager): Adafruit GFX, Adafruit ILI9341, ArduinoJson (v6).
+// Зависимости: Adafruit GFX, Adafruit ILI9341, ArduinoJson (v6).
 
 #include <SPI.h>
 #include <math.h>
@@ -17,131 +20,273 @@
 #include <Adafruit_ILI9341.h>
 #include <ArduinoJson.h>
 
-// --- Диагностика (для отладки «моргания»; выключи ESP_DIAG 0 в проде) ---------
-// Печатает в serial маркеры, которые мост читает и логирует (см. OCTO_DIAG):
-//   boot  — при старте: причина сброса + free heap  → видно РЕБУТЫ и их причину
-//   stat  — раз в 2с: активных сессий, heap, фрагментация, макс. фрейм-тайм,
-//           число снэпшотов и битого JSON → ловит «порог 3» в цифрах
-//   badjson — снэпшот не распарсился (переполнение UART при тяжёлом рендере?)
-#define ESP_DIAG 0   // прод: телеметрия выключена. Поставь 1 для отладки (boot/stat в serial).
-#define FW_VER   9   // бамп при каждой заливке — видно в диаг-логе, что скетч реально свежий
+#define ESP_DIAG 0   // 1 = телеметрия boot/stat в serial (мост её логирует)
+#define FW_VER   19  // бампать при каждой заливке — видно в диаг-логе
 
+// --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
 #define TFT_DC   D4
 #define TFT_RST  D3
+#define ENC_A    D1   // S1 (CLK) — прерывание
+#define ENC_B    D2   // S2 (DT)  — прерывание
+#define ENC_SW   D0   // KEY — опрос: у GPIO16 нет прерываний и внутренней подтяжки
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
+// --- палитра (RGB565) --------------------------------------------------------
 #define BG        0x0000
 #define GRIDLINE  0x0861
-// Палитра тела (глянцевая сфера, «вариант 3» из style-lab), RGB565
-#define BODY_LIGHT 0xEF1F  // свет на сфере
-#define BODY_MID   0x8B77  // средний тон
-#define BODY_BOT   0x410F  // тень сферы
-#define BODY_DK    0x28CC  // самый тёмный (корни щупалец / стык)
-#define TENT       0x7A57  // щупальца (средний)
-#define TENT_TIP   0xC4FF  // кончики щупалец
+#define BODY_LIGHT 0xEF1F
+#define BODY_BOT   0x410F
+#define BODY_DK    0x28CC
+#define TENT_TIP   0xC4FF
 #define EYE_LIGHT 0xF7BF
 #define EYE_DARK  0x10C4
-#define GLINT     0x8FBD   // бирюзовый блик в глазу
-#define C_WORKING 0x37E7   // статусные цвета = палитра симулятора (RGB565)
+#define GLINT     0x8FBD
+#define C_WORKING 0x37E7
 #define C_WAITING 0xFEA0
 #define C_IDLE    0x5AEB
 #define C_ERROR   0xF8AC
+#define SUBA      0x475B
+#define SUBA_D    0x1BD2
+#define SMOKE     0x9CD3
+#define SMOG      0x8410   // копоть по краям карточки (вес сессии)
+#define SMOG_HI   0xC5AC   // тяжёлая сессия: копоть светлее и с желтизной
+#define ACCENT    0x35FB   // всплывашка страницы
+#define PLATE     0x0861
+#define CIG_BODY  0xF7BF
+#define CIG_HI    0xFFFF
+#define FILTERC   0xCD0B
+#define EMBER     0xFC00
+#define EMBER_HOT 0xFF0C
+#define FISH_B    0xFAC7
+#define FISH_D    0xB9A3
+#define CRAB_B    0xE28B
+#define CRAB_D    0x9146
+#define BUBBLE    0x7DFB
+#define CREAMC    0xE73C
+#define COFFEEC   0x9B26
+#define COFFEE_DK 0x4A44
 
-// Off-screen буфер: зона одного осьминога. Ужат под реальный силуэт (меньше пустого
-// чёрного → меньше пикселей по SPI за кадр). ~9 КБ RAM, WiFi не используется.
+// --- общий off-screen буфер (см. RENDERING.md) -------------------------------
+// Один на оба экрана, выделяется однажды: пересоздание канвы фрагментирует кучу.
 #define BUF_W 68
-#define BUF_H 72
+#define BUF_H 76
+#define OCTO_H 72          // окно осьминога аквариума — верхние строки буфера
 #define LCX   32
 #define LCY   30
 GFXcanvas16 octoBuf(BUF_W, BUF_H);
-#define SUBA    0x475B   // суб-агент: бирюзовая искра
-#define SUBA_D  0x1BD2   // тёмный хвост искры
 
-// Предрасчёт глянцевой сферы: считается ОДИН раз в setup() (дорогой per-pixel
-// sqrt/float), в кадре только копируется — иначе 6 сфер = слайдшоу.
+// Полоса на всю ширину экрана: в неё собирается ЦЕЛЫЙ экран (сетка, рамки, имена,
+// осьминоги, копоть) и выливается одним блитом. 320x16x2 = 10 КБ — столько же, сколько
+// занимал прежний буфер снимка, поэтому память не выросла. Одна полоса — один буфер
+// и для экрана, и для снимка: снимок физически не может разойтись с картинкой.
+#define STRIP_H 16
+
+// --- канва со смещением (пока только для отладочных снимков) ------------------
+// Позволяет рисовать в АБСОЛЮТНЫХ координатах экрана, складывая картинку плитками.
+//
+// Переопределён ТОЛЬКО drawPixel, а заливки реализованы циклом по нему. Так сделано
+// намеренно: если переопределить fillRect и позвать из него базовую версию, та
+// внутри вызовет drawFastVLine — тоже переопределённый — и смещение вычтется
+// ДВАЖДЫ. Именно на этом сломалась первая попытка: тело осьминога рисуется
+// через drawPixel и оставалось на месте, а щупальца, сигарета и буквы идут
+// прямоугольниками и уезжали за пределы окна.
+class OffsetCanvas : public GFXcanvas16 {
+ public:
+  OffsetCanvas(int16_t w, int16_t h) : GFXcanvas16(w, h) {}
+  int16_t offX = 0, offY = 0;
+  void moveTo(int x, int y) { offX = x; offY = y; }
+  void drawPixel(int16_t x, int16_t y, uint16_t c) override {
+    GFXcanvas16::drawPixel(x - offX, y - offY, c);
+  }
+  void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t c) override {
+    for (int16_t i = 0; i < w; i++) drawPixel(x + i, y, c);
+  }
+  void drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t c) override {
+    for (int16_t i = 0; i < h; i++) drawPixel(x, y + i, c);
+  }
+  void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c) override {
+    for (int16_t j = 0; j < h; j++)
+      for (int16_t i = 0; i < w; i++) drawPixel(x + i, y + j, c);
+  }
+  // Текст особый случай: drawChar НЕ виртуальный, а отсекает по размеру холста.
+  // Экранная координата имени (y≈108) для холста 68x76 всегда «за краем», поэтому
+  // print() молча ничего не рисовал. Через write() (он виртуальный) переводим
+  // координаты сами, обнуляя смещение — внутри drawChar они уже холстовые.
+  size_t write(uint8_t c) override {
+    if (c == '\r') return 1;
+    if (c == '\n') { cursor_x = 0; cursor_y += textsize_y * 8; return 1; }
+    int16_t sx = offX, sy = offY;
+    offX = 0; offY = 0;
+    GFXcanvas16::drawChar(cursor_x - sx, cursor_y - sy, c, textcolor, textbgcolor,
+                          textsize_x, textsize_y);
+    offX = sx; offY = sy;
+    cursor_x += textsize_x * 6;          // перенос строки не нужен: рисуем в плитку
+    return 1;
+  }
+};
+
+
+
+// Порог решета копоти. Была формула (x*3 + y*5) & 3, но при dx=dy=1 это
+// 3+5=8 ≡ 0 (mod 4): порог ПОСТОЯНЕН вдоль диагонали 45°, и копоть читалась как
+// ровная штриховка, а не как дым. Таблица 8x8 (по 16 значений каждого) ломает
+// эту регулярность одним чтением из флеша, без арифметики на пиксель.
+static const uint8_t SMOG_DITHER[64] = {
+  2, 0, 3, 1, 2, 3, 0, 1,
+  1, 3, 0, 2, 0, 1, 3, 2,
+  3, 1, 2, 0, 3, 2, 1, 0,
+  0, 2, 1, 3, 1, 0, 2, 3,
+  1, 0, 2, 3, 2, 1, 3, 0,
+  3, 2, 0, 1, 0, 3, 1, 2,
+  0, 3, 1, 2, 3, 0, 2, 1,
+  2, 1, 3, 0, 1, 2, 0, 3,
+};
+
+// --- предрасчёт: сфера тела и синус ------------------------------------------
 #define SPH_R 17
 #define SPH_D (2 * SPH_R + 1)
 uint16_t sphereTile[SPH_D * SPH_D];
-bool     sphereMask[SPH_D * SPH_D];
-uint8_t  sphRowX0[SPH_D];    // для каждой строки тайла: начало заполненного span'а
-uint8_t  sphRowLen[SPH_D];   // и его длина — чтобы блитить сферу построчным memcpy
+uint8_t  sphRowX0[SPH_D];
+uint8_t  sphRowLen[SPH_D];
+int8_t   sphereNight = -1;      // для какого уровня ночи собран тайл
 
-// Синус-таблица: программный sinf/cosf на ESP8266 ~сотни мкс — в горячем цикле
-// щупалец это были ~20мс/осьминог. LUT + целочисленная выборка ≈ бесплатно.
 #define TENT_SEG 9
 float    sinLut[256];
-uint16_t tentCol[TENT_SEG];   // цвет сегмента щупальца (константа — предрасчёт)
-float    tentTaper[TENT_SEG]; // амплитудный тейпер сегмента (константа)
+uint16_t tentCol[TENT_SEG];
+float    tentTaper[TENT_SEG];
+
+// Кривая щупальца: веса Безье ×256 и цвета сегментов — считаются один раз.
+#define ARM_SEG 12
+uint16_t armW0[ARM_SEG], armW1[ARM_SEG], armW2[ARM_SEG];
+uint16_t armCol[ARM_SEG];
+uint8_t  armWidth[ARM_SEG];
 
 enum State { WORKING, WAITING, IDLE, ERR };
 
-// active=false → пустой слот (сессий меньше 6). id — для diff.
+// Параметры копоти карточки. Объявление ОБЯЗАНО быть здесь, выше функций: Arduino
+// вставляет автоматические прототипы в начало файла, и тип из сигнатуры должен быть
+// к тому моменту известен. Считается один раз на карточку, дальше строка рисуется
+// отдельно — это нужно для обхода «строка → все карточки», иначе копоть проявляется
+// волной, переползая с карточки на карточку (~6000 точек и 19 000 синусов на карточку).
+// Приёмник пикселя: на экране — пакетная запись внутри транзакции, в снимке —
+// канва. Формула копоти при этом одна, дублировать её нельзя.
+struct PixelSink { virtual void px(int x, int y, uint16_t c) = 0; };
+struct TftSink : PixelSink {           // только внутри startWrite/endWrite
+  void px(int x, int y, uint16_t c) override { tft.writePixel(x, y, c); }
+};
+struct CanvasSink : PixelSink {
+  Adafruit_GFX &g;
+  CanvasSink(Adafruit_GFX &t) : g(t) {}
+  void px(int x, int y, uint16_t c) override { g.drawPixel(x, y, c); }
+};
+
+struct SmogP {
+  bool on;
+  int x0, y0, x1, y1, leftTo, rightFrom;
+  float reachH, reachV, sm;
+  uint16_t base;
+};
+
 struct Session {
   bool  active;
   char  id[24];
   char  name[20];
   State state;
-  int   sub;      // число активных суб-агентов
+  int   sub;          // активных суб-агентов
+  int   mb;           // вес транскрипта, МБ — копоть по краям карточки
+  uint32_t seed;      // хеш id: характер (темп, размах, фаза, моргание)
+  unsigned long poke; // до какого millis() «вздрагивает» после промпта
+  unsigned long born; // когда карточка появилась (всплытие после /clear)
 };
 
 const int COLS = 3, ROWS = 2;
-const int MAX_SESSIONS = COLS * ROWS;   // 6
+const int MAX_SESSIONS = COLS * ROWS;
 const int W = 320, H = 240;
+OffsetCanvas stripBuf(W, STRIP_H);   // полоса сборки экрана и снимка
 int cellW, cellH;
 
-Session sessions[MAX_SESSIONS];   // то, что сейчас на экране
-Session incoming[MAX_SESSIONS];   // распарсенный снэпшот
+Session sessions[MAX_SESSIONS];
+Session incoming[MAX_SESSIONS];
 
-unsigned long lastTick = 0;
-const unsigned long TICK_MS = 40;   // цель ~25 fps; время анимации от millis() (см. loop)
+// Что сейчас на экране — приезжает от моста, прошивка ничего не решает сама.
+int  curScreen = 0, curPage = 1, curPages = 1;
+int  nightLevel = 0;          // 0..100, свет по рабочему дню (считает мост)
+bool sleeping = false;
+bool fullRedraw = false;      // сменилась страница/экран — рисуем всё одним заходом
 
-// --- Serial line reader ------------------------------------------------------
-static const size_t LINE_MAX = 512;
+// Кофейня
+struct CafeSeg { int from, to, kind; };   // kind: 0 перерыв, 1 обед, 2 уборка
+int cafeSt = 3, cafeNm = 0, cafeDow = 0, cafeTill = 0;
+int cafeOm = 0, cafeCm = 0, cafeNet = 0, cafeSegN = 0;
+CafeSeg cafeSegs[8];
+bool cafeDirty = true;
+
+unsigned long lastTick[MAX_SESSIONS] = {0};
+unsigned long popupUntil = 0;
+int  popupPage = 0, popupPages = 0;
+bool popupDrawn = false;
+
+// Вбросы: чисто декоративные сценки. Единственное, что прошивка заводит сама —
+// они ничего не сообщают и никаких решений не принимают, гонять их через мост
+// было бы шумом ради шума.
+unsigned long evFishUntil = 0, evBubUntil = 0, evCrabUntil = 0, evNext = 0;
+int evFishCell = -1, evCrabCell = -1;
+
+// --- serial ------------------------------------------------------------------
+static const size_t LINE_MAX = 1024;
 char lineBuf[LINE_MAX];
 size_t lineLen = 0;
 
 #if ESP_DIAG
-unsigned long lastStat = 0;         // когда последний раз печатали stat
-unsigned long maxFrameUs = 0;       // макс. время рендера кадра за интервал (мкс)
-unsigned long maxDrawUs = 0;        // макс. время рисования ОДНОГО осьминога в буфер (CPU)
-unsigned long maxBlitUs = 0;        // макс. время блита ОДНОГО осьминога на экран (SPI)
-unsigned long maxTentUs = 0, maxSphUs = 0, maxAccUs = 0;  // раскладка draw по фазам
-uint16_t diagSnaps = 0;             // принято снэпшотов
-uint16_t diagBadJson = 0;           // снэпшотов не распарсилось
-uint16_t diagCells = 0;             // перерисовано ячеек (diff)
-
-void diagPrintBoot() {
-  Serial.println();
-  Serial.print(F("{\"esp\":\"boot\",\"reason\":\""));
-  Serial.print(ESP.getResetReason());   // "External System"=DTR, "Software Watchdog", "Exception"...
-  Serial.print(F("\",\"heap\":"));
-  Serial.print(ESP.getFreeHeap());
-  Serial.println(F("}"));
-}
-
-void diagPrintStat() {
-  int nActive = 0;
-  for (int i = 0; i < MAX_SESSIONS; i++) if (sessions[i].active) nActive++;
-  Serial.print(F("{\"esp\":\"stat\",\"ver\":"));     Serial.print(FW_VER);
-  Serial.print(F(",\"n\":"));                        Serial.print(nActive);
-  Serial.print(F(",\"heap\":"));                     Serial.print(ESP.getFreeHeap());
-  Serial.print(F(",\"frag\":"));                     Serial.print(ESP.getHeapFragmentation());
-  Serial.print(F(",\"maxframe_us\":"));              Serial.print(maxFrameUs);
-  Serial.print(F(",\"draw_us\":"));                  Serial.print(maxDrawUs);
-  Serial.print(F(",\"blit_us\":"));                  Serial.print(maxBlitUs);
-  Serial.print(F(",\"tent_us\":"));                  Serial.print(maxTentUs);
-  Serial.print(F(",\"sph_us\":"));                   Serial.print(maxSphUs);
-  Serial.print(F(",\"acc_us\":"));                   Serial.print(maxAccUs);
-  Serial.print(F(",\"snaps\":"));                    Serial.print(diagSnaps);
-  Serial.print(F(",\"cells\":"));                    Serial.print(diagCells);
-  Serial.print(F(",\"badjson\":"));                  Serial.print(diagBadJson);
-  Serial.println(F("}"));
-  maxFrameUs = 0; maxDrawUs = 0; maxBlitUs = 0;
-  maxTentUs = 0; maxSphUs = 0; maxAccUs = 0;   // окна замеров обнуляем
-}
+unsigned long lastStat = 0, maxFrameUs = 0, maxDrawUs = 0, maxBlitUs = 0;
+uint16_t diagSnaps = 0, diagBadJson = 0, diagCells = 0;
 #endif
+
+// --- прототипы (Arduino их генерит сам, но с явными надёжнее) ----------------
+void buildSphere(int night);
+void redrawAll();
+void redrawRect(int rx, int ry, int rw, int rh);
+void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, float tt);
+void sendShot();
+void redrawCell(int i);
+void cardFrame(Adafruit_GFX &g, int col, int row, Session &s);
+void smogRow(PixelSink &sink, const SmogP &p, int y);
+void updateOctopusArea(int col, int row, Session &s, float tt);
+void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt);
+void applySnapshot();
+void handleLine(const char *line);
+void composeCafe(Adafruit_GFX &g);
+void composeCafeScene(Adafruit_GFX &g, float tt);
+void drawPopup();
+void hidePopup();
+void enterSleep();
+void leaveSleep();
+
+// =============================================================================
+// Мелкая математика
+// =============================================================================
+static inline float fastSin(float x) { return sinLut[(int32_t)(x * 40.7436f) & 255]; }
+static inline float fastCos(float x) { return sinLut[((int32_t)(x * 40.7436f) + 64) & 255]; }
+static inline int   iround(float x)  { return (int)(x < 0 ? x - 0.5f : x + 0.5f); }
+
+uint16_t lerp565(uint16_t a, uint16_t b, float t) {
+  if (t < 0) t = 0;
+  if (t > 1) t = 1;
+  int r = (a >> 11) & 31, g = (a >> 5) & 63, bl = a & 31;
+  int r2 = (b >> 11) & 31, g2 = (b >> 5) & 63, b2 = b & 31;
+  r += (int)((r2 - r) * t); g += (int)((g2 - g) * t); bl += (int)((b2 - bl) * t);
+  return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+// FNV-1a: характер сессии выводится из её id, поэтому не меняется при переезде
+// карточки между страницами.
+uint32_t hash32(const char *s) {
+  uint32_t h = 2166136261UL;
+  for (; *s; ++s) { h ^= (uint8_t)*s; h *= 16777619UL; }
+  return h;
+}
 
 uint16_t stateColor(State s) {
   switch (s) {
@@ -153,42 +298,215 @@ uint16_t stateColor(State s) {
   return C_IDLE;
 }
 
-void drawGrid() {
-  tft.fillScreen(BG);
-  for (int i = 1; i < COLS; i++) tft.drawFastVLine(i * cellW, 0, H, GRIDLINE);
-  for (int j = 1; j < ROWS; j++) tft.drawFastHLine(0, j * cellH, W, GRIDLINE);
+// Период кадра по статусу: спящему IDLE 25 к/с не нужны, а шина одна на всех.
+unsigned long tickForState(State s) {
+  switch (s) {
+    case WORKING: return 40;
+    case ERR:     return 40;
+    case WAITING: return 80;
+    default:      return 160;
+  }
 }
 
-void drawCardFrame(int col, int row, Session &s) {
-  int bw = cellW - 4, bh = cellH - 4;
-  int x0 = col * cellW + 2, y0 = row * cellH + 2;
-  uint16_t c = stateColor(s.state);
+// =============================================================================
+// Энкодер
+// =============================================================================
+volatile int8_t  encDelta = 0;
+volatile uint8_t encPrev  = 0;
 
-  tft.drawRect(x0, y0, bw, bh, c);
-  tft.setTextColor(0xCE79);
-  tft.setTextSize(1);
-  tft.setCursor(x0 + bw / 2 - (int)(strlen(s.name) * 3), y0 + bh - 10);
-  tft.print(s.name);
+void IRAM_ATTR encISR() {
+  static const int8_t TBL[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
+  encPrev = ((encPrev << 2) | (digitalRead(ENC_A) << 1) | digitalRead(ENC_B)) & 0x0f;
+  encDelta += TBL[encPrev];
 }
 
-// Рисуем в буфер g (а не на экран). Координаты — локальные для буфера.
-// Глаза в координатах буфера. tt — время (сек) для «взгляда» в WORKING.
-void drawEyes(GFXcanvas16 &g, int cx, int eyY, State state, float tt) {
+bool     swDown = false;
+bool     swHandled = false;         // удержание уже отправлено — на отпускании молчим
+unsigned long swSince = 0, swChanged = 0;
+const unsigned long SW_DEBOUNCE = 30, SW_HOLD = 1000;
+
+void sendEnc(const char *what, bool held) {
+  Serial.print(F("{\"enc\":\""));
+  Serial.print(what);
+  if (held) Serial.print(F("\",\"k\":1}"));
+  else      Serial.print(F("\"}"));
+  Serial.println();
+}
+
+void pollEncoder() {
+  // вращение: накопитель прерываний делим на 4 — один детент энкодера
+  int8_t d;
+  noInterrupts();
+  d = encDelta;
+  if (d >= 4 || d <= -4) encDelta = d % 4; else d = 0;
+  interrupts();
+  if (d >= 4 || d <= -4) {
+    int steps = d / 4;
+    for (int i = 0; i < abs(steps); i++) sendEnc(steps > 0 ? "cw" : "ccw", swDown);
+    if (swDown) swHandled = true;   // это было «крутить с зажатой» — не слать key
+  }
+
+  // кнопка: короткое нажатие и удержание различаются на отпускании
+  bool down = (digitalRead(ENC_SW) == LOW);
+  unsigned long now = millis();
+  if (down != swDown && now - swChanged > SW_DEBOUNCE) {
+    swChanged = now;
+    swDown = down;
+    if (down) { swSince = now; swHandled = false; }
+    else if (!swHandled)      sendEnc("key", false);
+  }
+  if (swDown && !swHandled && now - swSince >= SW_HOLD) {
+    swHandled = true;
+    sendEnc("hold", false);
+  }
+}
+
+// =============================================================================
+// Предрасчёт
+// =============================================================================
+void buildSphere(int night) {
+  const int R = SPH_R;
+  const float k = night / 100.0f * 0.30f;      // ночь — смена палитры ДО цикла
+  const uint16_t L = lerp565(BODY_LIGHT, BG, k), D = lerp565(BODY_BOT, BG, k);
+  const float lx = -R * 0.34f, ly = -R * 0.42f, spread = 1.5f;
+  for (int y = -R; y <= R; y++) {
+    for (int x = -R; x <= R; x++) {
+      int idx = (y + R) * SPH_D + (x + R);
+      if (x * x + y * y > R * R) continue;
+      float nx = (x - lx) / (float)R, ny = (y - ly) / (float)R;
+      float d = sqrtf(nx * nx + ny * ny) / spread;
+      sphereTile[idx] = lerp565(L, D, d);
+    }
+  }
+  for (int yy = 0; yy < SPH_D; yy++) {
+    int y = yy - R;
+    int dx = (int)floorf(sqrtf((float)(R * R - y * y)));
+    sphRowX0[yy]  = (uint8_t)(R - dx);
+    sphRowLen[yy] = (uint8_t)(2 * dx + 1);
+  }
+  for (int s = 0; s < TENT_SEG; s++) {
+    uint16_t dk = lerp565(BODY_DK, BG, k), tip = lerp565(TENT_TIP, BG, k);
+    tentCol[s]   = lerp565(dk, tip, (s < 3) ? 0.0f : (float)(s - 3) / (TENT_SEG - 3));
+    tentTaper[s] = 0.2f + (float)s / TENT_SEG;
+  }
+  for (int i = 0; i < ARM_SEG; i++) {
+    float t = (float)i / (ARM_SEG - 1), u = 1 - t;
+    armW0[i] = (uint16_t)(u * u * 256);
+    armW1[i] = (uint16_t)(2 * u * t * 256);
+    armW2[i] = (uint16_t)(t * t * 256);
+    armCol[i] = lerp565(lerp565(BODY_DK, BG, k), lerp565(TENT_TIP, BG, k), t);
+    armWidth[i] = (uint8_t)max(1, 4 - iround(t * 3));
+  }
+  sphereNight = night;
+}
+
+void buildSin() {
+  for (int i = 0; i < 256; i++) sinLut[i] = sinf(i * (6.2831853f / 256.0f));
+}
+
+// =============================================================================
+// Примитивы осьминога
+// =============================================================================
+void sphereBody(Adafruit_GFX &g, int cx, int hy) {
+  for (int yy = 0; yy < SPH_D; yy++) {
+    int y = hy - SPH_R + yy;
+    int sx = sphRowX0[yy], len = sphRowLen[yy];
+    const uint16_t *row = &sphereTile[yy * SPH_D + sx];
+    int x = cx - SPH_R + sx;
+    for (int i = 0; i < len; i++) g.drawPixel(x + i, y, row[i]);
+  }
+  const int R = SPH_R;
+  g.fillCircle(cx - (int)(R * 0.32f), hy - (int)(R * 0.38f), (int)(R * 0.26f),
+               lerp565(BODY_LIGHT, 0xFFFF, 0.6f));
+  g.fillCircle(cx - (int)(R * 0.30f), hy - (int)(R * 0.36f), (int)(R * 0.12f), 0xFFFF);
+}
+
+void tentacles(Adafruit_GFX &g, int cx, int hy, int dir, float tt, float speed, float amp) {
+  const int R = SPH_R, legs = 6;
+  const int baseHW = iround(R * 0.66f);
+  const int rootY = hy + dir * (R - 4);
+  const float step = (2.0f * baseHW - 2) / (legs - 1);
+  for (int i = 0; i < legs; i++) {
+    float bx = cx - baseHW + 1 + i * step;
+    float ph = tt * speed + i * 0.7f;
+    for (int s = 0; s < TENT_SEG; s++) {
+      float sway = fastSin(ph + s * 0.5f) * amp * tentTaper[s];
+      int w = (s < 3) ? 3 : (s < 6 ? 2 : 1);
+      g.fillRect(iround(bx + sway) - (w >> 1), rootY + dir * (s * 2), w, 2, tentCol[s]);
+    }
+  }
+}
+
+// Гнущееся щупальце: квадратичная кривая на целых числах (у ESP8266 нет FPU).
+void arm(Adafruit_GFX &g, int x0, int y0, int x1, int y1, float bend, float tt, float speed) {
+  int dx = x1 - x0, dy = y1 - y0;
+  int len = abs(dx) + abs(dy);           // манхэттен вместо sqrt: только для нормировки
+  if (len < 1) len = 1;
+  float b = (bend + fastSin(tt * speed) * 2.0f) / len;
+  int ccx = iround((x0 + x1) / 2.0f - dy * b), ccy = iround((y0 + y1) / 2.0f + dx * b);
+  for (int k = 0; k < ARM_SEG; k++) {
+    int x = (armW0[k] * x0 + armW1[k] * ccx + armW2[k] * x1) >> 8;
+    int y = (armW0[k] * y0 + armW1[k] * ccy + armW2[k] * y1) >> 8;
+    int w = armWidth[k];
+    g.fillRect(x - (w >> 1), y - (w >> 1), w, w, armCol[k]);
+  }
+}
+
+// Дым — связная струйка, а не россыпь клубов: на 68×72 только так и читается.
+void smokeTrail(Adafruit_GFX &g, int x, int y, float tt, int len, float sway, uint16_t col) {
+  int w1 = (int)(tt * 7);
+  for (int i = 0; i < len; i++) {
+    float f = (float)i / len;
+    int cx = x + iround(fastSin(tt * 1.5f + i * 0.5f) * sway * (0.3f + f * 1.3f));
+    int cy = y - i;
+    uint16_t c = lerp565(col, BG, f * f * 0.9f);
+    g.drawPixel(cx, cy, c);
+    if (f > 0.2f && ((i + w1) & 1) == 0) g.drawPixel(cx + 1, cy, c);
+    if (f > 0.55f && ((i * 3 + w1) & 3) == 0) g.drawPixel(cx - 1, cy, c);
+  }
+}
+
+// Разовый выдох: три расходящиеся струи, распухают и опадают.
+void smokeBurst(Adafruit_GFX &g, int x, int y, float p, int rise, int drift, uint16_t col) {
+  if (p <= 0 || p >= 1) return;
+  float grow = fastSin(p * 3.1416f);
+  uint16_t c = lerp565(col, BG, p * 0.55f);
+  for (int k = -1; k <= 1; k++) {
+    int ax = x + iround(k * grow * 7 + drift * p * 0.4f);
+    int ay = y - iround(grow * 2);
+    int len = (int)max(4.0f, rise * grow * (k == 0 ? 0.9f : 0.6f));
+    for (int i = 0; i < len; i++) {
+      float f = (float)i / len;
+      int px = ax + iround(k * f * grow * 8 + fastSin(p * 9 + i * 0.6f + k) * 1.6f);
+      g.drawPixel(px, ay - i, lerp565(c, BG, f * f * 0.85f));
+    }
+  }
+}
+
+void cigarette(Adafruit_GFX &g, int x, int y, bool hot, int bodyLen) {
+  g.fillRect(x, y, 3, 3, FILTERC);
+  g.fillRect(x + 3, y, bodyLen, 3, CIG_BODY);
+  g.drawFastHLine(x + 4, y, bodyLen - 3, CIG_HI);
+  g.fillRect(x + 3 + bodyLen, y, 3, 3, hot ? EMBER_HOT : EMBER);
+}
+
+void drawEyes(Adafruit_GFX &g, int cx, int eyY, State state, float tt, bool wide, float blinkT) {
   int exL = cx - 6, exR = cx + 6;
-  if (state == ERR) {                       // крестики
+  if (state == ERR) {
     g.drawLine(exL - 3, eyY - 3, exL + 3, eyY + 3, C_ERROR);
     g.drawLine(exL + 3, eyY - 3, exL - 3, eyY + 3, C_ERROR);
     g.drawLine(exR - 3, eyY - 3, exR + 3, eyY + 3, C_ERROR);
     g.drawLine(exR + 3, eyY - 3, exR - 3, eyY + 3, C_ERROR);
     return;
   }
-  if (state == IDLE) {                      // закрытые глаза
+  bool blink = (state != IDLE) && (fmodf(tt, blinkT) < 0.11f);
+  if (state == IDLE || blink) {
     g.drawFastHLine(exL - 3, eyY, 6, EYE_LIGHT);
     g.drawFastHLine(exR - 3, eyY, 6, EYE_LIGHT);
     return;
   }
   int look = (state == WORKING) ? iround(fastSin(tt * 2.2f) * 1.4f) : 0;
-  int r = (state == WAITING) ? 4 : 3;       // WAITING — глаза шире
+  int r = wide ? 5 : (state == WAITING ? 4 : 3);
   g.fillCircle(exL, eyY, r, EYE_LIGHT);
   g.fillCircle(exR, eyY, r, EYE_LIGHT);
   g.fillCircle(exL + look, eyY + 1, 1, EYE_DARK);
@@ -197,232 +515,703 @@ void drawEyes(GFXcanvas16 &g, int cx, int eyY, State state, float tt) {
   g.drawPixel(exR + look - 1, eyY - 1, GLINT);
 }
 
-// Линейная интерполяция двух RGB565 (для градиентов тела/щупалец).
-uint16_t lerp565(uint16_t a, uint16_t b, float t) {
-  if (t < 0) t = 0; if (t > 1) t = 1;
-  int r = (a >> 11) & 31, g = (a >> 5) & 63, bl = a & 31;
-  int r2 = (b >> 11) & 31, g2 = (b >> 5) & 63, b2 = b & 31;
-  r += (int)((r2 - r) * t); g += (int)((g2 - g) * t); bl += (int)((b2 - bl) * t);
-  return (uint16_t)((r << 11) | (g << 5) | bl);
+// Вбросы внутри окна ячейки: бесплатны, окно и так перерисовывается каждый тик.
+void drawFish(Adafruit_GFX &g, int cx, int hy, float p, unsigned long now) {
+  int x = cx + 36 - iround(p * 76);
+  int y = hy - 4 + iround(fastSin(p * 6.2832f) * 12);
+  g.fillRect(x - 3, y - 2, 7, 4, FISH_B);
+  g.fillRect(x - 5, y - 1, 2, 2, FISH_B);
+  g.drawFastHLine(x - 3, y - 3, 5, FISH_D);
+  g.drawFastHLine(x - 3, y + 2, 5, FISH_D);
+  int t = ((now % 400) < 200) ? 1 : 2;
+  g.fillRect(x + 4, y - t, 2, 2 * t, FISH_B);
+  g.drawPixel(x - 3, y - 1, 0xFFFF);
 }
 
-// Быстрые sin/cos через LUT и быстрое округление (без libm в горячем цикле).
-static inline float fastSin(float x) { return sinLut[(int32_t)(x * 40.7436f) & 255]; }
-static inline float fastCos(float x) { return sinLut[((int32_t)(x * 40.7436f) + 64) & 255]; }
-static inline int   iround(float x)  { return (int)(x < 0 ? x - 0.5f : x + 0.5f); }
-
-// Один раз считаем радиальный градиент сферы в тайл (свет сверху-слева).
-void buildSphere() {
-  const int R = SPH_R;
-  const float lx = -R * 0.34f, ly = -R * 0.42f, spread = 1.5f;
-  for (int y = -R; y <= R; y++) {
-    for (int x = -R; x <= R; x++) {
-      int idx = (y + R) * SPH_D + (x + R);
-      if (x * x + y * y > R * R) { sphereMask[idx] = false; continue; }
-      float nx = (x - lx) / (float)R, ny = (y - ly) / (float)R;
-      float d = sqrtf(nx * nx + ny * ny) / spread;
-      sphereTile[idx] = lerp565(BODY_LIGHT, BODY_BOT, d);
-      sphereMask[idx] = true;
-    }
-  }
-  for (int yy = 0; yy < SPH_D; yy++) {          // span заполненных пикселей в строке
-    int y = yy - R;
-    int dx = (int)floorf(sqrtf((float)(R * R - y * y)));
-    sphRowX0[yy]  = (uint8_t)(R - dx);
-    sphRowLen[yy] = (uint8_t)(2 * dx + 1);
-  }
-  for (int i = 0; i < 256; i++) sinLut[i] = sinf(i * (6.2831853f / 256.0f));
-  for (int s = 0; s < TENT_SEG; s++) {          // цвет и тейпер сегмента — константы
-    tentCol[s]   = lerp565(BODY_DK, TENT_TIP, (s < 3) ? 0.0f : (float)(s - 3) / (TENT_SEG - 3));
-    tentTaper[s] = 0.2f + (float)s / TENT_SEG;
+void drawBubbles(Adafruit_GFX &g, int cx, int hy, float p, uint32_t seed) {
+  for (int k = 0; k < 7; k++) {
+    float f = fmodf(p * 1.6f + ((seed >> k) & 7) / 7.0f, 1.0f);
+    int x = cx - 24 + ((k * 37 + (seed & 15)) % 48);
+    int y = hy + 26 - iround(f * 54);
+    g.drawCircle(x, y, f < 0.5f ? 1 : 2, lerp565(BUBBLE, BG, f * 0.75f));
   }
 }
 
-// Тело: копируем предрасчитанный тайл ПОСТРОЧНО memcpy прямо в буфер канвы
-// (вместо 1225 drawPixel — это был основной жор CPU) + блик поверх.
-void sphereBody(GFXcanvas16 &g, int cx, int hy) {
-  uint16_t *buf = g.getBuffer();
-  for (int yy = 0; yy < SPH_D; yy++) {
-    int destY = hy - SPH_R + yy;
-    if (destY < 0 || destY >= BUF_H) continue;
-    int sx = sphRowX0[yy], len = sphRowLen[yy];
-    int destX = cx - SPH_R + sx;
-    if (destX < 0) { len += destX; sx -= destX; destX = 0; }   // клип слева
-    if (destX + len > BUF_W) len = BUF_W - destX;              // клип справа
-    if (len <= 0) continue;
-    memcpy(&buf[destY * BUF_W + destX], &sphereTile[yy * SPH_D + sx], (size_t)len * 2);
-  }
-  const int R = SPH_R;
-  g.fillCircle(cx - (int)(R * 0.32f), hy - (int)(R * 0.38f), (int)(R * 0.26f), lerp565(BODY_LIGHT, 0xFFFF, 0.6f));
-  g.fillCircle(cx - (int)(R * 0.30f), hy - (int)(R * 0.36f), (int)(R * 0.12f), 0xFFFF);
-  g.fillCircle(cx + (int)(R * 0.34f), hy + (int)(R * 0.20f), 2, lerp565(BODY_MID, BODY_LIGHT, 0.5f));
+void drawCrab(Adafruit_GFX &g, int cx, int hy, float p, unsigned long now) {
+  int x = cx - 38 + iround(p * 76), base = hy + 36;
+  g.fillRect(x - 3, base - 4, 7, 4, CRAB_B);
+  g.drawPixel(x - 4, base - 5, CRAB_B);
+  g.drawPixel(x + 4, base - 5, CRAB_B);
+  g.drawPixel(x - 2, base - 5, 0xFFFF);
+  g.drawPixel(x + 2, base - 5, 0xFFFF);
+  int step = ((now / 120) & 1);
+  g.drawPixel(x - 3, base + step, CRAB_D);
+  g.drawPixel(x + 3, base + 1 - step, CRAB_D);
 }
 
-// Осьминог: глянцевая сфера-тело + 6 синус-щупалец, характер под состояние.
-// Алгоритм 1:1 с веб-эмулятором (GFXcanvas клипует лишнее).
-void drawOctopus(GFXcanvas16 &g, int cx, int cy, State state, float tt, int sub) {
-  bool flipped = (state == ERR);
+// =============================================================================
+// Осьминог целиком
+// =============================================================================
+void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt) {
+  unsigned long now = millis();
+  // характер: свой темп, размах, фаза курения и ритм моргания
+  float pSpd = 0.86f + ((s.seed >> 3) & 7) / 24.0f;
+  float pAmp = 0.85f + ((s.seed >> 7) & 7) / 20.0f;
+  float pPh  = ((s.seed >> 11) & 31) / 31.0f;
+  float pBlink = 3.2f + ((s.seed >> 17) & 7) * 0.4f;
+
+  bool flipped = (s.state == ERR);
   int dir = flipped ? -1 : 1;
+  float speed = (s.state == WORKING ? 7.5f : s.state == WAITING ? 2.2f
+                 : s.state == IDLE ? 1.4f : 5.5f) * pSpd;
+  float amp = (s.state == WORKING ? 2.6f : s.state == WAITING ? 1.0f
+               : s.state == IDLE ? 0.7f : 2.0f) * pAmp;
+  int bob = (s.state == IDLE) ? 0
+            : iround(fastSin(tt * (s.state == WORKING ? 4.4f : 2.4f)) * 1.2f);
 
-  float speed = state == WORKING ? 7.5f : state == WAITING ? 2.2f : state == IDLE ? 1.4f : 5.5f;
-  float amp   = state == WORKING ? 2.6f : state == WAITING ? 1.0f : state == IDLE ? 0.7f : 2.0f;
-  int bob = (state == IDLE) ? 0 : iround(fastSin(tt * (state == WORKING ? 4.4f : 2.4f)) * 1.2f);
-  int hy = cy + bob + (flipped ? 5 : 0);
-  const int R = SPH_R;                       // фикс. радиус — сфера предрасчитана
-#if ESP_DIAG
-  unsigned long _tp0 = micros();
-#endif
-
-  // щупальца: корни ВНУТРИ тела (прикрыты сферой), тёмные у основания → светлые
-  // к кончику. Тело рисуется поверх → бесшовное крепление без светлого канта.
-  const int seg = TENT_SEG, legs = 6;
-  const int baseHW = iround(R * 0.66f);
-  const int rootY = hy + dir * (R - 4);
-  const float step = (2.0f * baseHW - 2) / (legs - 1);
-  for (int i = 0; i < legs; i++) {
-    float bx = cx - baseHW + 1 + i * step;
-    float ph = tt * speed + i * 0.7f;
-    for (int s = 0; s < seg; s++) {
-      float sway = fastSin(ph + s * 0.5f) * amp * tentTaper[s];
-      int w = (s < 3) ? 3 : (s < 6 ? 2 : 1);
-      g.fillRect(iround(bx + sway) - (w >> 1), rootY + dir * (s * 2), w, 2, tentCol[s]);
-    }
-    int kx = iround(bx + fastSin(ph + seg * 0.5f) * amp);
-    g.drawPixel(kx, rootY + dir * (seg * 2), TENT_TIP);
+  // вздрагивание на промпт: видно, что хук дошёл и мост жив
+  bool poked = (s.poke > now);
+  if (poked) {
+    float k = (s.poke - now) / 400.0f;
+    bob -= iround(fastSin((s.poke - now) * 0.06f) * 4 * k);
   }
+  // после /clear карточка всплывает снизу — награда за уборку
+  int riseY = 0;
+  if (s.born && now - s.born < 1400) riseY = iround((1 - (now - s.born) / 1400.0f) * 26);
 
-#if ESP_DIAG
-  unsigned long _tp1 = micros();
-#endif
-  // тело: глянцевая сфера (одинакова для всех состояний; сверху — лицо/акценты)
+  int hy = cy + bob + riseY + (flipped ? 5 : 0);
+
+  tentacles(g, cx, hy, dir, tt, speed, amp);
   sphereBody(g, cx, hy);
-#if ESP_DIAG
-  unsigned long _tp2 = micros();
-#endif
+  drawEyes(g, cx, hy - dir * 4, s.state, tt, poked, pBlink);
 
-  int eyY = hy - dir * 4;
-  drawEyes(g, cx, eyY, state, tt);
-
-  // акценты по состоянию
-  if (state == WORKING) {                   // 🚬 сигарета у рта + дым
-    int mx = cx + 1, my = hy + 5;
-    g.fillRect(mx, my, 3, 3, 0xCD0B);                 // фильтр у рта (охра)
-    g.fillRect(mx + 3, my, 15, 3, EYE_LIGHT);         // толстый длинный корпус
-    g.drawFastHLine(mx + 4, my, 11, 0xFFFF);          // блик
-    bool hot = (((int)(tt * 3)) % 2) == 0;            // уголёк подрагивает
-    g.fillRect(mx + 18, my, 3, 3, hot ? 0xFF0C : 0xFC00); // большой тлеющий уголёк
-    int tipx = mx + 22, tipy = my - 1;
-    for (int s = 0; s < 6; s++) {                     // густой дым волнами вверх
-      float f = tt * 1.2f + s * 0.4f;
-      float st = f - (int)f;                          // frac (аналог fmodf(.,1))
-      int yy = tipy - 1 - (int)(st * 26);
-      int xx = tipx + iround(fastSin(tt * 2.1f + s * 1.1f + st * 3.2f) * 5);
-      g.fillCircle(xx, yy, st < 0.4f ? 1 : (st < 0.75f ? 2 : 3), 0x9CD3); // серый дым
+  if (s.state == WORKING) {
+    // Щупальце опускает сигарету и подносит обратно ко рту. Ход ВЕРТИКАЛЬНЫЙ:
+    // вбок в ячейке не увезти — справа от тела 18px против 21px сигареты.
+    float ph = fmodf(tt / 4.2f + pPh, 1.0f);
+    float up = ph < 0.14f ? ph / 0.14f
+               : ph < 0.34f ? 1.0f
+               : ph < 0.50f ? 1 - (ph - 0.34f) / 0.16f : 0.0f;
+    bool drag = (ph >= 0.14f && ph < 0.34f);
+    bool exhale = (ph >= 0.52f && ph < 0.78f);
+    bool ash = (ph >= 0.82f && ph < 0.90f);
+    int gx = cx + 4 - iround(3 * up), gy = hy + 20 - iround(15 * up);
+    arm(g, cx + 15, hy + 10, gx + 13, gy + 3, 4, tt, 1.4f);
+    cigarette(g, gx, gy, drag, 15);
+    int tipx = gx + 6 + 15, tipy = gy - 1;
+    if (drag) smokeTrail(g, tipx + 1, tipy - 1, tt, 7, 1.2f, SMOKE);
+    // Выдох начинается У РТА (там, где стоял фильтр: cx+1, hy+5), а вбок уходит
+    // уже сносом по мере роста. Раньше стартовал в cx+9 — облако висело правее
+    // рта и читалось как чужое.
+    if (exhale) smokeBurst(g, cx + 2, hy + 5, (ph - 0.52f) / 0.26f, 13, 12, SMOKE);
+    if (ash) {
+      float f = (ph - 0.82f) / 0.08f;
+      for (int k = 0; k < 3; k++)
+        g.drawPixel(tipx - 2 + k, tipy + 3 + iround(f * 12) - k * 2, lerp565(SMOKE, BG, 0.35f));
     }
-  } else if (state == WAITING) {            // «?» — ждёт тебя
-    int yy = hy - R - 8;
+  } else if (s.state == WAITING) {
+    int yy = hy - SPH_R - 8;
     g.fillRect(cx + 8, yy, 4, 1, C_WAITING);
     g.drawPixel(cx + 11, yy + 1, C_WAITING);
     g.drawPixel(cx + 10, yy + 2, C_WAITING);
     g.drawPixel(cx + 10, yy + 4, C_WAITING);
-  } else if (state == IDLE) {               // «z z» — спит
+  } else if (s.state == IDLE) {
     int zt = ((int)(tt * 1.2f)) % 3;
     for (int z = 0; z <= zt; z++) {
-      int zx = cx + 7 + z * 4, zy = hy - R - 2 - z * 5;
+      int zx = cx + 7 + z * 4, zy = hy - SPH_R - 2 - z * 5;
       g.fillRect(zx, zy, 3, 1, C_IDLE);
       g.fillRect(zx, zy + 2, 3, 1, C_IDLE);
       g.drawLine(zx + 2, zy, zx, zy + 2, C_IDLE);
     }
   }
 
-  // суб-агенты: пузырьки-искры на медленной орбите вокруг головы (до 5)
-  int nsub = sub > 5 ? 5 : sub;
+  // суб-агенты: пузырьки-искры на орбите
+  int nsub = s.sub > 5 ? 5 : s.sub;
   for (int k = 0; k < nsub; k++) {
     float a = tt * 1.0f + k * (6.2832f / nsub);
-    int ox = cx + iround(fastCos(a) * (R + 9));
-    int oy = hy - 2 + iround(fastSin(a) * (R * 0.62f));
-    int tx = cx + iround(fastCos(a - 0.4f) * (R + 9));   // хвост позади
-    int ty = hy - 2 + iround(fastSin(a - 0.4f) * (R * 0.62f));
-    g.drawPixel(tx, ty, SUBA_D);
+    int ox = cx + iround(fastCos(a) * (SPH_R + 9));
+    int oy = hy - 2 + iround(fastSin(a) * (SPH_R * 0.62f));
+    g.drawPixel(cx + iround(fastCos(a - 0.4f) * (SPH_R + 9)),
+                hy - 2 + iround(fastSin(a - 0.4f) * (SPH_R * 0.62f)), SUBA_D);
     g.fillCircle(ox, oy, 2, SUBA);
     g.drawPixel(ox - 1, oy - 1, 0xFFFF);
   }
-#if ESP_DIAG
-  unsigned long _tp3 = micros();
-  if (_tp1 - _tp0 > maxTentUs) maxTentUs = _tp1 - _tp0;
-  if (_tp2 - _tp1 > maxSphUs)  maxSphUs  = _tp2 - _tp1;
-  if (_tp3 - _tp2 > maxAccUs)  maxAccUs  = _tp3 - _tp2;
-#endif
 }
+
+// =============================================================================
+// Сетка, карточки, копоть
+// =============================================================================
+void composeGrid(Adafruit_GFX &g) {
+  g.fillScreen(BG);
+  for (int i = 1; i < COLS; i++) g.drawFastVLine(i * cellW, 0, H, GRIDLINE);
+  for (int j = 1; j < ROWS; j++) g.drawFastHLine(0, j * cellH, W, GRIDLINE);
+}
+
+void cardFrame(Adafruit_GFX &g, int col, int row, Session &s) {
+  int bw = cellW - 4, bh = cellH - 4;
+  int x0 = col * cellW + 2, y0 = row * cellH + 2;
+  g.drawRect(x0, y0, bw, bh, stateColor(s.state));
+  // Имя с ФОНОМ: у тяжёлой сессии нижний слой копоти доходит до строки имени и
+  // оно тонуло в решете. Фон даёт каждой букве чистую клетку, а копоть вокруг
+  // остаётся — шкала веса не страдает.
+  g.setTextColor(0xCE79, BG);
+  g.setTextSize(1);
+  g.setCursor(x0 + bw / 2 - (int)(strlen(s.name) * 3), y0 + bh - 10);
+  g.print(s.name);
+}
+
+// Копоть = вес транскрипта. Ползёт от КРАЁВ внутрь и никогда не касается окна
+// осьминога (оно в середине, 68×72). Это статика: рисуется вместе с рамкой,
+// в кадре анимации не стоит ничего.
+//
+void smogParams(int col, int row, int mb, SmogP &p) {
+  p.on = (mb >= 1);
+  if (!p.on) return;
+  // Корень, а не линейка: у сессий предел 15-20 МБ, но живут они в основном
+  // в диапазоне 2-8 МБ. При линейной шкале там были бы неразличимые 3 пикселя.
+  p.sm = sqrtf(min(1.0f, mb / 20.0f));
+  p.x0 = col * cellW + 3;
+  p.y0 = row * cellH + 3;
+  p.x1 = col * cellW + cellW - 4;
+  p.y1 = row * cellH + cellH - 4;
+  // Рост НЕСИММЕТРИЧНЫЙ. Вбок до окна осьминога всего 16px, и симметричная копоть
+  // упиралась в них уже к 6 МБ — дальше отличить 6 от 20 было нечем. Сверху и снизу
+  // места 22px, поэтому вверх слой растёт втрое сильнее: высота видна боковым
+  // зрением, в отличие от плотности решета.
+  p.reachH = 2 + p.sm * 6;            // вбок: 2..8
+  p.reachV = 3 + p.sm * 13;           // вверх и вниз: 3..16
+  float lim = p.reachH + 5;
+  // Границы полос ЦЕЛЫЕ. Со дробными сравнение x < x1 - lim и присваивание
+  // x = (int)(x1 - lim - 1) зацикливались: усечение возвращало x назад, инкремент
+  // снова попадал в условие. Плата зависала и уходила по watchdog — в эмуляторе
+  // бага не было, там x дробный.
+  p.leftTo = p.x0 + (int)lim;
+  p.rightFrom = p.x1 - (int)lim;
+  p.base = lerp565(SMOKE, SMOG_HI, p.sm);   // тяжёлая сессия ещё и ярче
+}
+
+// Одна строка копоти. Транзакцию открывает вызывающий: каждый drawPixel у Adafruit
+// это отдельная SPI-транзакция с дёрганьем CS, и на шесть карточек их выходило
+// под 15 тысяч подряд — ESP уходил в перезагрузку.
+void smogRow(PixelSink &sink, const SmogP &p, int y) {
+  int dvRaw = min(y - p.y0, p.y1 - y);
+  bool rowFar = dvRaw > (int)(p.reachV + 5);
+  for (int x = p.x0; x <= p.x1; x++) {
+    // прыжок гарантированно вперёд: x++ доведёт ровно до rightFrom
+    if (rowFar && x > p.leftTo && x < p.rightFrom) { x = p.rightFrom - 1; continue; }
+    // волнистая граница: три синуса разной частоты — облако, а не рамка
+    float n = fastSin(x * 0.31f + y * 0.11f) * 2.0f
+              + fastSin(y * 0.27f - x * 0.08f + 2.1f) * 1.6f
+              + fastSin((x + y) * 0.13f + 4.2f) * 1.2f;
+    // каждая ось нормируется на свой запас, поэтому слой сверху толстый,
+    // а сбоку тонкий; t = 0 у самого края, 1 на границе облака
+    float t = min((float)min(x - p.x0, p.x1 - x) / p.reachH, dvRaw / p.reachV) + n * 0.07f;
+    if (t > 1.0f) continue;
+    if (t < 0) t = 0;
+    // Плюс два признака к высоте: плотность решета и яркость.
+    int q = iround((1 - t) * (1.0f + p.sm * 3.0f));
+    if (q <= 0 || SMOG_DITHER[(y & 7) * 8 + (x & 7)] >= q) continue;
+    float fade = 0.1f + t * 0.5f + (1.0f - p.sm) * 0.35f;
+    sink.px(x, y, lerp565(p.base, BG, fade));
+  }
+}
+
+TftSink tftSink;
+
+
+// Копоть всех карточек РАЗОМ: внешний цикл — строка, внутренний — карточки.
+// Копоть наплывает сверху вниз по всему экрану как одно событие, а не переползает
+// с карточки на карточку.
 
 void updateOctopusArea(int col, int row, Session &s, float tt) {
   int bw = cellW - 4, bh = cellH - 4;
   int x0 = col * cellW + 2, y0 = row * cellH + 2;
-  uint16_t c = stateColor(s.state);
   int cx = x0 + bw / 2, cy = y0 + bh / 2 - 6;
 
-  // 1. собираем кадр в буфере (в RAM)
 #if ESP_DIAG
-  unsigned long _d0 = micros();
+  unsigned long d0 = micros();
 #endif
   octoBuf.fillScreen(BG);
-  drawOctopus(octoBuf, LCX, LCY, s.state, tt, s.sub);
-#if ESP_DIAG
-  unsigned long _d1 = micros();
-#endif
+  drawOctopus(octoBuf, LCX, LCY, s, tt);
 
-  // 2. свап в big-endian + ОДИН блочный SPI.writeBytes (writePixels у Adafruit
-  //    на ESP8266 идёт пер-пиксельно — ~15мс; блок через FIFO — единицы мс).
+  int idx = row * COLS + col;
+  unsigned long now = millis();
+  if (evFishUntil > now && evFishCell == idx)
+    drawFish(octoBuf, LCX, LCY, 1 - (evFishUntil - now) / 6500.0f, now);
+  if (evCrabUntil > now && evCrabCell == idx)
+    drawCrab(octoBuf, LCX, LCY, 1 - (evCrabUntil - now) / 9000.0f, now);
+  if (evBubUntil > now)
+    drawBubbles(octoBuf, LCX, LCY, 1 - (evBubUntil - now) / 4000.0f, s.seed);
+
+#if ESP_DIAG
+  unsigned long d1 = micros();
+#endif
   uint16_t *bb = octoBuf.getBuffer();
-  uint32_t px = (uint32_t)BUF_W * BUF_H;
+  uint32_t px = (uint32_t)BUF_W * OCTO_H;
   for (uint32_t i = 0; i < px; i++) { uint16_t v = bb[i]; bb[i] = (uint16_t)((v << 8) | (v >> 8)); }
   tft.startWrite();
-  tft.setAddrWindow(cx - LCX, cy - LCY, BUF_W, BUF_H);
+  tft.setAddrWindow(cx - LCX, cy - LCY, BUF_W, OCTO_H);
   SPI.writeBytes((uint8_t *)bb, px * 2);
   tft.endWrite();
+  // обратный свап не нужен: следующий кадр начинается с fillScreen
 #if ESP_DIAG
-  unsigned long _d2 = micros();
-  if (_d1 - _d0 > maxDrawUs) maxDrawUs = _d1 - _d0;   // рисование в буфер (CPU)
-  if (_d2 - _d1 > maxBlitUs) maxBlitUs = _d2 - _d1;   // блит на экран (SPI)
+  unsigned long d2 = micros();
+  if (d1 - d0 > maxDrawUs) maxDrawUs = d1 - d0;
+  if (d2 - d1 > maxBlitUs) maxBlitUs = d2 - d1;
 #endif
 
-  // 3. точка-статус (вне буфера, крошечная) — рисуем напрямую
   bool blink = (s.state != WAITING) || (((int)(tt * 3)) & 1);
-  tft.fillRect(x0 + 3, y0 + 3, 3, 3, blink ? c : BG);
+  tft.fillRect(x0 + 3, y0 + 3, 3, 3, blink ? stateColor(s.state) : BG);
 }
 
-// Полная перерисовка сетки и рамок под текущий sessions[] (пустые слоты — просто фон).
+
+void redrawCell(int i) {
+  redrawRect((i % COLS) * cellW, (i / COLS) * cellH, cellW, cellH);
+  if (sessions[i].active) lastTick[i] = millis();
+}
+
+// Два прохода, и порядок здесь важен для восприятия.
+// Раньше карточка рисовалась целиком (копоть + рамка + имя), и только потом
+// следующая — а копоть тяжёлая, ~10мс на карточку. Из-за этого рамки с именами
+// выползали по очереди, и смена страницы читалась как марш слева направо.
+// Теперь структура появляется разом, а копоть проявляется следом: она фоновая
+// текстура, её постепенное появление глазу не мешает.
+// Совсем одновременно нельзя: под полный кадр 320×240 нужно 150 КБ, у ESP их нет.
+// ЕДИНСТВЕННЫЙ путь отрисовки. Любая перерисовка — это прямоугольник, собранный
+// полосами в буфер и вылитый блитом: весь экран, одна карточка, место всплывашки.
+// Отдельных путей нет намеренно — раньше каждый рисовал по-своему (сетка отдельно,
+// копоть отдельным проходом, осьминоги следующим тиком), и элементы проявлялись
+// разными волнами. Экран целиком в буфер не влезает: 320x240x2 = 150 КБ.
+void redrawRect(int rx, int ry, int rw, int rh) {
+  float tt = millis() / 1000.0f;
+  int x1 = rx + rw, y1 = ry + rh;
+  for (int y0 = ry; y0 < y1; y0 += STRIP_H) {
+    int h = min(STRIP_H, y1 - y0);
+    stripBuf.moveTo(0, y0);
+    stripBuf.fillScreen(BG);
+    composeCurrentScreen(stripBuf, y0, y0 + h - 1, tt);
+
+    uint16_t *b = stripBuf.getBuffer();
+    tft.startWrite();
+    tft.setAddrWindow(rx, y0, rw, h);
+    for (int r = 0; r < h; r++) {
+      uint16_t *row = b + r * W + rx;      // своп на месте: полоса всё равно пересобирается
+      for (int i = 0; i < rw; i++) { uint16_t v = row[i]; row[i] = (uint16_t)((v << 8) | (v >> 8)); }
+      SPI.writeBytes((uint8_t *)row, rw * 2);
+    }
+    tft.endWrite();
+    yield();                              // блит длинный, watchdog кормим между полосами
+  }
+}
+
+// Экран собирается ПОЛОСАМИ в тот же буфер со смещением, которым делается снимок,
+// и каждая полоса выливается одним блитом. Раньше это были три отдельные волны —
+// сетка с рамками, потом копоть по всему экрану, потом осьминоги следующим тиком, —
+// и было видно, как элементы доезжают по очереди. Теперь внутри полосы рамка, имя,
+// осьминог и копоть появляются ОДНОВРЕМЕННО, а экран проходит одним движением
+// сверху вниз. Экран целиком в буфер не влезает физически: 320x240x2 = 150 КБ.
 void redrawAll() {
-  drawGrid();
-  for (int i = 0; i < MAX_SESSIONS; i++) {
-    if (sessions[i].active) {
-      drawCardFrame(i % COLS, i / COLS, sessions[i]);
+  redrawRect(0, 0, W, H);
+  // осьминоги уже нарисованы в полосах — тик анимации продолжается с этого кадра,
+  // без лишней немедленной перерисовки (она и давала «третью волну»)
+  unsigned long now = millis();
+  for (int i = 0; i < MAX_SESSIONS; i++) lastTick[i] = now;
+}
+
+// =============================================================================
+// Всплывашка «2/3»
+// =============================================================================
+static const uint8_t GLYPH[11][5] = {
+  {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1},
+  {7,4,7,1,7}, {7,4,7,5,7}, {7,1,1,1,1}, {7,5,7,5,7}, {7,5,7,1,7},
+  {1,1,2,4,4},   // '/'
+};
+
+void tinyChar(int x, int y, int glyph, int scale, uint16_t col) {
+  for (int r = 0; r < 5; r++)
+    for (int c = 0; c < 3; c++)
+      if (GLYPH[glyph][r] & (1 << (2 - c)))
+        tft.fillRect(x + c * scale, y + r * scale, scale, scale, col);
+}
+
+void popupGeom(int &x, int &y, int &w, int &h) {
+  const int scale = 3;
+  int chars = 3;                                 // «p/n» — обе цифры однознач.
+  if (popupPage >= 10) chars++;
+  if (popupPages >= 10) chars++;
+  w = chars * 4 * scale - scale + 24;
+  h = 5 * scale + 22;
+  x = (W - w) / 2;
+  y = (H - h) / 2;
+}
+
+void drawPopup() {
+  if (popupPages < 2) return;
+  int x, y, w, h;
+  popupGeom(x, y, w, h);
+  tft.fillRect(x, y, w, h, PLATE);
+  tft.drawRect(x, y, w, h, ACCENT);
+  int cx = x + 12, scale = 3;
+  int digits[6], n = 0;
+  if (popupPage >= 10) digits[n++] = popupPage / 10;
+  digits[n++] = popupPage % 10;
+  digits[n++] = 10;                              // '/'
+  if (popupPages >= 10) digits[n++] = popupPages / 10;
+  digits[n++] = popupPages % 10;
+  for (int i = 0; i < n; i++) {
+    tinyChar(cx, y + 11, digits[i], scale, ACCENT);
+    cx += 4 * scale;
+  }
+  popupDrawn = true;
+}
+
+// Гасим плашку: место под ней пересобирается тем же единым путём. Раньше тут
+// вручную чинились фон, гридлайны и рамки задетых карточек — отдельная копия
+// логики отрисовки, которая уже расходилась с настоящей (копоть не чинилась).
+void hidePopup() {
+  if (!popupDrawn) return;
+  popupDrawn = false;
+  int x, y, w, h;
+  popupGeom(x, y, w, h);
+  redrawRect(x, y, w, h);
+}
+
+// =============================================================================
+// Экран кофейни
+// =============================================================================
+void cafeTime(int minutes, char *out) {
+  int hh = (minutes / 60) % 24, mm = minutes % 60;
+  out[0] = '0' + hh / 10; out[1] = '0' + hh % 10; out[2] = ':';
+  out[3] = '0' + mm / 10; out[4] = '0' + mm % 10; out[5] = 0;
+}
+
+const char *cafeLabel(int st) {
+  switch (st) {
+    case 0: return "OPEN";
+    case 1: return "BREAK";
+    case 2: return "LUNCH";
+    case 4: return "CLEANING";
+    default: return "CLOSED";
+  }
+}
+
+uint16_t cafeColor(int st) {
+  switch (st) {
+    case 0: return C_WORKING;
+    case 1: return C_WAITING;
+    case 2: return 0xFC80;      // обед — оранжевый
+    case 4: return ACCENT;      // уборка — свой цвет
+    default: return C_IDLE;
+  }
+}
+
+// --- бариста -----------------------------------------------------------------
+// Живёт в общем буфере (том же, что осьминог аквариума) и блитится одним окном.
+// Реквизит — машина, стакан, пролив — рисуется прямо на панель в своей полосе:
+// там плоский фон, восстанавливать нечего.
+#define CAFE_BOX_X 8
+#define CAFE_BOX_Y 44
+#define CNT_Y      120           // линия стойки
+#define BCX        34            // центр баристы внутри буфера
+#define BCY        46
+#define MACH_X     96
+
+// Полоса реквизита: своё окно вывода. Раньше я стирал её fillRect'ом прямо
+// на панели и рисовал заново каждый кадр — это и был дребезг: между стиранием
+// и отрисовкой панель успевала показать чёрное. Теперь кадр собирается в буфере
+// и выливается одним окном, как осьминоги в аквариуме.
+#define BAND_X 92
+#define BAND_Y 60
+#define BAND_W 32
+#define BAND_H 60
+
+// Выливает прямоугольник общего буфера в окно панели. Байты свопятся построчно
+// на месте: буфер всё равно перезаписывается следующим кадром.
+void blitCanvasRect(int sx, int sy, int w, int h, int dx, int dy) {
+  uint16_t *buf = octoBuf.getBuffer();
+  tft.startWrite();
+  tft.setAddrWindow(dx, dy, w, h);
+  for (int r = 0; r < h; r++) {
+    uint16_t *row = &buf[(sy + r) * BUF_W + sx];
+    for (int i = 0; i < w; i++) { uint16_t v = row[i]; row[i] = (uint16_t)((v << 8) | (v >> 8)); }
+    SPI.writeBytes((uint8_t *)row, w * 2);
+  }
+  tft.endWrite();
+}
+
+void cafeCounter() {
+  tft.fillRect(0, CNT_Y, 124, 7, lerp565(COFFEE_DK, BG, 0.25f));
+  tft.drawFastHLine(0, CNT_Y, 124, lerp565(COFFEEC, CREAMC, 0.25f));
+}
+
+// Машина, стакан и пролив — в локальных координатах полосы.
+void cafeProps(float tt, float fill, bool steam, bool pouring) {
+  GFXcanvas16 &g = octoBuf;
+  g.fillScreen(BG);
+  const int mx = MACH_X - BAND_X, my = 66 - BAND_Y, bottom = CNT_Y - BAND_Y;
+
+  g.fillRect(mx, my, 24, bottom - my, lerp565(0xE73C, BG, 0.62f));
+  g.fillRect(mx + 2, my + 2, 20, 9, lerp565(COFFEE_DK, BG, 0.15f));
+  g.fillRect(mx + 7, my + 13, 10, 6, lerp565(0xE73C, BG, 0.35f));
+  g.fillRect(mx + 10, my + 19, 4, 6, lerp565(0xE73C, BG, 0.5f));
+  uint16_t led = cafeColor(cafeSt);
+  bool on = (cafeSt == 0) ? true
+            : (cafeSt == 3) ? (fmodf(tt, 2.0f) < 0.12f) : (((int)(tt * 1.5f)) & 1) == 0;
+  g.fillRect(mx + 18, my + 5, 4, 4, on ? led : lerp565(led, BG, 0.82f));
+
+  const int cx = (MACH_X + 12) - BAND_X;
+  const int cw2 = 15, chh = 16, cy = bottom - chh;
+  g.fillRect(cx - cw2 / 2, cy, cw2, chh, 0xE73C);
+  g.fillRect(cx - cw2 / 2, cy, cw2, 2, lerp565(0xE73C, BG, 0.4f));
+  int fh = iround((chh - 5) * fill);
+  if (fh > 0) g.fillRect(cx - cw2 / 2 + 2, cy + chh - 2 - fh, cw2 - 4, fh, COFFEEC);
+
+  if (pouring) {
+    for (int y = 91 - BAND_Y; y < cy; y += 2)
+      g.fillRect(cx + iround(fastSin(tt * 14 + y * 0.7f)), y, 2, 2,
+                 lerp565(COFFEEC, CREAMC, 0.2f));
+  }
+  if (steam) {
+    for (int i = 0; i < 10; i++) {
+      float f = (float)i / 10;
+      g.drawPixel(cx + iround(fastSin(tt * 1.5f + i * 0.5f) * 2 * (0.3f + f)), cy - 3 - i,
+                  lerp565(CREAMC, BG, f * f * 0.9f + 0.1f));
     }
   }
+  blitCanvasRect(0, 0, BAND_W, BAND_H, BAND_X, BAND_Y);
 }
 
-// Очистить одну ячейку под фон, восстановив пару гридлайнов на её левой/верхней
-// границе (их затирает fillRect). Правый/нижний край принадлежат соседям — их
-// fillRect не трогает, восстанавливать не нужно.
-void clearCell(int col, int row) {
-  int x = col * cellW, y = row * cellH;
-  tft.fillRect(x, y, cellW, cellH, BG);
-  if (col > 0) tft.drawFastVLine(x, y, cellH, GRIDLINE);
-  if (row > 0) tft.drawFastHLine(x, y, cellW, GRIDLINE);
-}
+// Сцена по статусу. Классы движения намеренно разные: работа — поток предметов,
+// перерыв — работа телом, обед — предмет ко рту, уборка — движение вбок по стойке.
+void drawBarista(float tt) {
+  GFXcanvas16 &g = octoBuf;
+  g.fillScreen(BG);
 
-// Перерисовать ОДНУ ячейку (без касания соседей и без fillScreen): фон + гридлайны,
-// затем рамка и осьминог в новом состоянии сразу (не ждём следующего тика анимации).
-void redrawCell(int i) {
-  int col = i % COLS, row = i / COLS;
-  clearCell(col, row);
-  if (sessions[i].active) {
-    drawCardFrame(col, row, sessions[i]);
-    updateOctopusArea(col, row, sessions[i], millis() / 1000.0f + i * 0.4f);
+  bool lively = (cafeSt == 0 || cafeSt == 1 || cafeSt == 4);
+  int bob = iround(fastSin(tt * (lively ? 1.8f : 1.1f)) * (lively ? 1.5f : 1.0f));
+  int hy = BCY + bob + (cafeSt == 3 ? 6 : 0);
+
+  // потягушки на коротком перерыве: щупальца шире, тело чуть выше
+  float reach = 0;
+  float ph5 = fmodf(tt, 5.0f) / 5.0f;
+  if (cafeSt == 1) {
+    reach = ph5 < 0.40f ? 0 : ph5 < 0.56f ? (ph5 - 0.40f) / 0.16f
+            : ph5 < 0.78f ? 1 : max(0.0f, 1 - (ph5 - 0.78f) / 0.22f);
   }
+  float tSpeed = (cafeSt == 0) ? 2.6f : 1.3f;
+  float tAmp = (cafeSt == 0) ? 1.8f : (cafeSt == 1 ? 0.8f + reach * 3.6f : 0.8f);
+  tentacles(g, BCX, hy, 1, tt, tSpeed, tAmp);
+  sphereBody(g, BCX, hy);
+
+  int exL = BCX - 7, exR = BCX + 7, eyY = hy - 5;
+  bool sleepy = (cafeSt == 2 || cafeSt == 3) || (cafeSt == 1 && reach > 0.35f);
+  if (sleepy) {
+    g.drawFastHLine(exL - 4, eyY, 9, EYE_LIGHT);
+    g.drawFastHLine(exR - 4, eyY, 9, EYE_LIGHT);
+  } else {
+    int look = iround(fastSin(tt * 1.4f) * 1.6f);
+    g.fillCircle(exL, eyY, 4, EYE_LIGHT);
+    g.fillCircle(exR, eyY, 4, EYE_LIGHT);
+    g.fillCircle(exL + look, eyY + 1, 2, EYE_DARK);
+    g.fillCircle(exR + look, eyY + 1, 2, EYE_DARK);
+    g.drawPixel(exL + look - 1, eyY - 1, GLINT);
+    g.drawPixel(exR + look - 1, eyY - 1, GLINT);
+  }
+
+  if (cafeSt == 0) {                       // работает: курит и следит за струёй
+    g.drawFastHLine(BCX - 4, hy + 7, 6, EYE_DARK);
+    cigarette(g, BCX + 3, hy + 6, (((int)(tt * 3)) % 2) == 0, 11);
+    smokeTrail(g, BCX + 20, hy + 5, tt, 14, 2.0f, SMOKE);
+    arm(g, BCX + 13, hy + 9, 62, CNT_Y - CAFE_BOX_Y - 8, 8, tt, 1.6f);   // рука на стойке
+  } else if (cafeSt == 1) {                // перерыв: потягивается и зевает
+    float yawn = (ph5 >= 0.50f && ph5 < 0.76f) ? fastSin((ph5 - 0.50f) / 0.26f * 3.1416f) : 0;
+    if (yawn > 0.15f) g.fillCircle(BCX + 1, hy + 8, 2 + iround(yawn * 3), EYE_DARK);
+    else              g.drawFastHLine(BCX - 3, hy + 7, 7, EYE_DARK);
+    int ex = iround(reach * 9), ey = iround(reach * 20);
+    arm(g, BCX - 12, hy + 8, BCX - 17 - ex, hy - 5 - ey, -6, tt, 1.0f);
+    arm(g, BCX + 12, hy + 8, BCX + 17 + ex, hy - 5 - ey, 6, tt, 1.0f);
+  } else if (cafeSt == 2) {                // обед: сэндвич ко рту и обратно
+    float p = fmodf(tt, 8.0f) / 8.0f;
+    float lift = p < 0.12f ? p / 0.12f : p < 0.70f ? 1.0f
+                 : p < 0.76f ? 1 - (p - 0.70f) / 0.06f : 0.0f;
+    int bites = p < 0.18f ? 0 : p < 0.50f ? 1 : 2;
+    bool bite = (p >= 0.16f && p < 0.24f) || (p >= 0.48f && p < 0.56f);
+    int plateY = CNT_Y - CAFE_BOX_Y - 18;
+    int sx = iround(52 - 9 + (BCX + 7 - (52 - 9)) * lift);
+    int sy = iround(plateY + (hy + 1 - plateY) * lift);
+    g.fillRect(52 - 12, plateY + 13, 24, 2, lerp565(0xE73C, BG, 0.25f));   // тарелка
+    g.fillRect(BCX - 3, hy + 6, 7, bite ? 5 : 1, EYE_DARK);
+    arm(g, BCX + 12, hy + 12, sx + 8, sy + 6, 7 - lift * 4, tt, 1.4f);
+    int sw = 18 - bites * 5;
+    if (sw > 3) {
+      g.fillRect(sx, sy, sw, 3, CREAMC);
+      g.fillRect(sx, sy + 3, sw, 3, 0x6EC5);
+      g.fillRect(sx, sy + 6, sw, 4, 0xAAA9);
+      g.fillRect(sx, sy + 10, sw, 3, CREAMC);
+    }
+  } else if (cafeSt == 4) {                // уборка: водит тряпкой по стойке
+    float mop = fmodf(tt, 2.4f) / 2.4f;
+    int mopX = BCX + 6 + iround(fastSin(mop * 6.2832f) * 22);
+    int mopY = CNT_Y - CAFE_BOX_Y - 7;
+    g.drawFastHLine(BCX - 3, hy + 7, 7, EYE_DARK);
+    arm(g, BCX + 10, hy + 12, mopX, mopY, 5, tt, 2.2f);
+    g.fillRect(mopX - 6, mopY, 12, 4, lerp565(ACCENT, BG, 0.35f));
+    g.drawFastHLine(mopX - 6, mopY, 12, lerp565(ACCENT, 0xFFFF, 0.4f));
+    for (int k = 0; k < 3; k++) {
+      float f = fmodf(tt * 1.6f + k / 3.0f, 1.0f);
+      int x = mopX - 10 + iround(f * 20);
+      if (((x + k) & 3) == 0) g.drawPixel(x, mopY - 3 - iround(f * 3), lerp565(ACCENT, BG, f * 0.7f));
+    }
+  } else {                                 // закрыто: спит, «z z»
+    g.drawFastHLine(BCX - 3, hy + 7, 7, EYE_DARK);
+    arm(g, BCX + 12, hy + 10, 60, CNT_Y - CAFE_BOX_Y - 4, 6, tt, 0.5f);
+    int n = ((int)(tt * 0.9f)) % 3;
+    for (int z = 0; z <= n; z++) {
+      int zx = BCX + 14 + z * 5, zy = hy - SPH_R - 4 - z * 6;
+      g.fillRect(zx, zy, 4, 1, CREAMC);
+      g.fillRect(zx, zy + 3, 4, 1, CREAMC);
+      g.drawLine(zx + 3, zy, zx, zy + 3, CREAMC);
+    }
+  }
+
+  blitCanvasRect(0, 0, BUF_W, BUF_H, CAFE_BOX_X, CAFE_BOX_Y);
 }
 
-// --- Приём снэпшота по serial ------------------------------------------------
+// Динамика кофейни: окно баристы + полоса реквизита. Раз в 40мс, как аквариум.
+// Стойка НЕ перерисовывается — она статика и живёт между кадрами.
+void composeCafeScene(Adafruit_GFX &g, float tt) {
+  drawBarista(tt);
+  float fill = 0.5f;
+  bool pouring = false;
+  if (cafeSt == 0) {
+    float cyc = fmodf(tt, 5.0f) / 5.0f;
+    fill = min(1.0f, cyc * 1.45f);
+    pouring = cyc < 0.72f;
+  } else if (cafeSt == 3) fill = 0.15f;
+  cafeProps(tt, fill, cafeSt == 0 && fill > 0.45f, pouring);
+}
+
+void composeCafe(Adafruit_GFX &g) {
+  char buf[8];
+  g.fillScreen(BG);
+  g.fillRect(0, 0, W, 18, lerp565(COFFEE_DK, BG, 0.35f));
+  g.drawFastHLine(0, 18, W, COFFEEC);
+  g.setTextSize(1);
+  g.setTextColor(CREAMC);
+  g.setCursor(8, 5);
+  g.print(F("OCTO COFFEE"));
+
+  static const char *DOW[7] = {"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
+  cafeTime(cafeNm, buf);
+  g.setCursor(W - 66, 5);
+  g.print(DOW[cafeDow % 7]);
+  g.print(' ');
+  g.print(buf);
+
+  // статус крупно + до какого времени и сколько осталось
+  uint16_t col = cafeColor(cafeSt);
+  g.fillRect(126, 38, 4, 26, col);
+  g.setTextColor(col);
+  g.setTextSize(3);
+  g.setCursor(138, 38);
+  g.print(cafeLabel(cafeSt));
+  cafeTime(cafeTill, buf);
+  g.setTextSize(1);
+  g.setTextColor(lerp565(CREAMC, BG, 0.25f));
+  g.setCursor(138, 66);
+  g.print(cafeSt == 3 ? F("OPENS ") : F("UNTIL "));
+  g.print(buf);
+  int left = (cafeTill - cafeNm + 1440) % 1440;
+  g.setTextSize(2);
+  g.setTextColor(col);
+  g.setCursor(138, 80);
+  if (left >= 60) { g.print(left / 60); g.print('H'); g.print(' '); }
+  g.print(left % 60);
+  g.print(F("M LEFT"));
+
+  // полоса дня: вся длина — рабочее время, вырезы — перерывы и уборка
+  const int bx = 12, by = 140, bw = 296, bh = 14;
+  g.drawRect(bx - 1, by - 1, bw + 2, bh + 2, lerp565(CREAMC, BG, 0.7f));
+  if (cafeCm > cafeOm) {
+    int span = cafeCm - cafeOm;
+    g.fillRect(bx, by, bw, bh, lerp565(C_WORKING, BG, 0.55f));
+    int mx = bx + (long)(min(max(cafeNm, cafeOm), cafeCm) - cafeOm) * bw / span;
+    if (cafeNm > cafeOm) g.fillRect(bx, by, mx - bx, bh, lerp565(C_WORKING, BG, 0.82f));
+    for (int i = 0; i < cafeSegN; i++) {
+      int a = bx + (long)(cafeSegs[i].from - cafeOm) * bw / span;
+      int b2 = bx + (long)(cafeSegs[i].to - cafeOm) * bw / span;
+      uint16_t sc = cafeSegs[i].kind == 1 ? 0xFC80 : (cafeSegs[i].kind == 2 ? ACCENT : C_WAITING);
+      g.fillRect(a, by, max(2, b2 - a), bh, lerp565(sc, BG, cafeNm >= cafeSegs[i].to ? 0.78f : 0.35f));
+    }
+    if (cafeNm >= cafeOm && cafeNm <= cafeCm) {
+      g.fillRect(mx - 1, by - 4, 3, bh + 8, CREAMC);
+      g.fillRect(mx - 3, by - 6, 7, 2, CREAMC);
+    }
+    g.setTextSize(1);
+    g.setTextColor(lerp565(CREAMC, BG, 0.45f));
+    cafeTime(cafeOm, buf); g.setCursor(bx, by + 18); g.print(buf);
+    cafeTime(cafeCm, buf); g.setCursor(bx + bw - 30, by + 18); g.print(buf);
+  } else {
+    g.fillRect(bx, by, bw, bh, lerp565(C_IDLE, BG, 0.75f));
+    g.setTextSize(1);
+    g.setTextColor(lerp565(CREAMC, BG, 0.45f));
+    g.setCursor(140, by + 18);
+    g.print(F("DAY OFF"));
+  }
+
+  // таблица: часы, обед/уборка, чистое время
+  cafeCounter();                     // стойка статична — бариста за ней
+  g.drawFastHLine(12, 168, 296, lerp565(CREAMC, BG, 0.85f));
+  g.setTextSize(1);
+  int rowY = 176;
+  g.setTextColor(lerp565(CREAMC, BG, 0.55f));
+  g.setCursor(12, rowY); g.print(F("HOURS"));
+  g.setTextColor(0xE71C);
+  g.setCursor(220, rowY);
+  if (cafeCm > cafeOm) {
+    cafeTime(cafeOm, buf); g.print(buf); g.print('-');
+    cafeTime(cafeCm, buf); g.print(buf);
+  } else g.print(F("CLOSED"));
+
+  for (int i = 0; i < cafeSegN; i++) {
+    if (cafeSegs[i].kind == 0) continue;
+    rowY += 15;
+    g.setTextColor(lerp565(CREAMC, BG, 0.55f));
+    g.setCursor(12, rowY);
+    g.print(cafeSegs[i].kind == 1 ? F("LUNCH") : F("CLEAN"));
+    g.setTextColor(cafeSegs[i].kind == 1 ? 0xFC80 : ACCENT);
+    g.setCursor(220, rowY);
+    cafeTime(cafeSegs[i].from, buf); g.print(buf); g.print('-');
+    cafeTime(cafeSegs[i].to, buf); g.print(buf);
+  }
+
+  rowY += 15;
+  g.setTextColor(lerp565(CREAMC, BG, 0.55f));
+  g.setCursor(12, rowY); g.print(F("NET"));
+  g.setTextColor(C_WORKING);
+  g.setCursor(220, rowY);
+  g.print(cafeNet / 60); g.print(F("H ")); g.print(cafeNet % 60); g.print(F("M"));
+  cafeDirty = false;
+}
+
+// =============================================================================
+// Сон
+// =============================================================================
+void enterSleep() {
+  tft.fillScreen(BG);
+  tft.sendCommand(ILI9341_DISPOFF);
+}
+
+void leaveSleep() {
+  tft.sendCommand(ILI9341_DISPON);
+  cafeDirty = true;
+  for (int i = 0; i < MAX_SESSIONS; i++) sessions[i].active = false;  // заставить полный diff
+  redrawAll();
+}
+
+// =============================================================================
+// Приём снэпшота
+// =============================================================================
 void readSerial() {
   while (Serial.available()) {
     char c = (char)Serial.read();
@@ -433,22 +1222,187 @@ void readSerial() {
     } else if (lineLen < LINE_MAX - 1) {
       lineBuf[lineLen++] = c;
     } else {
-      lineLen = 0;  // переполнение — сбрасываем строку
+      lineLen = 0;
     }
   }
 }
 
-void handleLine(const char* line) {
-  StaticJsonDocument<2048> doc;   // запас на 6 сессий + суб-агенты (иначе NoMemory → пусто)
-  if (deserializeJson(doc, line)) {         // не JSON — игнор (переполнение UART/буфера?)
+// Документ статический, а не локальный: 2 КБ на стеке (у ESP8266 его ~4 КБ) плюс
+// цепочка handleLine → applySnapshot → redrawCell → redrawRect — верный способ
+// получить исключение по переполнению стека.
+StaticJsonDocument<2048> doc;
+
+// --- отладочный снимок экрана -------------------------------------------------
+// Читать панель нельзя (MISO не разведён), но можно отдать то, что прошивка сама
+// собрала. Экран собирается плитками 68×76 в канву со смещением и уходит в serial
+// шестнадцатеричными строками; мост складывает из них PNG.
+// Нужен затем, чтобы визуальные ошибки ловились до заливки, а не глазами человека.
+
+// Композиция для снимка: те же функции, что рисуют на экран, только цель — канва.
+void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, float tt) {
+  if (curScreen == 1) { composeCafe(g); composeCafeScene(g, tt); return; }
+  composeGrid(g);
+  CanvasSink sink(g);
+  for (int i = 0; i < MAX_SESSIONS; i++) {
+    if (!sessions[i].active) continue;
+    int col = i % COLS, row = i / COLS;
+    if (row * cellH + cellH - 1 < top || row * cellH > bot) continue;
+    SmogP p;
+    smogParams(col, row, sessions[i].mb, p);
+    if (p.on)
+      for (int y = max(p.y0, top); y <= min(p.y1, bot); y++) smogRow(sink, p, y);
+    cardFrame(g, col, row, sessions[i]);
+    int cx = col * cellW + 2 + (cellW - 4) / 2, cy = row * cellH + 2 + (cellH - 4) / 2 - 6;
+    // осьминог занимает ~72 строки и попадает в несколько полос; в те, где его
+    // нет, не лезем вовсе — иначе полная перерисовка считала бы его 15 раз впустую
+    if (cy + OCTO_H / 2 >= top && cy - OCTO_H / 2 <= bot)
+      drawOctopus(g, cx, cy, sessions[i], tt + i * 0.4f);
+    g.fillRect(col * cellW + 5, row * cellH + 5, 3, 3, stateColor(sessions[i].state));
+  }
+}
+
+void sendShot() {
+  Serial.print(F("{\"esp\":\"shot\",\"w\":"));
+  Serial.print(W);
+  Serial.print(F(",\"h\":"));
+  Serial.print(H);
+  Serial.println(F("}"));
+
+  // static, а не на стеке: sendShot зовётся из разбора serial, стека там 4 КБ
+  static char hexLine[W * 4 + 2];
+  static char rleLine[W * 6 + 2];
+  static uint16_t prevRow[W];
+  static const char HEXD[] = "0123456789abcdef";
+  float tt = millis() / 1000.0f;
+
+  // Полосы ТЕ ЖЕ, что рисуют экран, и тем же буфером: снимок физически не может
+  // разойтись с картинкой — отдельной версии отрисовки для него не существует.
+  for (int ty = 0; ty < H; ty += STRIP_H) {
+    int h = min(STRIP_H, H - ty);
+    stripBuf.moveTo(0, ty);
+    stripBuf.fillScreen(BG);
+    composeCurrentScreen(stripBuf, ty, ty + h - 1, tt);
+
+    Serial.print(F("{\"esp\":\"tile\",\"x\":0,\"y\":")); Serial.print(ty);
+    Serial.print(F(",\"w\":")); Serial.print(W);
+    Serial.print(F(",\"h\":")); Serial.print(h);
+    Serial.println(F("}"));
+
+    // Сырой hex — это 307 КБ на экран, то есть ~27с при 115200: снимок не
+    // успевал дойти и склеивался неполным. Поэтому на строку выбираем самую
+    // короткую из трёх записей, а мост понимает все три.
+    uint16_t *b = stripBuf.getBuffer();
+    bool havePrev = false;
+    int dup = 0;
+    for (int y = 0; y < h; y++) {
+      uint16_t *cur = b + y * W;
+      if (havePrev && memcmp(cur, prevRow, W * 2) == 0) { dup++; continue; }
+      if (dup) { Serial.print('#'); Serial.println(dup); dup = 0; }
+
+      int n = 0;                           // raw: 4 hex на пиксель
+      for (int x = 0; x < W; x++) {
+        uint16_t v = cur[x];
+        hexLine[n++] = HEXD[(v >> 12) & 15]; hexLine[n++] = HEXD[(v >> 8) & 15];
+        hexLine[n++] = HEXD[(v >> 4) & 15];  hexLine[n++] = HEXD[v & 15];
+      }
+      hexLine[n] = 0;
+
+      int m = 0;                           // rle: длина серии (2 hex) + цвет (4 hex)
+      for (int x = 0; x < W;) {
+        int run = 1;
+        while (x + run < W && cur[x + run] == cur[x] && run < 255) run++;
+        uint16_t v = cur[x];
+        rleLine[m++] = HEXD[(run >> 4) & 15]; rleLine[m++] = HEXD[run & 15];
+        rleLine[m++] = HEXD[(v >> 12) & 15];  rleLine[m++] = HEXD[(v >> 8) & 15];
+        rleLine[m++] = HEXD[(v >> 4) & 15];   rleLine[m++] = HEXD[v & 15];
+        x += run;
+      }
+      rleLine[m] = 0;
+
+      if (m + 1 < n) { Serial.print('L'); Serial.println(rleLine); }
+      else Serial.println(hexLine);
+      memcpy(prevRow, cur, W * 2);
+      havePrev = true;
+      yield();
+    }
+    if (dup) { Serial.print('#'); Serial.println(dup); }
+  }
+  Serial.println(F("{\"esp\":\"shot_end\"}"));
+}
+
+void handleLine(const char *line) {
+  doc.clear();
+  if (deserializeJson(doc, line)) {
 #if ESP_DIAG
     diagBadJson++;
 #endif
     return;
   }
+  // отладочная команда от моста — не снэпшот
+  const char *cmd = doc["cmd"] | "";
+  if (cmd[0]) {
+    if (strcmp(cmd, "shot") == 0) sendShot();
+    return;
+  }
 #if ESP_DIAG
   diagSnaps++;
 #endif
+
+  bool wantSleep = doc["slp"] | 0;
+  if (wantSleep != sleeping) {
+    sleeping = wantSleep;
+    if (sleeping) enterSleep(); else leaveSleep();
+  }
+  if (sleeping) return;
+
+  int night = doc["nl"] | 0;
+  if (night / 10 != nightLevel / 10) {      // палитра меняется ступеньками, не в кадре
+    nightLevel = night;
+    buildSphere(night);
+    for (int i = 0; i < MAX_SESSIONS; i++) lastTick[i] = 0;
+  }
+
+  int scr = doc["scr"] | 0;
+  if (scr != curScreen) {
+    curScreen = scr;
+    // Смена экрана — ВСЕГДА полная перерисовка: в буфере лежит чужой экран.
+    if (scr == 0) {
+      for (int i = 0; i < MAX_SESSIONS; i++) sessions[i].active = false;
+      redrawAll();
+    }
+    cafeDirty = true;
+  }
+
+  if (scr == 1) {
+    JsonObject c = doc["cafe"];
+    if (!c.isNull()) {
+      int st = c["st"] | 3, nm = c["nm"] | 0, till = c["till"] | 0;
+      if (st != cafeSt || nm != cafeNm || till != cafeTill) cafeDirty = true;
+      cafeSt = st; cafeNm = nm; cafeTill = till;
+      cafeDow = c["dow"] | 0;
+      cafeOm = c["om"] | 0; cafeCm = c["cm"] | 0; cafeNet = c["net"] | 0;
+      cafeSegN = 0;
+      for (JsonArray seg : c["br"].as<JsonArray>()) {
+        if (cafeSegN >= 8) break;
+        cafeSegs[cafeSegN].from = seg[0] | 0;
+        cafeSegs[cafeSegN].to   = seg[1] | 0;
+        cafeSegs[cafeSegN].kind = seg[2] | 0;
+        cafeSegN++;
+      }
+    }
+    if (cafeDirty) composeCafe(tft);
+    return;
+  }
+
+  int page = doc["p"] | 1, pages = doc["pn"] | 1;
+  if (page != curPage || pages != curPages) {
+    curPage = page; curPages = pages;
+    popupPage = page; popupPages = pages;
+    popupUntil = millis() + 1400;           // страница сменилась — показать «2/3»
+    // Меняется ВЕСЬ состав, поэтому и перерисовка общая: по одной ячейке это
+    // ~20мс каждая, и смена страницы читалась как волна слева направо.
+    fullRedraw = true;
+  }
 
   JsonArray arr = doc["sessions"].as<JsonArray>();
   int n = 0;
@@ -460,6 +1414,10 @@ void handleLine(const char* line) {
     strlcpy(c.name, s["name"] | "", sizeof(c.name));
     c.state = (State)(int)(s["state"] | (int)IDLE);
     c.sub = s["sub"] | 0;
+    c.mb  = s["mb"] | 0;
+    c.seed = hash32(c.id);
+    c.poke = 0;
+    c.born = 0;
     n++;
   }
   for (int i = n; i < MAX_SESSIONS; i++) incoming[i].active = false;
@@ -467,73 +1425,160 @@ void handleLine(const char* line) {
   applySnapshot();
 }
 
-// Diff по-ячеечно: перерисовываем ТОЛЬКО те клетки, где сменился состав / имя /
-// статус (цвет рамки завязан на статус) — без fillScreen и без касания соседей.
-// Неизменившиеся карточки loop() продолжает анимировать как ни в чём не бывало.
+// Прошлый состав держим отдельно и статически: сессию надо искать ПО ID, а не по
+// слоту. Иначе исчезнувшая из середины сессия (/new, /clear, конец работы) сдвигает
+// все следующие на слот влево, и прошивка считает их новыми — всплывают все разом.
+// Статически, а не на стеке: у ESP8266 его ~4 КБ, а цепочка вызовов тут глубокая.
+Session prevCards[MAX_SESSIONS];
+
+// Diff по ячейкам: перерисовываем только те, где сменился состав, имя, статус
+// или вес (копоть — статика и живёт в той же перерисовке).
 void applySnapshot() {
+  memcpy(prevCards, sessions, sizeof(prevCards));
+
   for (int i = 0; i < MAX_SESSIONS; i++) {
-    Session &a = sessions[i], &b = incoming[i];
-    bool cellChanged = a.active != b.active ||
-        (b.active && (a.state != b.state ||
-                      strcmp(a.id, b.id) != 0 ||
-                      strcmp(a.name, b.name) != 0));
+    Session &b = incoming[i];
+
+    // та же сессия в прошлом составе — могла переехать в другой слот
+    int was = -1;
+    if (b.active) {
+      for (int k = 0; k < MAX_SESSIONS; k++) {
+        if (prevCards[k].active && strcmp(prevCards[k].id, b.id) == 0) { was = k; break; }
+      }
+    }
+    // события выводим из diff'а по СЕССИИ: протокол ради них не нужен
+    unsigned long poke = 0, born = 0;
+    if (was >= 0) {
+      poke = prevCards[was].poke;
+      born = prevCards[was].born;
+      if (prevCards[was].state != WORKING && b.state == WORKING) poke = millis() + 400;
+    } else if (b.active) {
+      born = millis();                    // этой сессии на экране не было — всплывает
+    }
+
+    // перерисовка — уже по слоту: важно, изменилось ли то, что в нём нарисовано
+    Session &a = prevCards[i];
+    bool changed = a.active != b.active ||
+                   (b.active && (strcmp(a.id, b.id) != 0 || a.state != b.state ||
+                                 strcmp(a.name, b.name) != 0 || a.mb != b.mb));
     sessions[i] = b;
-    if (cellChanged) {
+    sessions[i].poke = poke;
+    sessions[i].born = born;
+    if (changed && !fullRedraw) {
       redrawCell(i);
 #if ESP_DIAG
       diagCells++;
 #endif
     }
   }
+
+  if (fullRedraw) {
+    fullRedraw = false;
+    redrawAll();          // один fillScreen, дальше все осьминоги одним тиком
+  }
 }
 
+// =============================================================================
+// setup / loop
+// =============================================================================
 void setup() {
-  // RX-буфер больше дефолтных 256Б: снэпшот 6 сессий ~300+Б, и пока идёт долгий
-  // рендер, входящие байты копятся — иначе теряются/склеиваются → битый/пустой JSON.
   Serial.setRxBufferSize(1024);
   Serial.begin(115200);
-#if ESP_DIAG
-  diagPrintBoot();   // причина сброса + heap — первым делом после старта serial
-#endif
+  // Маркер загрузки печатаем всегда: мост его логирует, и по причине сброса сразу
+  // видно, что случилось — watchdog, исключение или просто дёрнули DTR.
+  Serial.println();
+  Serial.print(F("{\"esp\":\"boot\",\"ver\":"));
+  Serial.print(FW_VER);
+  Serial.print(F(",\"reason\":\""));
+  Serial.print(ESP.getResetReason());
+  Serial.print(F("\",\"heap\":"));
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(F("}"));
+
+  pinMode(ENC_A, INPUT_PULLUP);
+  pinMode(ENC_B, INPUT_PULLUP);
+  pinMode(ENC_SW, INPUT);            // GPIO16: подтяжка внешняя, см. WIRING.md
+  attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
+
   cellW = W / COLS;
   cellH = H / ROWS;
 
-  tft.begin(40000000);   // 40 МГц SPI — быстрый блочный вывод буфера
-  tft.setSPISpeed(40000000);   // явно: begin() клок иногда не применяет
+  tft.begin(40000000);
+  tft.setSPISpeed(40000000);
   tft.setRotation(3);
 
-  buildSphere();  // предрасчёт тела один раз
+  randomSeed(micros());
+  evNext = millis() + 120000;        // первый вброс не раньше, чем через пару минут
+
+  buildSin();
+  buildSphere(0);
   for (int i = 0; i < MAX_SESSIONS; i++) sessions[i].active = false;
-  redrawAll();   // пустая сетка до первого снэпшота
+  redrawAll();
 }
 
 void loop() {
   readSerial();
+  pollEncoder();
+  if (sleeping) return;              // спим: ни кадров, ни SPI
 
   unsigned long now = millis();
-  if (now - lastTick > TICK_MS) {
-    lastTick = now;
-    // Время анимации — от millis() (wall-clock), НЕ от числа тиков: под нагрузкой
-    // кадры пропускаются, но скорость остаётся правильной (без слоу-мо).
-    float tt = now / 1000.0f;
-#if ESP_DIAG
-    unsigned long frameT0 = micros();
-#endif
-    for (int i = 0; i < MAX_SESSIONS; i++) {
-      if (sessions[i].active) {
-        updateOctopusArea(i % COLS, i / COLS, sessions[i], tt + i * 0.4f);
-      }
+
+  if (curScreen == 1) {
+    if (cafeDirty) composeCafe(tft);       // статика: шапка, статус, полоса дня, таблица
+    if (now - lastTick[0] >= 40) {   // динамика: бариста и реквизит, как в аквариуме
+      lastTick[0] = now;
+      composeCafeScene(tft, now / 1000.0f);
     }
-#if ESP_DIAG
-    unsigned long frameUs = micros() - frameT0;   // сколько заняла отрисовка всех активных
-    if (frameUs > maxFrameUs) maxFrameUs = frameUs;
-#endif
+    return;
   }
 
+  // вбросы: раз в несколько минут, в случайную карточку
+  if (now > evNext) {
+    evNext = now + 120000 + random(180000);
+    int live = 0;
+    for (int i = 0; i < MAX_SESSIONS; i++) if (sessions[i].active) live++;
+    if (live > 0) {
+      int pick = random(live), cell = -1;
+      for (int i = 0, k = 0; i < MAX_SESSIONS; i++)
+        if (sessions[i].active && k++ == pick) { cell = i; break; }
+      switch (random(3)) {
+        case 0: evFishCell = cell; evFishUntil = now + 6500; break;
+        case 1: evBubUntil = now + 4000; break;
+        default: evCrabCell = cell; evCrabUntil = now + 9000; break;
+      }
+    }
+  }
+
+  // всплывашка страницы
+  if (popupUntil > now && !popupDrawn) drawPopup();
+  else if (popupUntil <= now && popupDrawn) hidePopup();
+
 #if ESP_DIAG
-  if (now - lastStat > 2000) {   // раз в 2с — телеметрия в serial (мост залогирует)
+  unsigned long frameT0 = micros();
+#endif
+  for (int i = 0; i < MAX_SESSIONS; i++) {
+    if (!sessions[i].active) continue;
+    if (now - lastTick[i] < tickForState(sessions[i].state)) continue;
+    lastTick[i] = now;
+    updateOctopusArea(i % COLS, i / COLS, sessions[i], now / 1000.0f + i * 0.4f);
+  }
+#if ESP_DIAG
+  unsigned long frameUs = micros() - frameT0;
+  if (frameUs > maxFrameUs) maxFrameUs = frameUs;
+  if (now - lastStat > 2000) {
     lastStat = now;
-    diagPrintStat();
+    Serial.print(F("{\"esp\":\"stat\",\"ver\":")); Serial.print(FW_VER);
+    Serial.print(F(",\"heap\":"));                Serial.print(ESP.getFreeHeap());
+    Serial.print(F(",\"frag\":"));                Serial.print(ESP.getHeapFragmentation());
+    Serial.print(F(",\"maxframe_us\":"));         Serial.print(maxFrameUs);
+    Serial.print(F(",\"draw_us\":"));             Serial.print(maxDrawUs);
+    Serial.print(F(",\"blit_us\":"));             Serial.print(maxBlitUs);
+    Serial.print(F(",\"snaps\":"));               Serial.print(diagSnaps);
+    Serial.print(F(",\"cells\":"));               Serial.print(diagCells);
+    Serial.print(F(",\"badjson\":"));             Serial.print(diagBadJson);
+    Serial.println(F("}"));
+    maxFrameUs = 0; maxDrawUs = 0; maxBlitUs = 0;
   }
 #endif
 }

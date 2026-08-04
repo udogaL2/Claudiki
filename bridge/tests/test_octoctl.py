@@ -40,6 +40,8 @@ def fake_call(monkeypatch):
             return DEBUG_SAMPLE
         if path == "/status":
             return {"v": 1, "sessions": [{"id": "a", "name": "proj", "state": 0, "sub": 2}]}
+        if path == "/shot":
+            return {"ok": True, "path": "/tmp/octodash-shot.png", "w": 320, "h": 240}
         if path == "/resync":
             return {"ok": True, "changed": True}
         if path == "/reset":
@@ -210,7 +212,7 @@ def test_restart_handles_old_version(monkeypatch, capsys):
     monkeypatch.setattr(c.time, "sleep", lambda s: None)
     assert c.cmd_restart() == 0
     assert killed[0] == 555 and spawned == [1]
-    assert "перезапущен: 555 → 999" in capsys.readouterr().out
+    assert "перезапущен: 555 -> 999" in capsys.readouterr().out
 
 
 def test_restart_without_pid_tells_what_to_do(monkeypatch, capsys):
@@ -255,3 +257,24 @@ def test_main_hints_on_old_bridge(monkeypatch, capsys):
     monkeypatch.setattr(c, "call", boom)
     assert c.main(["debug"]) == 1
     assert "старой версией" in capsys.readouterr().err
+
+
+def test_shot_prints_path(fake_call, capsys):
+    assert c.main(["shot"]) == 0
+    out = capsys.readouterr().out
+    assert "320x240" in out and "octodash-shot.png" in out
+    assert ("POST", "/shot") in fake_call
+
+
+def test_shot_reports_failure(monkeypatch, capsys):
+    monkeypatch.setattr(c, "call", lambda p, m="GET", timeout=5.0: {"ok": False})
+    assert c.main(["shot"]) == 1
+    assert "не получился" in capsys.readouterr().err
+
+
+def test_shot_on_old_bridge_suggests_restart(monkeypatch, capsys):
+    def call(path, method="GET", timeout=5.0):
+        raise urllib.error.HTTPError(path, 404, "Not Found", None, None)
+    monkeypatch.setattr(c, "call", call)
+    assert c.main(["shot"]) == 1
+    assert "octoctl restart" in capsys.readouterr().err

@@ -284,10 +284,9 @@ def test_duplicate_names_get_session_suffix(clock, liveness, sink):
     br = make_bridge(cfg, clock, liveness, sink)
     br.handle_event({"session_id": "99ce5dce-aaaa", "event": "working", "cwd": "/x/Claudiki"})
     br.handle_event({"session_id": "8d7d7c21-bbbb", "event": "waiting", "cwd": "/x/Claudiki"})
-    names = {s["id"]: s["name"] for s in br.build_snapshot()["sessions"]}
-    assert names["99ce5dce-aaaa"] == "Claudiki#99ce"
-    assert names["8d7d7c21-bbbb"] == "Claudiki#8d7d"
-    assert names["99ce5dce-aaaa"] != names["8d7d7c21-bbbb"]
+    # id в снэпшоте укорочен (буфер прошивки id[24]), поэтому сверяем по имени
+    names = sorted(s["name"] for s in br.build_snapshot()["sessions"])
+    assert names == ["Claudiki#8d7d", "Claudiki#99ce"]
 
 
 def test_unique_names_keep_no_suffix(bridge):
@@ -562,8 +561,25 @@ def test_autodetect_prefers_known_usb_id():
     assert b.autodetect_port(lambda: ports) == "COM5"
 
 
-def test_autodetect_single_port_fallback():
-    assert b.autodetect_port(lambda: [_port("COM9")]) == "COM9"
+def test_autodetect_single_usb_port_fallback():
+    # единственный USB-порт с неизвестным VID — берём: скорее всего это и есть плата
+    assert b.autodetect_port(lambda: [_port("COM9", 0x9999, 0x1)]) == "COM9"
+
+
+def test_autodetect_ignores_port_without_vid():
+    # COM1 на материнке существует всегда. Мост однажды «нашёл» его при отключённой
+    # плате, открыл и молча сыпал снэпшоты в никуда — экран просто не обновлялся.
+    assert b.autodetect_port(lambda: [_port("COM1")]) is None
+
+
+def test_autodetect_picks_usb_over_motherboard_port():
+    ports = [_port("COM1"), _port("COM3", 0x1A86, 0x7523)]      # COM1 без VID, COM3 CH340
+    assert b.autodetect_port(lambda: ports) == "COM3"
+
+
+def test_autodetect_unknown_usb_wins_over_legacy_port():
+    ports = [_port("COM1"), _port("COM4", 0xDEAD, 0xBEEF)]      # неизвестный, но USB
+    assert b.autodetect_port(lambda: ports) == "COM4"
 
 
 def test_autodetect_ambiguous_returns_none():
@@ -879,7 +895,7 @@ def test_order_prefers_registry_started_ms(bridge, clock):
     bridge.handle_event({"session_id": "early", "event": "working", "cwd": "/p/b"})
     bridge.sessions["late-but-old"].started_ms = 1.0          # родилась давно
     bridge.sessions["early"].started_ms = clock.wall() * 1000  # родилась только что
-    assert ids(bridge) == ["late-but-old", "early"]
+    assert ids(bridge) == ["late-but", "early"]                # id в снэпшоте укорочен
 
 
 # --- Чтение реестра сессий Claude Code ----------------------------------------
@@ -891,7 +907,10 @@ def registry_fs(files):
         return [p for p in files if fnmatch.fnmatch(p, pattern)]
 
     def reader(path):
-        return files.get(path)
+        # Пути внутри моста собираются через os.path.join, и на Windows в них
+        # разделитель "\". Настоящий open() ест оба, поэтому и двойник должен —
+        # иначе тесты реестра зелёные только на Linux.
+        return files.get(path.replace("\\", "/"))
 
     return {"lister": lister, "reader": reader}
 
@@ -1201,7 +1220,8 @@ def test_sink_status_methods(fake_serial):
 # --- Логи: файл с ротацией по умолчанию ---------------------------------------
 def test_default_log_path_respects_xdg(monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", "/tmp/state")
-    assert b.default_log_path() == "/tmp/state/octodash/bridge.log"
+    # разделитель родной для ОС: сравниваем через join, иначе тест зелёный только на Linux
+    assert b.default_log_path() == os.path.join("/tmp/state", "octodash", "bridge.log")
 
 
 def test_setup_log_handlers_creates_file(tmp_path):
@@ -1374,6 +1394,625 @@ def test_http_favicon_is_no_content():
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/favicon.ico", timeout=2) as r:
             assert r.status == 204 and r.read() == b""
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# --- страницы, экраны, энкодер и сон ------------------------------------------
+def fill(bridge, n, state="working"):
+    """n сессий с разным временем старта — чтобы раскладка была детерминированной."""
+    for i in range(n):
+        bridge.handle_event({"event": "start", "session_id": f"s{i:02d}",
+                             "cwd": f"/work/p{i:02d}", "pid": 1000 + i})
+        bridge.handle_event({"event": state, "session_id": f"s{i:02d}"})
+
+
+def test_paginate_splits_by_max_sessions(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    fill(br, 14)
+    pages, stale = br.paginate()
+    assert [len(p) for p in pages] == [6, 6, 2] and stale == []
+    assert br.page_count() == 3
+
+
+def test_paginate_is_empty_page_when_no_sessions(bridge):
+    pages, _ = bridge.paginate()
+    assert pages == [[]] and bridge.page_count() == 1
+
+
+def test_snapshot_carries_page_and_screen(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    fill(br, 8)
+    snap = br.build_snapshot()
+    assert snap["p"] == 1 and snap["pn"] == 2 and snap["scr"] == 0
+    assert len(snap["sessions"]) == 6
+
+
+def test_encoder_rotates_pages_with_wraparound(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    fill(br, 14)                                  # 3 страницы
+    assert br.handle_encoder("cw") and br.page == 1
+    br.handle_encoder("cw")
+    assert br.page == 2
+    br.handle_encoder("cw")
+    assert br.page == 0                           # по кругу
+    br.handle_encoder("ccw")
+    assert br.page == 2                           # и в обратную сторону
+
+
+def test_encoder_page_survives_shrinking_page_count(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    fill(br, 14)
+    br.handle_encoder("cw"), br.handle_encoder("cw")
+    assert br.page == 2
+    for i in range(8, 14):                        # сессий стало меньше — страниц тоже
+        br.handle_event({"event": "end", "session_id": f"s{i:02d}"})
+    snap = br.build_snapshot()
+    assert snap["pn"] == 2 and snap["p"] == 2 and br.page == 1
+
+
+def test_encoder_key_switches_screen(bridge):
+    assert bridge.handle_encoder("key") and bridge.screen == 1
+    bridge.handle_encoder("key")
+    assert bridge.screen == 0
+
+
+def test_encoder_with_held_button_switches_screen(bridge):
+    bridge.handle_encoder("cw", held=True)
+    assert bridge.screen == 1 and bridge.page == 0
+
+
+def test_encoder_does_not_page_outside_aquarium(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    fill(br, 14)
+    br.handle_encoder("key")                      # ушли на кофейню
+    assert br.handle_encoder("cw") is False and br.page == 0
+
+
+def test_encoder_unknown_event_ignored(bridge):
+    assert bridge.handle_encoder("wat") is False
+
+
+def test_hold_sleeps_and_any_turn_wakes(bridge):
+    assert bridge.handle_encoder("hold") and bridge.sleeping
+    assert bridge.build_snapshot() == {"v": 1, "slp": 1}
+    # первый щелчок из сна ТОЛЬКО будит, страницу не листает
+    assert bridge.handle_encoder("cw") and not bridge.sleeping and bridge.page == 0
+
+
+def test_auto_sleep_after_quiet_and_hook_wakes(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6, sleep_min=20), clock, liveness, sink)
+    fill(br, 2)
+    clock.advance(19 * 60)
+    assert br.maybe_sleep() is False and not br.sleeping
+    clock.advance(2 * 60)
+    assert br.maybe_sleep() is True and br.sleeping
+    # WAITING обязан будить: иначе просмотришь, что у тебя спрашивают
+    br.handle_event({"event": "waiting", "session_id": "s00"})
+    assert not br.sleeping
+
+
+def test_auto_sleep_disabled_by_zero(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6, sleep_min=0), clock, liveness, sink)
+    clock.advance(10 * 3600)
+    assert br.maybe_sleep() is False and not br.sleeping
+
+
+@pytest.mark.parametrize("line,expected", [
+    ('{"enc":"cw"}', {"enc": "cw", "held": False}),
+    ('{"enc":"ccw","k":1}', {"enc": "ccw", "held": True}),
+    ('  {"enc":"KEY"}  ', {"enc": "key", "held": False}),
+    ('{"esp":"stat","heap":1}', None),             # диагностика — не команда
+    ('not json at all', None),
+    ('{"enc":42}', None),
+    ('[1,2,3]', None),
+    ('', None),
+])
+def test_parse_esp_line(line, expected):
+    assert b.parse_esp_line(line) == expected
+
+
+def test_debug_reports_screen_state(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    fill(br, 8)
+    br.handle_encoder("cw")
+    dbg = br.build_debug()["bridge"]
+    assert dbg["page"] == 2 and dbg["pages"] == 2 and dbg["screen"] == 0
+    assert dbg["sleeping"] is False and dbg["encoder_events"] == 1
+
+
+def test_hidden_reason_names_the_page(clock, liveness, sink):
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    fill(br, 8)
+    _, hidden = br.select_visible()
+    assert all(r == "стр. 2" for _, r in hidden) and len(hidden) == 2
+
+
+# --- вес сессии (размер транскрипта) ------------------------------------------
+class FakeSizes:
+    """Подставной os.stat: путь → размер в байтах. Тесты не трогают диск."""
+
+    def __init__(self, sizes=None):
+        self.sizes = dict(sizes or {})
+        self.calls = 0
+
+    def __call__(self, path):
+        self.calls += 1
+        return self.sizes.get(path, 0) / (1024 * 1024)
+
+
+def test_transcript_size_mb_reads_file(tmp_path):
+    f = tmp_path / "t.jsonl"
+    f.write_bytes(b"x" * (3 * 1024 * 1024))
+    assert b.transcript_size_mb(str(f)) == 3.0
+
+
+@pytest.mark.parametrize("path", ["", "/nope/missing.jsonl"])
+def test_transcript_size_mb_survives_missing(path):
+    # файла нет или путь пуст — ноль, без исключений и без шума в лог
+    assert b.transcript_size_mb(path) == 0.0
+
+
+def test_hook_transcript_updates_weight(clock, liveness, sink):
+    sizes = FakeSizes({"/t/a.jsonl": 12 * 1024 * 1024})
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._size_probe = sizes
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/work/a",
+                     "transcript": "/t/a.jsonl"})
+    assert br.sessions["a"].size_mb == 12.0
+    # путь запомнен: следующие хуки могут его не присылать
+    sizes.sizes["/t/a.jsonl"] = 20 * 1024 * 1024
+    br.handle_event({"event": "working", "session_id": "a"})
+    assert br.sessions["a"].size_mb == 20.0
+
+
+def test_weight_goes_to_snapshot_only_when_meaningful(clock, liveness, sink):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._size_probe = FakeSizes({"/t/small.jsonl": 300 * 1024,
+                                "/t/big.jsonl": 17 * 1024 * 1024})
+    br.handle_event({"event": "start", "session_id": "small", "cwd": "/w/s",
+                     "transcript": "/t/small.jsonl"})
+    br.handle_event({"event": "start", "session_id": "big", "cwd": "/w/b",
+                     "transcript": "/t/big.jsonl"})
+    cards = {c["id"]: c for c in br.build_snapshot()["sessions"]}
+    assert "mb" not in cards["small"]              # 0.3 МБ — копоти нет, поле не гоняем
+    assert cards["big"]["mb"] == 17
+
+
+def test_weight_visible_in_debug(clock, liveness, sink):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._size_probe = FakeSizes({"/t/a.jsonl": 5 * 1024 * 1024})
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a",
+                     "transcript": "/t/a.jsonl"})
+    row, = br.build_debug()["sessions"]
+    assert row["size_mb"] == 5.0 and row["transcript"] == "/t/a.jsonl"
+
+
+def test_weight_not_probed_without_transcript(clock, liveness, sink):
+    # нет пути — нет обращений к диску вообще
+    sizes = FakeSizes()
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._size_probe = sizes
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a"})
+    br.handle_event({"event": "working", "session_id": "a"})
+    assert sizes.calls == 0 and br.sessions["a"].size_mb == 0.0
+
+
+# --- кофейня ------------------------------------------------------------------
+MON, TUE, WED, THU, FRI, SAT = 0, 1, 2, 3, 4, 5
+
+
+def hm(h, m=0):
+    return h * 60 + m
+
+
+@pytest.mark.parametrize("dow,expected_hours,lunch,clean,breaks", [
+    (MON, (540, 1020), (720, 780), None, 4),
+    (TUE, (540, 1020), (720, 780), None, 4),
+    (WED, (540, 780),  None,       None, 2),      # короткий день: 14:30 и 16:10 вне часов
+    (THU, (540, 1020), (720, 780), None, 4),
+    (FRI, (540, 1020), (720, 780), (960, 1020), 3),   # 16:10 накрыт уборкой — выброшен
+])
+def test_cafe_day_plan(dow, expected_hours, lunch, clean, breaks):
+    day = b.cafe_day(dow)
+    assert (day["om"], day["cm"]) == expected_hours
+    assert day["lunch"] == lunch and day["clean"] == clean
+    assert len(day["breaks"]) == breaks
+
+
+def test_cafe_weekend_has_no_plan():
+    assert b.cafe_day(SAT) is None and b.cafe_day(6) is None
+
+
+@pytest.mark.parametrize("dow,net", [
+    (MON, hm(6, 20)), (WED, hm(3, 40)), (FRI, hm(5, 30)),
+])
+def test_cafe_net_time(dow, net):
+    # пятница: 8ч минус обед, минус уборка, минус ТРИ перерыва (четвёртый внутри уборки)
+    assert b.cafe_net_minutes(b.cafe_day(dow)) == net
+
+
+@pytest.mark.parametrize("dow,minute,state,till", [
+    (MON, hm(8, 30),  b.CAFE_SHUT,  hm(9)),        # до открытия
+    (MON, hm(9),      b.CAFE_OPEN,  hm(10, 20)),   # открылись, до первого перерыва
+    (MON, hm(10, 25), b.CAFE_BREAK, hm(10, 30)),
+    (MON, hm(12, 30), b.CAFE_LUNCH, hm(13)),
+    (MON, hm(16, 15), b.CAFE_BREAK, hm(16, 20)),
+    (MON, hm(17, 1),  b.CAFE_SHUT,  hm(9)),        # закрылись — до завтра
+    (WED, hm(12, 30), b.CAFE_OPEN,  hm(13)),       # в среду обеда нет
+    (WED, hm(14),     b.CAFE_SHUT,  hm(9)),
+    (FRI, hm(15, 59), b.CAFE_OPEN,  hm(16)),
+    (FRI, hm(16, 15), b.CAFE_CLEAN, hm(17)),       # уборка перебивает перерыв 16:10
+    (SAT, hm(12),     b.CAFE_SHUT,  hm(9)),        # выходной
+])
+def test_cafe_status_boundaries(dow, minute, state, till):
+    st = b.cafe_status(dow, minute)
+    assert st["st"] == state and st["till"] == till
+
+
+def test_cafe_status_covers_whole_week():
+    # ни одна минута любого дня не должна остаться без определённого состояния
+    for dow in range(7):
+        for minute in range(0, 1440, 5):
+            st = b.cafe_status(dow, minute)
+            assert st["st"] in b.CAFE_LABEL and isinstance(st["till"], int)
+
+
+def test_cafe_sunday_points_to_monday():
+    assert b.cafe_status(6, hm(12))["till"] == hm(9)
+
+
+def test_snapshot_switches_to_cafe(clock, liveness, sink, monkeypatch):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    fill(br, 3)
+    monkeypatch.setattr(br, "cafe_now", lambda: (MON, hm(12, 30)))
+    br.handle_encoder("key")
+    snap = br.build_snapshot()
+    assert snap["scr"] == 1 and "sessions" not in snap
+    cafe = snap["cafe"]
+    assert cafe["st"] == b.CAFE_LUNCH and cafe["till"] == hm(13)
+    assert cafe["om"] == hm(9) and cafe["cm"] == hm(17) and cafe["net"] == hm(6, 20)
+    # сегменты отсортированы и помечены типом: 0 перерыв, 1 обед, 2 уборка
+    assert cafe["br"] == [[620, 630, 0], [670, 680, 0], [720, 780, 1],
+                          [870, 880, 0], [970, 980, 0]]
+
+
+def test_cafe_friday_marks_cleaning_segment(clock, liveness, sink, monkeypatch):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    monkeypatch.setattr(br, "cafe_now", lambda: (FRI, hm(16, 30)))
+    br.screen = 1
+    cafe = br.build_snapshot()["cafe"]
+    assert cafe["st"] == b.CAFE_CLEAN
+    assert [s for s in cafe["br"] if s[2] == 2] == [[960, 1020, 2]]
+
+
+def test_cafe_weekend_snapshot_is_closed(clock, liveness, sink, monkeypatch):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    monkeypatch.setattr(br, "cafe_now", lambda: (SAT, hm(12)))
+    br.screen = 1
+    cafe = br.build_snapshot()["cafe"]
+    assert cafe["st"] == b.CAFE_SHUT and cafe["om"] == 0 and cafe["br"] == []
+
+
+def test_sleep_beats_cafe_screen(clock, liveness, sink):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br.screen = 1
+    br.handle_encoder("hold")
+    assert br.build_snapshot() == {"v": 1, "slp": 1}
+
+
+# --- свет по рабочему дню -----------------------------------------------------
+@pytest.mark.parametrize("minute,expected", [
+    (hm(9),      0),      # рабочий день — полный свет
+    (hm(13),     0),
+    (hm(17, 59), 0),
+    (hm(18),     0),      # сумерки только начинаются
+    (hm(19, 30), 50),
+    (hm(21),   100),      # стемнело
+    (hm(3),    100),
+    (hm(7),    100),      # рассвет начинается
+    (hm(8),     50),
+    (hm(8, 59),  1),
+])
+def test_night_level(minute, expected):
+    assert b.night_level(minute) == expected
+
+
+def test_night_level_is_monotone_through_the_evening():
+    # свет обязан гаснуть монотонно, иначе на экране будет мигание
+    values = [b.night_level(m) for m in range(hm(18), hm(21) + 1, 5)]
+    assert values == sorted(values) and values[0] == 0 and values[-1] == 100
+
+
+def test_snapshot_carries_night_only_when_dark(clock, liveness, sink, monkeypatch):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    fill(br, 2)
+    monkeypatch.setattr(br, "cafe_now", lambda: (MON, hm(13)))
+    assert "nl" not in br.build_snapshot()          # днём поле не гоняем
+    monkeypatch.setattr(br, "cafe_now", lambda: (MON, hm(22)))
+    assert br.build_snapshot()["nl"] == 100
+
+
+# --- короткие id в снэпшоте ----------------------------------------------------
+def test_short_ids_are_trimmed_but_unique(clock, liveness, sink):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    for sid in ("11111111-aaaa-bbbb-cccc-000000000001",
+                "22222222-aaaa-bbbb-cccc-000000000002"):
+        br.handle_event({"event": "start", "session_id": sid, "cwd": "/w/" + sid[:4]})
+    ids = [c["id"] for c in br.build_snapshot()["sessions"]]
+    assert all(len(i) == 8 for i in ids) and len(set(ids)) == 2
+
+
+def test_short_ids_grow_when_prefixes_collide(clock, liveness, sink):
+    # UUID различаются рано, но если общий префикс длинный — длина сама подрастёт
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    common = "same-prefix-here-"
+    for tail in ("aaa", "bbb"):
+        br.handle_event({"event": "start", "session_id": common + tail, "cwd": "/w/" + tail})
+    ids = [c["id"] for c in br.build_snapshot()["sessions"]]
+    assert len(set(ids)) == 2 and all(len(i) > 8 for i in ids)
+
+
+def test_short_ids_survive_identical_sessions_list(clock, liveness, sink):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    assert br.short_ids([]) == {}
+
+
+def test_snapshot_id_short_enough_for_firmware_buffer(clock, liveness, sink):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br.handle_event({"event": "start", "session_id": "x" * 64, "cwd": "/w/a"})
+    assert len(br.build_snapshot()["sessions"][0]["id"]) <= 20
+
+
+# --- транскрипт находится сам, без помощи хука --------------------------------
+def test_find_transcript_globs_projects():
+    files = ["/r/projects/C--work-proj/abc-123.jsonl"]
+    got = b.find_transcript("abc-123", "/r", lister=lambda pat: [
+        p for p in files if p.startswith("/r/projects/") and p.endswith("abc-123.jsonl")])
+    assert got == files[0]
+
+
+def test_find_transcript_missing_is_empty():
+    assert b.find_transcript("nope", "/r", lister=lambda pat: []) == ""
+    assert b.find_transcript("", "/r", lister=lambda pat: ["x"]) == ""
+
+
+def test_refresh_sizes_discovers_path_without_hook(clock, liveness, sink):
+    # старая установленная обёртка не присылает transcript — мост обязан справиться сам
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._transcript_probe = lambda sid: f"/found/{sid}.jsonl"
+    br._size_probe = FakeSizes({"/found/a.jsonl": 9 * 1024 * 1024})
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a"})
+    assert br.sessions["a"].size_mb == 0.0        # хук пути не дал
+    assert br.refresh_sizes() is True
+    assert br.sessions["a"].size_mb == 9.0
+    assert br.build_snapshot()["sessions"][0]["mb"] == 9
+
+
+def test_refresh_sizes_marks_dirty_only_on_whole_mb(clock, liveness, sink):
+    sizes = FakeSizes({"/t/a.jsonl": 4_400_000})
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._size_probe = sizes
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a",
+                     "transcript": "/t/a.jsonl"})
+    br._dirty.clear()
+    sizes.sizes["/t/a.jsonl"] = 4_450_000         # +50 КБ: целые МБ не изменились
+    assert br.refresh_sizes() is False and not br._dirty.is_set()
+    sizes.sizes["/t/a.jsonl"] = 6_000_000         # 4 → 6 МБ: снэпшот пора обновить
+    assert br.refresh_sizes() is True and br._dirty.is_set()
+
+
+def test_refresh_sizes_skips_sessions_without_transcript(clock, liveness, sink):
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._transcript_probe = lambda sid: ""         # ничего не нашлось
+    br._size_probe = FakeSizes()
+    br.handle_event({"event": "start", "session_id": "ghost", "cwd": "/w/g"})
+    assert br.refresh_sizes() is False
+    assert "mb" not in br.build_snapshot()["sessions"][0]
+
+
+# ---------------------------------------------------------------- снимок экрана
+# Сборщик разбирает поток от платы, где ассистент не может ничего проверить
+# глазами: плитки приходят вперемешку с диагностикой, а ошибка сборки даст
+# просто криво выглядящую картинку — то есть будет принята за баг отрисовки.
+
+def _shot_stream(w, h, tiles):
+    """Поток строк ровно в том формате, в котором его печатает прошивка."""
+    yield json.dumps({"esp": "shot", "w": w, "h": h})
+    for (tx, ty, tw, th, color) in tiles:
+        yield json.dumps({"esp": "tile", "x": tx, "y": ty, "w": tw, "h": th})
+        for _ in range(th):
+            yield "".join(f"{color:04X}" for _ in range(tw))
+    yield json.dumps({"esp": "shot_end"})
+
+
+def test_shot_collector_assembles_tiles():
+    c = b.ShotCollector()
+    c.start()
+    for line in _shot_stream(4, 4, [(0, 0, 2, 2, 0xF800), (2, 2, 2, 2, 0x07E0)]):
+        c.feed(line)
+    assert c.done.is_set()
+    assert c.pixels[0] == 0xF800 and c.pixels[1] == 0xF800      # плитка слева сверху
+    assert c.pixels[4 * 2 + 2] == 0x07E0                        # плитка справа снизу
+    assert c.pixels[3] == 0                                     # чего не присылали — чёрное
+
+
+def test_shot_collector_ignores_noise():
+    """Диагностика и мусор в общем канале не должны рвать сбор."""
+    c = b.ShotCollector()
+    c.start()
+    lines = list(_shot_stream(2, 2, [(0, 0, 2, 2, 0x001F)]))
+    noisy = [lines[0], '{"esp":"boot","ver":14}', lines[1], "не hex вообще",
+             lines[2], "{битый json", lines[3], lines[4]]
+    for line in noisy:
+        c.feed(line)
+    assert c.done.is_set()
+    assert c.pixels == [0x001F] * 4
+
+
+def test_shot_collector_survives_truncated_stream(tmp_path):
+    """Плата может замолчать посередине — PNG всё равно должен получиться."""
+    c = b.ShotCollector()
+    c.start()
+    for line in list(_shot_stream(4, 4, [(0, 0, 4, 4, 0xFFFF)]))[:3]:
+        c.feed(line)
+    assert not c.done.is_set()
+    path = c.save(str(tmp_path / "shot.png"))
+    assert path and os.path.getsize(path) > 0
+
+
+def test_shot_collector_clips_oversized_tile():
+    """Плитка у правого края шире остатка экрана — не должна залезать в след. строку."""
+    c = b.ShotCollector()
+    c.start()
+    c.feed(json.dumps({"esp": "shot", "w": 3, "h": 2}))
+    c.feed(json.dumps({"esp": "tile", "x": 2, "y": 0, "w": 3, "h": 1}))
+    c.feed("F800F800F800")
+    c.feed(json.dumps({"esp": "shot_end"}))
+    assert c.pixels == [0, 0, 0xF800, 0, 0, 0]
+
+
+def test_write_png_is_valid_and_expands_colors(tmp_path):
+    p = str(tmp_path / "x.png")
+    b.write_png(p, 2, 1, [0xF800, 0x07E0])
+    data = open(p, "rb").read()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    import struct, zlib
+    # IHDR сразу после сигнатуры: ширина/высота/глубина/тип цвета
+    w, h, depth, ctype = struct.unpack(">IIBB", data[16:26])
+    assert (w, h, depth, ctype) == (2, 1, 8, 2)
+    # пиксели: чистый красный и чистый зелёный после расширения 5/6 бит в 8
+    idat = data[data.index(b"IDAT") + 4:]
+    raw = zlib.decompress(idat[:struct.unpack(">I", data[data.index(b"IDAT") - 4:data.index(b"IDAT")])[0]])
+    assert raw == bytes([0, 255, 0, 0, 0, 255, 0])
+
+
+def test_request_shot_writes_png(tmp_path, bridge):
+    """Полный путь: команда ушла в sink, плитки пришли, PNG на диске."""
+    br = bridge
+    lines = list(_shot_stream(4, 2, [(0, 0, 4, 2, 0x1234)]))
+
+    def fake_send(line):
+        assert line == '{"cmd":"shot"}\n'
+        for x in lines:
+            br.shot.feed(x)
+        return True
+
+    br.sink.send = fake_send
+    path = br.request_shot(str(tmp_path / "s.png"), timeout=0.1)
+    assert path and os.path.getsize(path) > 0
+    assert br.shot.pixels == [0x1234] * 8
+
+
+def test_request_shot_without_serial_returns_none(tmp_path, bridge):
+    br = bridge
+    br.sink.send = lambda line: False            # порта нет
+    assert br.request_shot(str(tmp_path / "s.png"), timeout=0.01) is None
+
+
+def test_shot_collector_decodes_rle_and_dup():
+    """Сжатые формы должны дать ровно ту же картинку, что сырой hex."""
+    c = b.ShotCollector()
+    c.start()
+    c.feed(json.dumps({"esp": "shot", "w": 4, "h": 3}))
+    c.feed(json.dumps({"esp": "tile", "x": 0, "y": 0, "w": 4, "h": 3}))
+    c.feed("L02F8000207E0")            # 2 красных, 2 зелёных
+    c.feed("#2")                        # ещё две такие же строки
+    c.feed(json.dumps({"esp": "shot_end"}))
+    row = [0xF800, 0xF800, 0x07E0, 0x07E0]
+    assert c.pixels == row * 3
+    assert c.complete
+
+
+def test_shot_dup_before_any_row_is_ignored():
+    c = b.ShotCollector()
+    c.start()
+    c.feed(json.dumps({"esp": "shot", "w": 2, "h": 1}))
+    c.feed(json.dumps({"esp": "tile", "x": 0, "y": 0, "w": 2, "h": 1}))
+    c.feed("#3")                        # повторять нечего — не должно упасть
+    c.feed("00010002")
+    c.feed(json.dumps({"esp": "shot_end"}))
+    assert c.pixels == [1, 2]
+
+
+def test_shot_dup_does_not_cross_tiles():
+    """Плитки разной ширины: повтор из предыдущей плитки испортил бы строку."""
+    c = b.ShotCollector()
+    c.start()
+    c.feed(json.dumps({"esp": "shot", "w": 4, "h": 2}))
+    c.feed(json.dumps({"esp": "tile", "x": 0, "y": 0, "w": 4, "h": 1}))
+    c.feed("0001000200030004")
+    c.feed(json.dumps({"esp": "tile", "x": 0, "y": 1, "w": 4, "h": 1}))
+    c.feed("#1")                        # предыдущей строки в этой плитке нет
+    c.feed("0005000600070008")
+    c.feed(json.dumps({"esp": "shot_end"}))
+    assert c.pixels == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_shot_completeness_detects_truncation():
+    """Обрыв должен быть виден флагом, а не только криво выглядящей картинкой."""
+    c = b.ShotCollector()
+    c.start()
+    c.feed(json.dumps({"esp": "shot", "w": 2, "h": 4}))
+    c.feed(json.dumps({"esp": "tile", "x": 0, "y": 0, "w": 2, "h": 4}))
+    c.feed("00010001")                  # прислали 1 строку из 4
+    c.feed(json.dumps({"esp": "shot_end"}))
+    assert c.done.is_set() and not c.complete
+    assert c.missing_rows == 3
+
+
+def test_shot_completeness_true_only_when_all_rows_arrived():
+    c = b.ShotCollector()
+    c.start()
+    for line in _shot_stream(4, 2, [(0, 0, 4, 2, 0x1234)]):
+        c.feed(line)
+    assert c.complete and c.missing_rows == 0
+
+
+def test_shot_rle_matches_raw_for_same_row():
+    """Оба формата — один и тот же пиксельный результат (иначе снимок врёт)."""
+    raw, rle = b.ShotCollector(), b.ShotCollector()
+    row = [0x1111] * 3 + [0x2222] * 2
+    for c, line in ((raw, "".join(f"{v:04X}" for v in row)), (rle, "L031111022222")):
+        c.start()
+        c.feed(json.dumps({"esp": "shot", "w": 5, "h": 1}))
+        c.feed(json.dumps({"esp": "tile", "x": 0, "y": 0, "w": 5, "h": 1}))
+        c.feed(line)
+        c.feed(json.dumps({"esp": "shot_end"}))
+    assert raw.pixels == rle.pixels == row
+
+
+def test_http_enc_endpoint_drives_screens_and_pages():
+    """POST /enc — единственный способ проверить ручку без железа."""
+    server, port = _serve()
+    try:
+        def enc(ev):
+            with _post(port, "/enc", json.dumps({"enc": ev}).encode()) as r:
+                return json.loads(r.read())
+
+        for i in range(8):                   # две страницы
+            server.bridge.handle_event({"event": "start", "session_id": f"e{i}",
+                                        "cwd": f"/w/p{i}"})
+        assert enc("key")["screen"] == 1
+        r = enc("key")
+        assert r["screen"] == 0 and r["pages"] == 2
+        assert enc("cw")["page"] == 1
+        assert enc("ccw")["page"] == 0
+        assert enc("hold")["sleeping"] is True
+        r = enc("cw")                        # первый щелчок из сна только будит
+        assert r["sleeping"] is False and r["page"] == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_enc_rejects_garbage():
+    server, port = _serve()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(port, "/enc", json.dumps({"enc": "спляши"}).encode())
+        assert exc.value.code == 400
     finally:
         server.shutdown()
         server.server_close()

@@ -118,6 +118,10 @@ def main() -> None:
         "session_id": envelope.get("session_id"),
         "event": event,
         "cwd": envelope.get("cwd", ""),
+        # Путь к транскрипту: мост по нему считает вес сессии (os.stat, без разбора
+        # чужого формата). Контекст держит автокомпакт, а файл растёт всегда — по
+        # весу и видно, когда сессию проще пересоздать через /clear.
+        "transcript": envelope.get("transcript_path", ""),
     }
     if event == "start":
         payload["pid"] = resolve_claude_pid()  # захват PID claude один раз за сессию

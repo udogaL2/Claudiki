@@ -112,3 +112,56 @@ def test_resolve_returns_none_without_psutil(hook, monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert hook.resolve_claude_pid() is None
+
+
+# --- конверт хука → payload моста ---------------------------------------------
+def run_hook(hook, monkeypatch, envelope, argv=("octo-notify.py",)):
+    """Прогоняет main() с подставным stdin и перехватывает отправленный payload."""
+    import io
+    import json
+    import sys
+
+    sent = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        sent["url"] = req.full_url
+        sent["payload"] = json.loads(req.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(envelope)))
+    monkeypatch.setattr(sys, "argv", list(argv))
+    monkeypatch.setattr(hook.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(hook, "resolve_claude_pid", lambda: 4242)
+    hook.main()
+    return sent.get("payload")
+
+
+def test_hook_forwards_transcript_path(hook, monkeypatch):
+    payload = run_hook(hook, monkeypatch, {
+        "session_id": "abc", "hook_event_name": "UserPromptSubmit",
+        "cwd": "/work/proj", "transcript_path": "/home/e/.claude/projects/x/abc.jsonl",
+    })
+    assert payload["transcript"] == "/home/e/.claude/projects/x/abc.jsonl"
+    assert payload["event"] == "working" and payload["session_id"] == "abc"
+
+
+def test_hook_transcript_empty_when_absent(hook, monkeypatch):
+    payload = run_hook(hook, monkeypatch, {
+        "session_id": "abc", "hook_event_name": "Stop", "cwd": "/work/proj",
+    })
+    assert payload["transcript"] == ""
+
+
+def test_hook_start_carries_pid_and_transcript(hook, monkeypatch):
+    payload = run_hook(hook, monkeypatch, {
+        "session_id": "abc", "hook_event_name": "SessionStart",
+        "cwd": "/work/proj", "transcript_path": "/t/abc.jsonl",
+    })
+    assert payload["pid"] == 4242 and payload["transcript"] == "/t/abc.jsonl"

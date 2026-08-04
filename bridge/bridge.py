@@ -111,6 +111,9 @@ class Config:
     # Сколько секунд молодая сессия защищена от удаления сверкой (реестр мог отстать).
     reconcile_grace_sec: float = field(
         default_factory=lambda: float(_env("OCTO_RECONCILE_GRACE_SEC", "30")))
+    # Тишина во всех сессиях столько минут — гасим панель (0 = не гасить).
+    # Сном управляет мост: он один знает, есть ли жизнь, и умеет разбудить экран.
+    sleep_min: float = field(default_factory=lambda: float(_env("OCTO_SLEEP_MIN", "20")))
 
 
 def default_log_path() -> str:
@@ -120,10 +123,13 @@ def default_log_path() -> str:
     octo-run.sh отвязывает процесс, stdout → /dev/null). Поэтому файл включён по
     умолчанию, с ротацией. Отключить: OCTO_LOG_FILE=-
     """
-    if os.name == "nt":  # pragma: no cover - Windows-ветка
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    else:
-        base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    # XDG_STATE_HOME уважаем на любой ОС: если его выставили явно, это осознанный
+    # выбор пользователя, а не догадка платформы (и тест не зависит от того, где
+    # запущен). Иначе — платформенный дефолт.
+    base = os.environ.get("XDG_STATE_HOME")
+    if not base:
+        base = (os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")) if os.name == "nt" \
+            else os.path.expanduser("~/.local/state")
     return os.path.join(base, "octodash", "bridge.log")
 
 
@@ -147,6 +153,8 @@ class Session:
     muted_ms: float = 0.0
     source: str = "hook"              # откуда узнали: hook | registry (для /debug)
     reg_name: str | None = None       # имя сессии по версии Claude Code (справочно)
+    transcript: str = ""              # путь к файлу транскрипта (из конверта хука)
+    size_mb: float = 0.0              # его размер: «вес» сессии, копоть на карточке
 
 
 def basename_of(cwd: str) -> str:
@@ -203,6 +211,124 @@ def shorten_middle(s: str, n: int) -> str:
 def display_name(cwd: str, max_len: int = 16) -> str:
     """Готовое к выводу на ESP имя карточки: basename → транслит → обрезка по центру."""
     return shorten_middle(transliterate(basename_of(cwd)), max_len)
+
+
+# --- расписание кофейни -------------------------------------------------------
+# Второй экран гаджета. Расписание и статус считает МОСТ: он один знает время и
+# умеет менять часы без перепрошивки, а на ESP уезжает готовый код состояния.
+CAFE_OPEN, CAFE_BREAK, CAFE_LUNCH, CAFE_SHUT, CAFE_CLEAN = 0, 1, 2, 3, 4
+CAFE_LABEL = {CAFE_OPEN: "OPEN", CAFE_BREAK: "BREAK", CAFE_LUNCH: "LUNCH",
+              CAFE_SHUT: "CLOSED", CAFE_CLEAN: "CLEANING"}
+
+# Перерывы одни и те же каждый день; в силе только попадающие в часы дня.
+CAFE_BREAKS = [(620, 630), (670, 680), (870, 880), (970, 980)]
+# Ключ — день недели по датовскому weekday(): 0 = понедельник.
+CAFE_WEEK: dict[int, dict] = {
+    0: {"om": 540, "cm": 1020, "lunch": (720, 780)},
+    1: {"om": 540, "cm": 1020, "lunch": (720, 780)},
+    2: {"om": 540, "cm": 780},                                  # среда — короткий, без обеда
+    3: {"om": 540, "cm": 1020, "lunch": (720, 780)},
+    4: {"om": 540, "cm": 1020, "lunch": (720, 780), "clean": (960, 1020)},   # пт — уборка
+}
+
+
+def cafe_day(dow: int, week: dict[int, dict] | None = None) -> dict | None:
+    """План дня: часы, обед, уборка и действующие перерывы. None — выходной.
+
+    Перерыв, накрытый обедом или уборкой, выбрасывается: иначе он рисуется поверх
+    на полосе дня и второй раз вычитается из чистого времени (в пятницу 16:10
+    приходится ровно на уборку).
+    """
+    day = (week or CAFE_WEEK).get(dow)
+    if not day:
+        return None
+    om, cm = day["om"], day["cm"]
+    big = [seg for seg in (day.get("lunch"), day.get("clean")) if seg]
+    breaks = [(f, t) for f, t in CAFE_BREAKS
+              if f >= om and t <= cm and not any(f < bt and bf < t for bf, bt in big)]
+    return {"om": om, "cm": cm, "lunch": day.get("lunch"), "clean": day.get("clean"),
+            "breaks": breaks}
+
+
+def cafe_net_minutes(day: dict | None) -> int:
+    """Чистое рабочее время за вычетом обеда, уборки и перерывов."""
+    if not day:
+        return 0
+    net = day["cm"] - day["om"]
+    for seg in [*day["breaks"], day["lunch"], day["clean"]]:
+        if seg:
+            net -= seg[1] - seg[0]
+    return net
+
+
+def cafe_status(dow: int, minute: int, week: dict[int, dict] | None = None) -> dict:
+    """Что с кофейней прямо сейчас: код состояния и время следующей смены."""
+    week = week or CAFE_WEEK
+    day = cafe_day(dow, week)
+    if day is None or minute >= day["cm"]:
+        nxt = next((week[(dow + i) % 7] for i in range(1, 8) if (dow + i) % 7 in week), None)
+        return {"st": CAFE_SHUT, "till": nxt["om"] if nxt else 0, "day": day}
+    if minute < day["om"]:
+        return {"st": CAFE_SHUT, "till": day["om"], "day": day}
+    for seg, code in ((day["clean"], CAFE_CLEAN), (day["lunch"], CAFE_LUNCH)):
+        if seg and seg[0] <= minute < seg[1]:
+            return {"st": code, "till": seg[1], "day": day}
+    for f, t in day["breaks"]:
+        if f <= minute < t:
+            return {"st": CAFE_BREAK, "till": t, "day": day}
+    edges = [f for f, _ in day["breaks"]]
+    edges += [seg[0] for seg in (day["lunch"], day["clean"]) if seg]
+    till = min([e for e in edges if e > minute] + [day["cm"]])
+    return {"st": CAFE_OPEN, "till": till, "day": day}
+
+
+# Свет в аквариуме привязан к рабочему дню, а не к астрономическому вечеру:
+# днём в полную силу, после работы гаснет. Считает мост — часов у прошивки нет.
+WORK_FROM, WORK_TO = 9 * 60, 18 * 60
+DUSK_MIN, DAWN_MIN = 180, 120
+
+
+def night_level(minute: int) -> int:
+    """0 — день, 100 — ночь. Сумерки плавные, чтобы свет не щёлкал."""
+    if WORK_FROM <= minute < WORK_TO:
+        return 0
+    if WORK_TO <= minute < WORK_TO + DUSK_MIN:
+        return round((minute - WORK_TO) / DUSK_MIN * 100)
+    if WORK_FROM - DAWN_MIN <= minute < WORK_FROM:
+        return round((1 - (minute - WORK_FROM + DAWN_MIN) / DAWN_MIN) * 100)
+    return 100
+
+
+def find_transcript(session_id: str, root: str = "", lister=None) -> str:
+    """Ищет транскрипт сессии: <реестр>/projects/<слаг>/<session_id>.jsonl.
+
+    Полагаться только на путь из конверта хука нельзя: установленная обёртка может
+    быть старой версии (у неё этого поля нет), а сессии, поднятые сверкой с
+    реестром, хуков не присылают вообще. Формат чужой, поэтому не нашли — ноль.
+    """
+    if not session_id:
+        return ""
+    import glob as _glob
+
+    lister = lister or _glob.glob
+    hits = lister(os.path.join(registry_root(root), "projects", "*", f"{session_id}.jsonl"))
+    return hits[0] if hits else ""
+
+
+def transcript_size_mb(path: str, stat_fn: Callable[[str], object] | None = None) -> float:
+    """Вес сессии в мегабайтах по файлу транскрипта.
+
+    Разбирать чужой формат не нужно — достаточно размера: контекст сбрасывает
+    автокомпакт, а файл растёт монотонно, и по нему видно, когда сессию проще
+    пересоздать. Файла нет или нет прав — ноль, это не повод шуметь в лог.
+    """
+    if not path:
+        return 0.0
+    try:
+        size = (stat_fn or os.stat)(path).st_size      # type: ignore[union-attr]
+    except OSError:
+        return 0.0
+    return round(size / (1024 * 1024), 2)
 
 
 def coerce_pid(value: object) -> int | None:
@@ -448,8 +574,13 @@ def autodetect_port(list_ports_fn: Callable[[], list] | None = None) -> str | No
     for p in ports:
         if (p.vid, p.pid) in KNOWN_USB_IDS or (p.vid, None) in KNOWN_USB_IDS:
             return p.device
-    if len(ports) == 1:
-        return ports[0].device
+    # Фолбэк только на USB-порты: у них есть VID. Порт без VID — это COM1 на
+    # материнке или виртуальный переходник, и он существует всегда. Раньше мост
+    # при отключённой плате радостно «находил» COM1, открывал его и молча сыпал
+    # снэпшоты в никуда — экран при этом просто не обновлялся.
+    usb = [p for p in ports if getattr(p, "vid", None)]
+    if len(usb) == 1:
+        return usb[0].device
     return None  # неоднозначно — пусть решает OCTO_SERIAL_PORT
 
 
@@ -631,6 +762,8 @@ class Bridge:
         logger: logging.Logger | None = None,
         wall_clock: Callable[[], float] = time.time,
         registry_probe: Callable[[], list[dict] | None] | None = None,
+        size_probe: Callable[[str], float] = transcript_size_mb,
+        transcript_probe: Callable[[str], str] | None = None,
     ):
         self.cfg = cfg
         self.log = logger or logging.getLogger("octo.bridge")
@@ -641,6 +774,9 @@ class Bridge:
         # Сверка состава с реестром Claude Code; None → читать реальный реестр.
         self._registry_probe = registry_probe or (
             lambda: read_session_registry(self.cfg.registry_root))
+        self._size_probe = size_probe
+        self._transcript_probe = transcript_probe or (
+            lambda sid: find_transcript(sid, self.cfg.registry_root))
 
         self.lock = threading.Lock()
         self.sessions: dict[str, Session] = {}
@@ -657,6 +793,15 @@ class Bridge:
         self._registry_n = 0
         self._last_hidden_key: tuple[str, ...] | None = None
 
+        # Что сейчас на экране. Страницу и экран держит МОСТ, а не прошивка: ESP
+        # присылает только событие энкодера и получает готовый снэпшот.
+        self.page = 0
+        self.screen = 0                       # 0 — аквариум, 1 — кофейня
+        self.sleeping = False
+        self._last_activity = self._clock()
+        self._enc_n = 0                       # диагностика: сколько событий пришло с ручки
+        self.shot = ShotCollector()           # отладочные снимки с платы
+
     # -- обработка события от хука; возвращает True, если снэпшот стал грязным --
     def handle_event(self, data: dict) -> bool:
         event = str(data.get("event", "")).lower()
@@ -670,6 +815,10 @@ class Bridge:
         cwd = data.get("cwd", "")
         name = self._name(cwd)
         pid = coerce_pid(data.get("pid"))
+        transcript = str(data.get("transcript") or "")
+        # Любой хук — признак жизни: сдвигает автосон и будит погашенный экран.
+        # WAITING обязан будить, иначе просмотришь, что у тебя спрашивают.
+        self.touch_activity(wake=True)
         try:
             # абсолютное число работающих субагентов из background_tasks конверта
             subs = max(0, int(data["subs"])) if "subs" in data else None
@@ -678,6 +827,8 @@ class Bridge:
 
         with self.lock:
             sess = self.sessions.get(session_id)
+            if sess is not None:
+                self._note_transcript(sess, transcript)
 
             if event == "end":
                 if self.sessions.pop(session_id, None) is not None:
@@ -687,8 +838,9 @@ class Bridge:
 
             if event == "start":
                 if sess is None:
-                    self.sessions[session_id] = Session(
-                        session_id, name, IDLE, pid, now, now, last_active_ms=now_ms)
+                    sess = Session(session_id, name, IDLE, pid, now, now, last_active_ms=now_ms)
+                    self.sessions[session_id] = sess
+                    self._note_transcript(sess, transcript)
                     self.log.info("start: %s (%s) pid=%s", session_id, name, pid)
                 else:
                     sess.state = IDLE
@@ -707,6 +859,7 @@ class Bridge:
                     # спавн суб-агента у незнакомой сессии → создаём (родитель активен)
                     sess = Session(session_id, name, WORKING, pid, now, now, last_active_ms=now_ms)
                     self.sessions[session_id] = sess
+                    self._note_transcript(sess, transcript)
                 if event == "subagent":
                     sess.subagents += 1
                 elif subs is not None:
@@ -727,8 +880,9 @@ class Bridge:
 
             if sess is None:
                 # событие для незнакомой сессии — создаём на лету (мост мог рестартнуть)
-                self.sessions[session_id] = Session(
-                    session_id, name, new_state, pid, now, now, last_active_ms=now_ms)
+                sess = Session(session_id, name, new_state, pid, now, now, last_active_ms=now_ms)
+                self.sessions[session_id] = sess
+                self._note_transcript(sess, transcript)
                 self.log.info("создана на лету: %s (%s) state=%d", session_id, name, new_state)
                 return self._dirty_set()
 
@@ -749,6 +903,40 @@ class Bridge:
                 sess.state = new_state
                 dirty = True
             return self._dirty_set() if dirty else False
+
+    def _note_transcript(self, sess: Session, path: str) -> None:
+        """Запоминает путь к транскрипту и обновляет вес сессии.
+
+        Считается на хуке: файл растёт только когда сессия работает, а работающая
+        сессия шлёт события. Один os.stat на хук — дёшево. Путь может не прийти
+        (старая обёртка) — тогда его найдёт refresh_sizes по session_id.
+        """
+        if path:
+            sess.transcript = path
+        if sess.transcript:
+            sess.size_mb = self._size_probe(sess.transcript)
+
+    def refresh_sizes(self) -> bool:
+        """Пересчитывает вес всех сессий и сам находит транскрипты без пути.
+
+        Дёргается в такт сверке с реестром. Грязным помечаем только при смене
+        ЦЕЛЫХ мегабайт — снэпшот всё равно везёт целые, а лишние пуши не нужны.
+        """
+        with self.lock:
+            sessions = list(self.sessions.values())
+        changed = False
+        for sess in sessions:
+            path = sess.transcript or self._transcript_probe(sess.session_id)
+            if not path:
+                continue
+            mb = self._size_probe(path)
+            if int(round(mb)) != int(round(sess.size_mb)):
+                changed = True
+            sess.transcript = path
+            sess.size_mb = mb
+        if changed:
+            self.mark_dirty()
+        return changed
 
     def _name(self, cwd: str) -> str:
         return display_name(cwd, self.cfg.name_max)
@@ -898,8 +1086,13 @@ class Bridge:
             return sess.started_ms
         return now_ms - (now - sess.first_seen) * 1000
 
-    def select_visible(self) -> tuple[list[Session], list[tuple[Session, str]]]:
-        """Делит сессии на показанные (не больше max_sessions) и скрытые с причиной."""
+    def paginate(self) -> tuple[list[list[Session]], list[tuple[Session, str]]]:
+        """Все живые сессии, разложенные по страницам, и скрытые как брошенные.
+
+        Отбор и раскладка по-прежнему разные вещи: страницы режутся по приоритету
+        (чтобы важное было на первой), а внутри страницы порядок — по времени старта,
+        чтобы карточки не прыгали при смене статуса.
+        """
         now, now_ms = self._clock(), self._wall() * 1000
         with self.lock:
             all_sessions = list(self.sessions.values())
@@ -909,18 +1102,143 @@ class Bridge:
             reason = self.stale_reason(s, now_ms)
             (stale if reason else fresh).append((s, reason))
 
-        limit = self.cfg.max_sessions
-        # Брошенные не показываем даже при свободных слотах: пустой слот — правда
-        # («здесь никто не работает»), а карточка трёхдневной давности — шум.
         fresh.sort(key=lambda p: (self._PRIO.get(p[0].state, 9), -p[0].last_active_ms))
-        chosen = [p[0] for p in fresh[:limit]]
-        hidden = [(s, r) for s, r in fresh[limit:]] + stale
+        ranked = [p[0] for p in fresh]
 
-        chosen.sort(key=lambda s: self._order_key(s, now, now_ms))
-        return chosen, hidden
+        limit = max(1, self.cfg.max_sessions)
+        pages = [ranked[i:i + limit] for i in range(0, len(ranked), limit)] or [[]]
+        for page in pages:
+            page.sort(key=lambda s: self._order_key(s, now, now_ms))
+        return pages, stale
+
+    def page_count(self) -> int:
+        return len(self.paginate()[0])
+
+    def select_visible(self) -> tuple[list[Session], list[tuple[Session, str]]]:
+        """Текущая страница и всё, чего на ней нет, — с причиной."""
+        pages, stale = self.paginate()
+        idx = min(self.page, len(pages) - 1)
+        if idx != self.page:
+            self.page = idx                       # страниц стало меньше — подтянулись
+        chosen = pages[idx]
+        hidden = [(s, f"стр. {n + 1}") for n, page in enumerate(pages) if n != idx for s in page]
+        return chosen, hidden + stale
+
+    # -- энкодер и сон ---------------------------------------------------------
+    SCREENS = 2                                   # 0 — аквариум, 1 — кофейня
+
+    def touch_activity(self, wake: bool = False) -> None:
+        """Признак жизни: сдвигает точку отсчёта автосна, при wake — будит экран."""
+        self._last_activity = self._clock()
+        if wake and self.sleeping:
+            self.set_sleep(False)
+
+    def set_sleep(self, value: bool) -> bool:
+        if self.sleeping == value:
+            return False
+        self.sleeping = value
+        if not value:
+            self._last_activity = self._clock()
+        self.log.info("экран %s", "уснул" if value else "проснулся")
+        self.mark_dirty()
+        return True
+
+    def maybe_sleep(self) -> bool:
+        """Автосон по тишине. Дёргается из reaper-цикла."""
+        if self.sleeping or self.cfg.sleep_min <= 0:
+            return False
+        if self._clock() - self._last_activity < self.cfg.sleep_min * 60:
+            return False
+        return self.set_sleep(True)
+
+    def handle_encoder(self, event: str, held: bool = False) -> bool:
+        """Событие с ручки. Вращение — страницы, нажатие — экран, удержание — сон.
+
+        Первый щелчок из сна ТОЛЬКО будит и ничего не листает: иначе спросонья
+        улетаешь не на ту страницу.
+        """
+        event = str(event or "").lower()
+        self._enc_n += 1
+        self._last_activity = self._clock()
+        if self.sleeping:
+            self.set_sleep(False)
+            return True
+
+        if event in ("cw", "ccw"):
+            step = 1 if event == "cw" else -1
+            if held:
+                self.screen = (self.screen + step) % self.SCREENS
+            elif self.screen == 0:
+                n = self.page_count()
+                if n:
+                    self.page = (min(self.page, n - 1) + step) % n
+            else:
+                return False                      # вне аквариума листать нечего
+        elif event == "key":
+            self.screen = (self.screen + 1) % self.SCREENS
+        elif event == "hold":
+            return self.set_sleep(True)
+        else:
+            self.log.warning("неизвестное событие энкодера: %r", event)
+            return False
+
+        self.mark_dirty()
+        return True
+
+    # -- экран кофейни --
+    def cafe_now(self) -> tuple[int, int]:
+        """День недели и минуты от полуночи по часам моста."""
+        tm = time.localtime(self._wall())
+        return tm.tm_wday, tm.tm_hour * 60 + tm.tm_min
+
+    def build_cafe(self) -> dict:
+        """Готовый статус кофейни для прошивки: она в расписании не разбирается.
+
+        Едут минуты от полуночи и код состояния — печатать HH:MM из числа и рисовать
+        полосу дня ESP умеет, а знать, что среда короткая, ей незачем.
+        """
+        dow, minute = self.cafe_now()
+        st = cafe_status(dow, minute)
+        day = st["day"]
+        segs: list[list[int]] = []
+        if day:
+            segs = [[f, t, 0] for f, t in day["breaks"]]
+            if day["lunch"]:
+                segs.append([day["lunch"][0], day["lunch"][1], 1])
+            if day["clean"]:
+                segs.append([day["clean"][0], day["clean"][1], 2])
+            segs.sort()
+        return {
+            "st": st["st"], "nm": minute, "dow": dow, "till": st["till"],
+            "om": day["om"] if day else 0, "cm": day["cm"] if day else 0,
+            "net": cafe_net_minutes(day), "br": segs,
+        }
+
+    def request_shot(self, path: str, timeout: float = 60.0) -> str | None:
+        """Просит плату отдать снимок и складывает PNG. None — команда не ушла.
+
+        Снимок собирается на плате той же композицией, что рисует экран, поэтому
+        по нему видно ровно то, что увидит человек. Неполноту НЕ прячем: обрезанный
+        снимок выглядит как «пропали осьминоги» и уже один раз сбил с толку.
+        """
+        self.shot.start()
+        if not self.sink.send('{"cmd":"shot"}\n'):
+            self.log.warning("снимок: не удалось отправить команду (serial?)")
+            return None
+        if not self.shot.done.wait(timeout):
+            self.log.warning("снимок: плата не досыпала плитки за %gс", timeout)
+        if not self.shot.complete:
+            self.log.warning("снимок НЕПОЛНЫЙ: плиток %d, не хватило строк %d",
+                             self.shot.tiles, self.shot.missing_rows)
+        return self.shot.save(path)
 
     # -- построение снэпшота --
     def build_snapshot(self) -> dict:
+        # Спящему экрану состав не нужен: гоняем короткую строку, а не список сессий.
+        if self.sleeping:
+            return {"v": 1, "slp": 1}
+        if self.screen == 1:
+            return {"v": 1, "scr": 1, "cafe": self.build_cafe()}
         visible, hidden = self.select_visible()
         # heartbeat строит снэпшот раз в 5с — логируем только смену состава скрытых,
         # иначе лог заплывёт одинаковыми строками
@@ -932,13 +1250,41 @@ class Bridge:
                     "не на экране (%d): %s", len(hidden),
                     ", ".join(f"{s.name}[{r or 'нет слота'}]" for s, r in hidden),
                 )
-        return {"v": 1, "sessions": self._disambiguate(visible)}
+        pn = self.page_count()
+        snap = {
+            "v": 1,
+            "scr": self.screen,
+            "p": min(self.page, pn - 1) + 1,      # человеческая нумерация: 1..pn
+            "pn": pn,
+            "sessions": self._disambiguate(visible),
+        }
+        nl = night_level(self.cafe_now()[1])
+        if nl:
+            snap["nl"] = nl                        # днём поле не гоняем — экономим байты
+        return snap
+
+    @staticmethod
+    def short_ids(visible: list[Session], want: int = 8, limit: int = 20) -> dict[str, str]:
+        """Короткие id для снэпшота: прошивке они нужны только чтобы отличать карточки.
+
+        Полный session_id — UUID на 36 символов, а в прошивке буфер id[24]: она бы
+        обрезала молча, и diff перестал бы различать сессии. Плюс 36 байт на карточку
+        в строке снэпшота — дорого при LINE_MAX и StaticJsonDocument на ESP.
+        Длину подбираем по факту: минимальную, при которой все видимые id различимы.
+        """
+        ids = [s.session_id for s in visible]
+        for n in range(want, limit + 1):
+            cut = {sid: sid[:n] for sid in ids}
+            if len(set(cut.values())) == len(set(ids)):
+                return cut
+        return {sid: sid[:limit] for sid in ids}
 
     def _disambiguate(self, visible: list[Session]) -> list[dict]:
         """Готовит карточки; при совпадении имён (несколько сессий в одном репо/
         worktree) добавляет короткий суффикс из session_id, чтобы различать."""
         names = [s.name for s in visible]
         dups = {n for n in names if names.count(n) > 1}
+        short = self.short_ids(visible)
         out = []
         for s in visible:
             name = s.name
@@ -946,9 +1292,13 @@ class Bridge:
                 suffix = "#" + s.session_id[:4]
                 base = shorten_middle(name, max(1, self.cfg.name_max - len(suffix)))
                 name = base + suffix
-            item = {"id": s.session_id, "name": name, "state": s.state}
+            item = {"id": short[s.session_id], "name": name, "state": s.state}
             if s.subagents:
                 item["sub"] = min(s.subagents, 5)   # число суб-агентов (кап под экран)
+            if s.size_mb >= 1:
+                # вес в целых МБ: копоть по краям карточки квантуется всё равно грубо,
+                # а на ESP каждый байт снэпшота — это RAM под JSON-документ
+                item["mb"] = int(round(s.size_mb))
             out.append(item)
         return out
 
@@ -1008,6 +1358,8 @@ class Bridge:
                 "pid": sess.pid,
                 "pid_alive": self._is_alive(sess.pid) if sess.pid is not None else None,
                 "subagents": sess.subagents,
+                "size_mb": sess.size_mb,
+                "transcript": sess.transcript,
                 "source": sess.source,
                 "muted": bool(sess.muted_ms and sess.last_active_ms <= sess.muted_ms),
                 "age_sec": round(now - sess.first_seen, 1),
@@ -1036,6 +1388,13 @@ class Bridge:
                 "registry_ok": self._registry_ok,
                 "registry_sessions": self._registry_n,
                 "sink": sink_status() if callable(sink_status) else type(self.sink).__name__,
+                # что сейчас на экране и как он себя чувствует
+                "screen": self.screen,
+                "page": min(self.page, max(0, self.page_count() - 1)) + 1,
+                "pages": self.page_count(),
+                "sleeping": self.sleeping,
+                "quiet_sec": round(now - self._last_activity, 1),
+                "encoder_events": self._enc_n,
             },
             "config": {
                 "max_sessions": self.cfg.max_sessions,
@@ -1049,6 +1408,7 @@ class Bridge:
                 "log_file": self.cfg.log_file,
                 "mock": self.cfg.mock,
                 "diag": self.cfg.diag,
+                "sleep_min": self.cfg.sleep_min,
             },
             "sessions": [dump(s) for s in sorted(sessions, key=lambda s: -s.last_active_ms)],
             "snapshot": self.build_snapshot(),
@@ -1106,6 +1466,10 @@ class Bridge:
         next_reconcile = 0.0
         while not self._stop.wait(self.cfg.reaper_sec):
             self.reap()
+            self.maybe_sleep()
+            # Вес считаем в такт reaper'у, а не сверки: он нужен и когда реестр
+            # выключен (OCTO_REGISTRY_SEC=0), а стоит один os.stat на сессию.
+            self.refresh_sizes()
             if self.cfg.registry_sec > 0 and self._clock() >= next_reconcile:
                 next_reconcile = self._clock() + self.cfg.registry_sec
                 try:
@@ -1315,6 +1679,17 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length) if length else b""
 
+    def _do_shot(self) -> None:
+        import tempfile
+        path = os.path.join(tempfile.gettempdir(), "octodash-shot.png")
+        saved = self.bridge.request_shot(path)
+        shot = self.bridge.shot
+        self._respond(200 if saved else 503,
+                      {"ok": bool(saved), "path": saved or "",
+                       "w": shot.width, "h": shot.height,
+                       "complete": shot.complete, "tiles": shot.tiles,
+                       "missing_rows": shot.missing_rows})
+
     def do_POST(self) -> None:
         if self.path == "/event":
             try:
@@ -1325,8 +1700,30 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(200, {"ok": True})
             return
 
+        if self.path == "/enc":
+            # Ручку иначе не дёрнуть без рук, а страницы, экраны и сон живут
+            # только за ней — без этого их нельзя ни проверить, ни отладить.
+            body = self._drain_body()
+            try:
+                data = json.loads(body or b"{}")
+            except ValueError:
+                data = {}
+            ev = str(data.get("enc", ""))
+            if ev not in ("cw", "ccw", "key", "hold"):
+                self._respond(400, {"ok": False, "error": "enc: cw|ccw|key|hold"})
+                return
+            self.bridge.handle_encoder(ev, held=bool(data.get("held") or data.get("k")))
+            self._respond(200, {"ok": True, "screen": self.bridge.screen,
+                                "page": self.bridge.page,
+                                "pages": self.bridge.page_count(),
+                                "sleeping": self.bridge.sleeping})
+            return
+
         # --- управление (локальный порт, поэтому без авторизации) ---
         self._drain_body()
+        if self.path == "/shot":
+            self._do_shot()
+            return
         if self.path == "/resync":
             changed = self.bridge.reconcile()
             self._respond(200, {"ok": True, "changed": changed,
@@ -1404,16 +1801,192 @@ def bind_singleton(cfg: Config) -> ThreadingHTTPServer | None:
         raise
 
 
-def esp_reader_loop(sink: SerialSink, stop: threading.Event, poll_sec: float = 0.2) -> None:  # pragma: no cover
-    """Слушает обратный канал от ESP и логирует каждую строку как «← ESP: ...».
+def write_png(path: str, width: int, height: int, rgb565: list[int]) -> str:
+    """Пишет PNG из пикселей RGB565. Без внешних зависимостей — только zlib.
 
-    ESP печатает boot/reason/heap/stat/badjson — по ним видно ребуты и падение
-    памяти. Работает только в OCTO_DIAG; ошибки чтения не роняют мост.
+    Нужно для отладочных снимков с платы: прошивка не может прочитать панель
+    (MISO не разведён), но отдаёт то, что сама собрала в буфер. Картинку смотрит
+    человек или ассистент — так визуальные ошибки видно, не заливая прошивку.
+    """
+    import struct
+    import zlib
+
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)                                  # фильтр строки: none
+        row = rgb565[y * width:(y + 1) * width]
+        for c in row:
+            r5, g6, b5 = (c >> 11) & 31, (c >> 5) & 63, c & 31
+            raw += bytes(((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2)))
+        if len(row) < width:                           # плитка не пришла целиком
+            raw += bytes(3 * (width - len(row)))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+           + chunk(b"IEND", b""))
+    with open(path, "wb") as f:
+        f.write(png)
+    return path
+
+
+class ShotCollector:
+    """Собирает отладочный снимок из плиток, которые присылает прошивка.
+
+    Формат: {"esp":"shot","w":..,"h":..} → на каждую плитку
+    {"esp":"tile","x":..,"y":..,"w":..,"h":..} и h строк, в конце
+    {"esp":"shot_end"}. Строка приходит в одном из трёх видов — прошивка на
+    каждую выбирает самый короткий, потому что сырой hex это 307 КБ на экран
+    (~27с при 115200, снимок не успевал дойти):
+      `<hex>`  — 4 hex-цифры на пиксель;
+      `L<hex>` — серии: 2 цифры длина + 4 цифры цвет;
+      `#N`     — следующие N строк совпадают с предыдущей.
+    Непонятные строки игнорируются: канал общий с диагностикой, мусор — норма.
+    """
+
+    def __init__(self):
+        self.width = self.height = 0
+        self.pixels: list[int] = []
+        self.tile: dict | None = None
+        self.row = 0
+        self.prev: list[int] = []
+        self.missing_rows = 0          # строки, которых не хватило плиткам
+        self.tiles = 0
+        self.done = threading.Event()
+
+    def start(self) -> None:
+        self.width = self.height = 0
+        self.pixels = []
+        self.tile = None
+        self.row = 0
+        self.prev = []
+        self.missing_rows = 0
+        self.tiles = 0
+        self.done.clear()
+
+    @property
+    def complete(self) -> bool:
+        """Снимок целый: пришёл финал и все плитки досыпали свои строки.
+
+        Важно отличать неполный снимок от бага отрисовки: обрезанная картинка
+        выглядит как «пропали осьминоги», и один раз уже сбила с толку.
+        """
+        return self.done.is_set() and self.missing_rows == 0 and self.tiles > 0
+
+    def _close_tile(self) -> None:
+        if self.tile is not None:
+            self.missing_rows += max(0, int(self.tile["h"]) - self.row)
+
+    def feed(self, line: str) -> None:
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                d = json.loads(line)
+            except ValueError:
+                return
+            kind = d.get("esp")
+            if kind == "shot":
+                self.width, self.height = int(d.get("w", 0)), int(d.get("h", 0))
+                self.pixels = [0] * (self.width * self.height)
+            elif kind == "tile":
+                self._close_tile()
+                self.tile = d
+                self.tiles += 1
+                self.row = 0
+                self.prev = []             # повтор строки не переходит между плитками
+            elif kind == "shot_end":
+                self._close_tile()
+                self.tile = None
+                self.done.set()
+            return
+        if self.tile is None or not self.pixels:
+            return
+        if line.startswith("#"):                       # повтор предыдущей строки
+            if not self.prev:
+                return
+            try:
+                n = int(line[1:])
+            except ValueError:
+                return
+            for _ in range(max(0, n)):
+                self._put(self.prev)
+            return
+        try:
+            if line.startswith("L"):
+                body, vals = line[1:], []
+                for i in range(0, len(body) - 5, 6):
+                    run, color = int(body[i:i + 2], 16), int(body[i + 2:i + 6], 16)
+                    vals += [color] * run
+            else:
+                vals = [int(line[i:i + 4], 16) for i in range(0, len(line) - 3, 4)]
+        except ValueError:
+            return
+        self._put(vals)
+
+    def _put(self, vals: list[int]) -> None:
+        y = int(self.tile["y"]) + self.row
+        x0 = int(self.tile["x"])
+        if 0 <= y < self.height:
+            base = y * self.width + x0
+            for i, v in enumerate(vals):
+                if x0 + i < self.width:
+                    self.pixels[base + i] = v
+        self.prev = vals
+        self.row += 1
+
+    def save(self, path: str) -> str | None:
+        if not self.pixels or not self.width:
+            return None
+        return write_png(path, self.width, self.height, self.pixels)
+
+
+def parse_esp_line(line: str) -> dict | None:
+    """Разбирает строку обратного канала. Возвращает событие энкодера или None.
+
+    Формат чужой и может меняться, поэтому правило то же, что с реестром сессий:
+    непонятное молча пропускаем, мост из-за этого не падает. Диагностические
+    маркеры ESP (boot/stat/badjson) сюда попадают и отсеиваются как «не команда».
+    """
+    line = (line or "").strip()
+    if not line.startswith("{"):
+        return None
+    try:
+        data = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    enc = data.get("enc")
+    if not isinstance(enc, str):
+        return None
+    return {"enc": enc.lower(), "held": bool(data.get("k"))}
+
+
+def esp_reader_loop(sink: SerialSink, stop: threading.Event, bridge: "Bridge | None" = None,
+                    poll_sec: float = 0.05) -> None:  # pragma: no cover
+    """Слушает обратный канал: команды энкодера и диагностику ESP.
+
+    Читается ВСЕГДА, а не только в OCTO_DIAG: по этому каналу приходит ручка,
+    без него энкодер не работает. Опрос частый — щелчок должен отзываться сразу.
     """
     log = logging.getLogger("octo.esp")
+    diag = logging.getLogger("octo").isEnabledFor(logging.DEBUG)
     while not stop.wait(poll_sec):
         for line in sink.read_lines():
-            log.info("← ESP: %s", line)
+            if bridge is not None and not bridge.shot.done.is_set():
+                bridge.shot.feed(line)          # идёт сбор снимка — строки его
+            cmd = parse_esp_line(line)
+            if cmd is None:
+                if diag:
+                    log.info("← ESP: %s", line)
+                continue
+            log.info("← ESP: %s%s", cmd["enc"], " (с кнопкой)" if cmd["held"] else "")
+            if bridge is not None and bridge.handle_encoder(cmd["enc"], cmd["held"]):
+                bridge.push("encoder")
 
 
 def setup_log_handlers(cfg: Config) -> tuple[list[logging.Handler], str]:
@@ -1459,9 +2032,10 @@ def main() -> int:  # pragma: no cover
     bridge.start_background()
 
     esp_stop = threading.Event()
-    if cfg.diag and not cfg.mock:
+    if not cfg.mock:
+        # Читаем обратный канал всегда: по нему приходит энкодер, а не только диагностика.
         threading.Thread(
-            target=esp_reader_loop, args=(sink, esp_stop), name="esp-reader", daemon=True
+            target=esp_reader_loop, args=(sink, esp_stop, bridge), name="esp-reader", daemon=True
         ).start()
 
     mode = "MOCK" if cfg.mock else "live"

@@ -38,6 +38,15 @@ def call(path: str, method: str = "GET", timeout: float = 5.0) -> dict:
         return json.loads(r.read() or b"{}")
 
 
+# Консоль Windows часто cp1251: без этого любой не-ASCII вывод валит команду
+# UnicodeEncodeError'ом уже после того, как работа сделана.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):      # не TextIO (перехвачен в тестах) — не важно
+        pass
+
+
 def die(msg: str) -> int:
     print(msg, file=sys.stderr)
     return 1
@@ -170,6 +179,24 @@ def cmd_hide(prefix: str) -> int:
     return 0
 
 
+def cmd_shot() -> int:
+    """Снимок экрана с платы: плата собирает картинку и высыпает её в serial.
+
+    Панель по SPI не читается (MISO не разведён), поэтому «фотографирует» себя
+    сама прошивка — тем же кодом композиции, что рисует экран.
+    """
+    r = call("/shot", "POST", timeout=90)
+    if not r.get("ok"):
+        return die("снимок не получился — подключена ли плата и свежая ли прошивка?")
+    print(f"снимок {r['w']}x{r['h']}: {r['path']}")
+    if not r.get("complete", True):
+        # неполный снимок выглядит как пропавшие карточки — молчать об этом нельзя
+        print(f"ВНИМАНИЕ: снимок НЕПОЛНЫЙ (плиток {r.get('tiles')}, "
+              f"не хватило строк {r.get('missing_rows')}) — это обрыв связи, не баг отрисовки")
+        return 2
+    return 0
+
+
 def cmd_restart() -> int:
     try:
         pid = bridge_pid()
@@ -192,7 +219,7 @@ def cmd_restart() -> int:
         new_pid = call("/debug").get("bridge", {}).get("pid")
     except urllib.error.URLError:
         return die("новый мост не поднялся — посмотри лог")
-    print(f"мост перезапущен: {pid} → {new_pid}")
+    print(f"мост перезапущен: {pid} -> {new_pid}")
     return cmd_status()
 
 
@@ -206,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("reset", help="забыть все сессии и пересобрать из реестра")
     hide = sub.add_parser("hide", aliases=["rm"], help="убрать карточку с экрана")
     hide.add_argument("session", help="id сессии или его префикс")
+    sub.add_parser("shot", help="снять экран платы в PNG (нужна прошивка с cmd shot)")
     sub.add_parser("restart", help="перезапустить процесс моста")
     args = p.parse_args(argv)
 
@@ -220,12 +248,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_reset()
         if args.cmd in ("hide", "rm"):
             return cmd_hide(args.session)
+        if args.cmd == "shot":
+            return cmd_shot()
         if args.cmd == "restart":
             return cmd_restart()
         p.print_help()
         return 1
     except urllib.error.HTTPError as exc:
-        if exc.code == 404 and args.cmd in ("debug", "resync", "reset"):  # noqa: E501
+        if exc.code == 404 and args.cmd in ("debug", "resync", "reset", "shot"):  # noqa: E501
             return die(f"мост не знает {args.cmd} — вероятно, запущен старой версией. "
                        f"Обнови его: octoctl restart")
         return die(f"мост ответил {exc.code}: {exc.reason}")
