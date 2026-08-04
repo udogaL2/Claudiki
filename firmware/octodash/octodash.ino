@@ -21,7 +21,13 @@
 #include <ArduinoJson.h>
 
 #define ESP_DIAG 0   // 1 = телеметрия boot/stat в serial (мост её логирует)
-#define FW_VER   27  // бампать при каждой заливке — видно в диаг-логе
+// Снимок экрана (octoctl shot). ОСТАВЛЕН ВКЛЮЧЁННЫМ в проде намеренно: это
+// единственный способ увидеть, что на панели, не стоя рядом с ней, и именно он нашёл
+// три визуальных бага. Цена — 1.9 КБ статической памяти на буфер строки. Флаг есть
+// на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
+// намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
+#define ESP_SHOT 1
+#define FW_VER   28  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1417,6 +1423,7 @@ void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right
   }
 }
 
+#if ESP_SHOT
 void sendShot() {
   Serial.print(F("{\"esp\":\"shot\",\"w\":"));
   Serial.print(W);
@@ -1424,10 +1431,12 @@ void sendShot() {
   Serial.print(H);
   Serial.println(F("}"));
 
-  // static, а не на стеке: sendShot зовётся из разбора serial, стека там 4 КБ
-  static char hexLine[W * 4 + 2];
-  static char rleLine[W * 6 + 2];
-  static uint16_t prevRow[W];
+  // Один буфер на обе записи (RLE длиннее сырой, значит вмещает и её) и никакой
+  // копии предыдущей строки: она лежит рядом в той же полосе. Раньше здесь было
+  // три буфера на 3844 байта — это заметная доля запаса кучи ESP8266 ради
+  // отладочной функции. static, а не на стеке: sendShot зовётся из разбора serial,
+  // стека там 4 КБ.
+  static char shotLine[W * 6 + 2];
   static const char HEXD[] = "0123456789abcdef";
   float tt = millis() / 1000.0f;
 
@@ -1448,43 +1457,51 @@ void sendShot() {
     // успевал дойти и склеивался неполным. Поэтому на строку выбираем самую
     // короткую из трёх записей, а мост понимает все три.
     uint16_t *b = stripBuf.getBuffer();
-    bool havePrev = false;
     int dup = 0;
     for (int y = 0; y < h; y++) {
       uint16_t *cur = b + y * W;
-      if (havePrev && memcmp(cur, prevRow, W * 2) == 0) { dup++; continue; }
+      // предыдущая строка — соседняя в этой же полосе; за границу полосы повтор
+      // не переходит намеренно, мост тоже сбрасывает его на каждой плитке
+      if (y > 0 && memcmp(cur, cur - W, W * 2) == 0) { dup++; continue; }
       if (dup) { Serial.print('#'); Serial.println(dup); dup = 0; }
 
-      int n = 0;                           // raw: 4 hex на пиксель
-      for (int x = 0; x < W; x++) {
-        uint16_t v = cur[x];
-        hexLine[n++] = HEXD[(v >> 12) & 15]; hexLine[n++] = HEXD[(v >> 8) & 15];
-        hexLine[n++] = HEXD[(v >> 4) & 15];  hexLine[n++] = HEXD[v & 15];
-      }
-      hexLine[n] = 0;
-
-      int m = 0;                           // rle: длина серии (2 hex) + цвет (4 hex)
+      int runs = 0;                        // сначала СЧИТАЕМ длину RLE, не собирая её
       for (int x = 0; x < W;) {
         int run = 1;
         while (x + run < W && cur[x + run] == cur[x] && run < 255) run++;
-        uint16_t v = cur[x];
-        rleLine[m++] = HEXD[(run >> 4) & 15]; rleLine[m++] = HEXD[run & 15];
-        rleLine[m++] = HEXD[(v >> 12) & 15];  rleLine[m++] = HEXD[(v >> 8) & 15];
-        rleLine[m++] = HEXD[(v >> 4) & 15];   rleLine[m++] = HEXD[v & 15];
+        runs++;
         x += run;
       }
-      rleLine[m] = 0;
 
-      if (m + 1 < n) { Serial.print('L'); Serial.println(rleLine); }
-      else Serial.println(hexLine);
-      memcpy(prevRow, cur, W * 2);
-      havePrev = true;
+      int n = 0;
+      if (runs * 6 + 1 < W * 4) {          // rle: длина серии (2 hex) + цвет (4 hex)
+        for (int x = 0; x < W;) {
+          int run = 1;
+          while (x + run < W && cur[x + run] == cur[x] && run < 255) run++;
+          uint16_t v = cur[x];
+          shotLine[n++] = HEXD[(run >> 4) & 15]; shotLine[n++] = HEXD[run & 15];
+          shotLine[n++] = HEXD[(v >> 12) & 15];  shotLine[n++] = HEXD[(v >> 8) & 15];
+          shotLine[n++] = HEXD[(v >> 4) & 15];   shotLine[n++] = HEXD[v & 15];
+          x += run;
+        }
+        shotLine[n] = 0;
+        Serial.print('L');
+      } else {                             // raw: 4 hex на пиксель
+        for (int x = 0; x < W; x++) {
+          uint16_t v = cur[x];
+          shotLine[n++] = HEXD[(v >> 12) & 15]; shotLine[n++] = HEXD[(v >> 8) & 15];
+          shotLine[n++] = HEXD[(v >> 4) & 15];  shotLine[n++] = HEXD[v & 15];
+        }
+        shotLine[n] = 0;
+      }
+      Serial.println(shotLine);
       yield();
     }
     if (dup) { Serial.print('#'); Serial.println(dup); }
   }
   Serial.println(F("{\"esp\":\"shot_end\"}"));
 }
+#endif
 
 void handleLine(const char *line) {
   doc.clear();
@@ -1497,7 +1514,9 @@ void handleLine(const char *line) {
   // отладочная команда от моста — не снэпшот
   const char *cmd = doc["cmd"] | "";
   if (cmd[0]) {
+#if ESP_SHOT
     if (strcmp(cmd, "shot") == 0) sendShot();
+#endif
     return;
   }
 #if ESP_DIAG
