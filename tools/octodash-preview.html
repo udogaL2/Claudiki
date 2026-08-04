@@ -1095,14 +1095,23 @@
   // барабан доезжает до присланного индекса и мягко встаёт ровно на него.
   const R_ROW = 20;                       // высота строки барабана
   const R_WIN_Y = 104;                    // верх окна выбора
-  const R_SPIN_MIN = 3.2;                 // порог пуска, строк/с
-  const R_FRICTION = 2.1;                 // трение, строк/с²
-  const R_KICK = 1.25;                    // прибавка скорости за щелчок
+  // Числа подобраны моделью, а не на глаз: у KY-040 20 детентов на оборот, а рукой
+  // реально провернуть максимум один оборот. Прежние значения проваливались в обе
+  // стороны — ленивые пять щелчков уже запускали барабан, а полёт был 0.4 оборота
+  // барабана, то есть никакой рулетки. Проверка: ленивый темп (3 щелчка/с) не
+  // раскручивает вовсе, спокойный (6/с) — 10 щелчков (полоборота ручки), бодрый
+  // (10/с) — 7 щелчков. Полёт: 3.0с и 3 оборота барабана.
+  const R_SPIN_MIN = 2.8;                 // порог пуска, строк/с
+  const R_FRICTION = 2.0;                 // трение при накрутке, строк/с²
+  const R_SPIN_FRICTION = 4.0;            // трение после пуска — оно задаёт длину полёта
+  const R_LAUNCH_V = 12;                  // скорость пуска, строк/с
+  const R_KICK = 0.6;                     // прибавка скорости за щелчок
   const R_WX = 92, R_WW = 216;            // барабан правее: слева живёт осьминог
-  const R_TOP = 26, R_BOT = 214;          // видимая часть барабана
+  const R_TOP = 44, R_BOT = 186;          // видимая часть: ровно ±2 строки от окна,
+                                          // иначе при шести местах в кадре видны повторы
 
-  let rPlaces = ["СТОЛОВАЯ N5", "ПЕЛЬМЕННАЯ", "ШАУРМА У АШОТА", "ЁЛКИ-ПАЛКИ",
-                 "ЦЕХ 85", "КОФЕ И ВСЁ", "ЖУЙ-ЖУЙ", "ЩЁКИНСКИЙ ДВОР"];
+  let rPlaces = ["КАЙЗЕРВЮРСТ", "ФЬЮЖН ЭКСПРЕСС", "ПЕЛЬМЕННАЯ",
+                 "НАПОЛИ", "СКАЗКА", "РОСТИКС"];
   let rPos = 0, rVel = 0, rWin = -1, rWonAt = 0, rLastTick = 0;
   let rState = "idle";                    // idle | charging | spinning | landing | won
 
@@ -1122,6 +1131,9 @@
     rVel += R_KICK * (rState==="spinning" ? 0.6 : 1);
     if(rVel >= R_SPIN_MIN && rState!=="spinning"){
       rState = "spinning";
+      // пуск: барабан подхватывает и летит несколько своих оборотов; чем сильнее
+      // раскрутил сверх порога, тем дольше полёт
+      rVel = R_LAUNCH_V + Math.min(3, (rVel - R_SPIN_MIN) * 1.5);
       wire("in", {enc:"spin", v:+rVel.toFixed(1)});
       // так ответит мост: выбирает победителя и присылает индекс
       const avoid = rWin;
@@ -1138,7 +1150,7 @@
     rLastTick = now;
     if(rState==="idle" || rState==="won"){ rVel = 0; return; }
 
-    rVel = Math.max(0, rVel - R_FRICTION*dt);
+    rVel = Math.max(0, rVel - (rState==="charging" ? R_FRICTION : R_SPIN_FRICTION)*dt);
     rPos += rVel * dt;
     if(rState==="charging" && rVel===0) rState = "idle";
     if(rState==="spinning" && rWin>=0 && rVel < R_SPIN_MIN*1.6) rState = "landing";
@@ -1174,7 +1186,7 @@
 
     // строки барабана
     const base = Math.round(rPos), frac = rPos - base;
-    for(let k=-4;k<=4;k++){
+    for(let k=-2;k<=2;k++){
       const idx = ((base + k) % rN() + rN()) % rN();
       const y = R_WIN_Y + k*R_ROW - Math.round(frac*R_ROW);
       if(y < R_TOP-2 || y > R_BOT-8) continue;
@@ -1217,6 +1229,7 @@
         g.drawPixel(sx, sy, lerp(0xFFFF, BG, ph));
       }
     }
+    roulBubbles(tt, Math.min(1, rVel/6), won);
     roulOcto(tt, now, won);
     roulStatus(now, won);
     blit();
@@ -1225,6 +1238,24 @@
 
   // Осьминог-крупье слева: щупальцем толкает барабан. Частота взмаха растёт со
   // скоростью — движение читается как ПРИЧИНА вращения, а не как соседняя анимация.
+  // Пузыри вокруг крупье: заполняют левую часть экрана и дают ей жизнь. Позиция —
+  // чистая функция времени и номера, без random: иначе кадры не воспроизводятся,
+  // а снимок эмулятора перестаёт быть проверкой.
+  function roulBubbles(tt, spin, won){
+    const n = 9;
+    for(let i=0;i<n;i++){
+      const speed = 9 + (i%4)*3 + spin*14;              // при раскрутке всплывают живее
+      const ph = ((tt*speed + i*37) % 190) / 190;        // 0 внизу, 1 сверху
+      const y = R_BOT + 6 - ph*(R_BOT - R_TOP + 22);
+      const sway = Math.sin(tt*1.3 + i*1.7) * (2 + (i%3));
+      const x = 12 + (i*9) % 62 + sway;
+      const r = 1 + ((i + (ph>0.6 ? 1 : 0)) % 3);
+      const col = lerp(won ? C_WORK : ACCENT, BG, 0.35 + ph*0.5);
+      if(r <= 1) g.drawPixel(x|0, y|0, col);
+      else { g.drawCircle(x|0, y|0, r, col); g.drawPixel((x-r+1)|0, (y-r+1)|0, lerp(col,0xFFFF,0.5)); }
+    }
+  }
+
   function roulOcto(tt, now, won){
     const spin = Math.min(1, rVel/6);
     const ox = 52, oy = R_WIN_Y + 4;
