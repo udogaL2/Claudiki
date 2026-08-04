@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   41  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   39  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -372,9 +372,6 @@ void cafePour(float tt, float &fill, bool &steam, bool &pouring);
 void drawPopup();
 void hidePopup();
 void enterSleep();
-int  backlightTarget();
-void backlightFade(int to);
-void backlightSet(int to);
 void leaveSleep();
 
 // =============================================================================
@@ -1758,69 +1755,18 @@ void composeCafe(Adafruit_GFX &g) {
 }
 
 // =============================================================================
-// Подсветка
-// =============================================================================
-// Управляется с D6 через analogWrite — так же, как на любом модуле, где LED это
-// управляющий вход. Ключ не нужен: LED здесь именно вход, а не питание светодиодов.
-//
-// D6 = MISO аппаратного SPI, и SPI.begin() внутри tft.begin() забирает пин под свою
-// функцию. Поэтому pinMode(BL_PIN, OUTPUT) вызывается ПОСЛЕ tft.begin(): дисплей
-// работает только на запись, MISO к нему не разведён, и мультиплексор возвращается
-// в GPIO без последствий. Нельзя после этого звать SPI.begin() повторно и читать
-// из дисплея (readcommand8) — ни того, ни другого в скетче нет.
-#define BL_PIN   D6
-#define BL_MAX   255          // диапазон analogWrite по умолчанию
-#define BL_NIGHT 90           // яркость в полную ночь: читаемо, но не слепит
-int blNow = BL_MAX;           // текущая яркость, чтобы гасить и разгонять плавно
-
-// Целевая яркость: днём полная, ночью приглушённая по уровню от моста (nl 0..100).
-int backlightTarget() {
-  return BL_MAX - (BL_MAX - BL_NIGHT) * nightLevel / 100;
-}
-
-// Плавный переход. Полсекунды на весь ход: щелчок «свет выключили» читается как
-// поломка, а плавное затухание — как засыпание.
-void backlightFade(int to) {
-  if (to < 0) to = 0;
-  if (to > BL_MAX) to = BL_MAX;
-  int step = (to > blNow) ? 6 : -6;
-  while (blNow != to) {
-    if ((step > 0 && blNow + step > to) || (step < 0 && blNow + step < to)) blNow = to;
-    else blNow += step;
-    analogWrite(BL_PIN, blNow);
-    delay(12);
-  }
-}
-
-void backlightSet(int to) {   // без плавности: для ночного уровня раз в heartbeat
-  if (to < 0) to = 0;
-  if (to > BL_MAX) to = BL_MAX;
-  if (to == blNow) return;
-  blNow = to;
-  analogWrite(BL_PIN, blNow);
-}
-
-// =============================================================================
 // Сон
 // =============================================================================
-// Сон: гасим подсветку и выключаем панель.
-//
-// Управление светом появилось не сразу: на этом модуле пин LED спаян с VCC прямо на
-// плате (проверено — ток в линии нулевой, а свет при отключении провода не гас),
-// поэтому сон был чёрным, но светящимся прямоугольником. После расцепления связи и
-// провода LED → D6 всё делается софтом, как на любом другом модуле.
 void enterSleep() {
-  backlightFade(0);
-  tft.sendCommand(ILI9341_DISPOFF);
   tft.fillScreen(BG);
+  tft.sendCommand(ILI9341_DISPOFF);
 }
 
 void leaveSleep() {
-  tft.sendCommand(ILI9341_DISPON);          // на всякий случай: панель могли гасить раньше
+  tft.sendCommand(ILI9341_DISPON);
   cafeDirty = true;
   for (int i = 0; i < MAX_SESSIONS; i++) sessions[i].active = false;  // заставить полный diff
   redrawAll();
-  backlightFade(backlightTarget());
 }
 
 // =============================================================================
@@ -2005,8 +1951,6 @@ void handleLine(const char *line) {
     buildSphere(night);
     for (int i = 0; i < MAX_SESSIONS; i++) lastTick[i] = 0;
   }
-  nightLevel = night;
-  if (!sleeping) backlightSet(backlightTarget());   // ночью панель ещё и физически тусклее
 
   int scr = doc["scr"] | 0;
   if (scr != curScreen) {
@@ -2182,13 +2126,6 @@ void setup() {
   tft.setSPISpeed(40000000);
   tft.setRotation(3);
 
-  // Забираем D6 назад у SPI (см. блок «Подсветка») и поднимаем свет. Именно здесь,
-  // а не в начале setup: tft.begin() внутри звонит SPI.begin(), который мультиплексор
-  // перехватил бы обратно.
-  pinMode(BL_PIN, OUTPUT);
-  analogWrite(BL_PIN, BL_MAX);
-  blNow = BL_MAX;
-
   randomSeed(micros());
   evNext = millis() + 120000;        // первый вброс не раньше, чем через пару минут
 
@@ -2202,7 +2139,7 @@ void setup() {
 void loop() {
   readSerial();
   pollEncoder();
-  if (sleeping) return;              // спим: ни кадров, ни SPI, ни света
+  if (sleeping) return;              // спим: ни кадров, ни SPI
 
   unsigned long now = millis();
 
