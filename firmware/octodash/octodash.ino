@@ -21,7 +21,7 @@
 #include <ArduinoJson.h>
 
 #define ESP_DIAG 0   // 1 = телеметрия boot/stat в serial (мост её логирует)
-#define FW_VER   19  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   24  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -133,6 +133,12 @@ class OffsetCanvas : public GFXcanvas16 {
 // 3+5=8 ≡ 0 (mod 4): порог ПОСТОЯНЕН вдоль диагонали 45°, и копоть читалась как
 // ровная штриховка, а не как дым. Таблица 8x8 (по 16 значений каждого) ломает
 // эту регулярность одним чтением из флеша, без арифметики на пиксель.
+// Шум границы копоти таблицей 64x64. Раньше это были три синуса НА ПИКСЕЛЬ, и вместе
+// с двумя float-делениями они съедали 989мс из 1157мс полной перерисовки (замерено).
+// Частоты выбраны кратными 2π/64, чтобы плитка стыковалась сама с собой без шва.
+#define SMOG_NOISE_MAX 86              // |шум| в 1/256, нужен для раннего отсева
+int8_t smogNoise[64 * 64];
+
 static const uint8_t SMOG_DITHER[64] = {
   2, 0, 3, 1, 2, 3, 0, 1,
   1, 3, 0, 2, 0, 1, 3, 2,
@@ -182,10 +188,16 @@ struct CanvasSink : PixelSink {
   void px(int x, int y, uint16_t c) override { g.drawPixel(x, y, c); }
 };
 
+// Параметры копоти. Всё, что можно, посчитано ОДИН раз на карточку: три синуса и
+// два float-деления на пиксель стоили 989мс из 1157мс полной перерисовки (замерено,
+// а не угадано), а деление у ESP8266 программное. Внутри строки теперь только
+// чтения из таблиц и целые умножения.
 struct SmogP {
   bool on;
   int x0, y0, x1, y1, leftTo, rightFrom;
-  float reachH, reachV, sm;
+  int reachHi, reachVi;              // запас вбок и по вертикали, целые
+  int smq;                           // вес сессии в 1/256
+  uint16_t hq[24];                   // (i*256)/reachH — доля запаса вбок по столбцу
   uint16_t base;
 };
 
@@ -204,6 +216,8 @@ struct Session {
 const int COLS = 3, ROWS = 2;
 const int MAX_SESSIONS = COLS * ROWS;
 const int W = 320, H = 240;
+// замер: что именно стоит дорого в полной перерисовке (гадать уже пробовал)
+unsigned long usSmog = 0, usOcto = 0, usBlit = 0; int nOcto = 0;
 OffsetCanvas stripBuf(W, STRIP_H);   // полоса сборки экрана и снимка
 int cellW, cellH;
 
@@ -248,7 +262,7 @@ uint16_t diagSnaps = 0, diagBadJson = 0, diagCells = 0;
 void buildSphere(int night);
 void redrawAll();
 void redrawRect(int rx, int ry, int rw, int rh);
-void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, float tt);
+void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, int left, int right, float tt);
 void sendShot();
 void redrawCell(int i);
 void cardFrame(Adafruit_GFX &g, int col, int row, Session &s);
@@ -270,6 +284,29 @@ void leaveSleep();
 static inline float fastSin(float x) { return sinLut[(int32_t)(x * 40.7436f) & 255]; }
 static inline float fastCos(float x) { return sinLut[((int32_t)(x * 40.7436f) + 64) & 255]; }
 static inline int   iround(float x)  { return (int)(x < 0 ? x - 0.5f : x + 0.5f); }
+
+// Целочисленный вариант: q в 1/256. Нужен там, где смешивание идёт на пиксель —
+// float-деления и умножения в таком цикле у ESP8266 программные и стоят дорого.
+// SPI.writeBytes на ESP8266 читает буфер 32-битными словами, поэтому адрес обязан
+// быть выровнен на 4. Прямоугольник может начинаться на ЛЮБОМ x (место всплывашки,
+// реквизит кофейни) — и строка внутри буфера оказывалась выровненной лишь на 2:
+// Exception (9), ребут, снова всплывашка, снова ребут. Поэтому строка всегда
+// копируется в выровненный буфер; заодно исходный буфер не портится свапом.
+static uint16_t blitLine[W] __attribute__((aligned(4)));
+
+void blitRow(const uint16_t *src, int n) {
+  for (int i = 0; i < n; i++) { uint16_t v = src[i]; blitLine[i] = (uint16_t)((v << 8) | (v >> 8)); }
+  SPI.writeBytes((uint8_t *)blitLine, n * 2);
+}
+
+uint16_t lerp565q(uint16_t a, uint16_t b, int q) {
+  if (q < 0) q = 0;
+  if (q > 256) q = 256;
+  int r = (a >> 11) & 31, g = (a >> 5) & 63, bl = a & 31;
+  int r2 = (b >> 11) & 31, g2 = (b >> 5) & 63, b2 = b & 31;
+  r += ((r2 - r) * q) >> 8; g += ((g2 - g) * q) >> 8; bl += ((b2 - bl) * q) >> 8;
+  return (uint16_t)((r << 11) | (g << 5) | bl);
+}
 
 uint16_t lerp565(uint16_t a, uint16_t b, float t) {
   if (t < 0) t = 0;
@@ -402,6 +439,19 @@ void buildSphere(int night) {
 
 void buildSin() {
   for (int i = 0; i < 256; i++) sinLut[i] = sinf(i * (6.2831853f / 256.0f));
+}
+
+// Шум копоти: те же три волны разной частоты, что считались на пиксель, но
+// посчитанные один раз на старте. Частоты кратны 2π/64 — плитка стыкуется без шва.
+void buildSmogNoise() {
+  const float k = 6.2831853f / 64.0f;
+  for (int y = 0; y < 64; y++)
+    for (int x = 0; x < 64; x++) {
+      float n = sinf((x * 3 + y * 1) * k) * 2.0f
+                + sinf((y * 3 - x * 1) * k + 2.1f) * 1.6f
+                + sinf((x + y) * 2 * k + 4.2f) * 1.2f;
+      smogNoise[(y << 6) | x] = (int8_t)(n * (SMOG_NOISE_MAX / 4.8f));
+    }
 }
 
 // =============================================================================
@@ -669,7 +719,8 @@ void smogParams(int col, int row, int mb, SmogP &p) {
   if (!p.on) return;
   // Корень, а не линейка: у сессий предел 15-20 МБ, но живут они в основном
   // в диапазоне 2-8 МБ. При линейной шкале там были бы неразличимые 3 пикселя.
-  p.sm = sqrtf(min(1.0f, mb / 20.0f));
+  float sm = sqrtf(min(1.0f, mb / 20.0f));
+  p.smq = (int)(sm * 256);
   p.x0 = col * cellW + 3;
   p.y0 = row * cellH + 3;
   p.x1 = col * cellW + cellW - 4;
@@ -678,16 +729,18 @@ void smogParams(int col, int row, int mb, SmogP &p) {
   // упиралась в них уже к 6 МБ — дальше отличить 6 от 20 было нечем. Сверху и снизу
   // места 22px, поэтому вверх слой растёт втрое сильнее: высота видна боковым
   // зрением, в отличие от плотности решета.
-  p.reachH = 2 + p.sm * 6;            // вбок: 2..8
-  p.reachV = 3 + p.sm * 13;           // вверх и вниз: 3..16
-  float lim = p.reachH + 5;
+  p.reachHi = 2 + (p.smq * 6 >> 8);   // вбок: 2..8
+  p.reachVi = 3 + (p.smq * 13 >> 8);  // вверх и вниз: 3..16
+  // доля запаса вбок по столбцу — считается один раз, в строке только чтение
+  for (int i = 0; i < 24; i++) p.hq[i] = (uint16_t)((i * 256) / p.reachHi);
+  int lim = p.reachHi + 5;
   // Границы полос ЦЕЛЫЕ. Со дробными сравнение x < x1 - lim и присваивание
   // x = (int)(x1 - lim - 1) зацикливались: усечение возвращало x назад, инкремент
   // снова попадал в условие. Плата зависала и уходила по watchdog — в эмуляторе
   // бага не было, там x дробный.
-  p.leftTo = p.x0 + (int)lim;
-  p.rightFrom = p.x1 - (int)lim;
-  p.base = lerp565(SMOKE, SMOG_HI, p.sm);   // тяжёлая сессия ещё и ярче
+  p.leftTo = p.x0 + lim;
+  p.rightFrom = p.x1 - lim;
+  p.base = lerp565(SMOKE, SMOG_HI, sm);   // тяжёлая сессия ещё и ярче
 }
 
 // Одна строка копоти. Транзакцию открывает вызывающий: каждый drawPixel у Adafruit
@@ -695,24 +748,24 @@ void smogParams(int col, int row, int mb, SmogP &p) {
 // под 15 тысяч подряд — ESP уходил в перезагрузку.
 void smogRow(PixelSink &sink, const SmogP &p, int y) {
   int dvRaw = min(y - p.y0, p.y1 - y);
-  bool rowFar = dvRaw > (int)(p.reachV + 5);
+  int vq = (dvRaw << 8) / p.reachVi;             // единственное деление на строку
+  bool rowFar = vq > 256 + SMOG_NOISE_MAX;       // даже максимум шума сюда не дотянет
   for (int x = p.x0; x <= p.x1; x++) {
     // прыжок гарантированно вперёд: x++ доведёт ровно до rightFrom
     if (rowFar && x > p.leftTo && x < p.rightFrom) { x = p.rightFrom - 1; continue; }
-    // волнистая граница: три синуса разной частоты — облако, а не рамка
-    float n = fastSin(x * 0.31f + y * 0.11f) * 2.0f
-              + fastSin(y * 0.27f - x * 0.08f + 2.1f) * 1.6f
-              + fastSin((x + y) * 0.13f + 4.2f) * 1.2f;
-    // каждая ось нормируется на свой запас, поэтому слой сверху толстый,
-    // а сбоку тонкий; t = 0 у самого края, 1 на границе облака
-    float t = min((float)min(x - p.x0, p.x1 - x) / p.reachH, dvRaw / p.reachV) + n * 0.07f;
-    if (t > 1.0f) continue;
-    if (t < 0) t = 0;
+    int i = min(x - p.x0, p.x1 - x);
+    // t в 1/256: 0 у самого края, 256 на границе облака. Каждая ось нормируется
+    // на свой запас, поэтому слой сверху толстый, а сбоку тонкий.
+    int tq = min(i < 24 ? (int)p.hq[i] : 1024, vq);
+    if (tq > 256 + SMOG_NOISE_MAX) continue;     // до облака далеко — шум не считаем
+    tq += smogNoise[((y & 63) << 6) | (x & 63)]; // волнистая граница: облако, не рамка
+    if (tq >= 256) continue;
+    if (tq < 0) tq = 0;
     // Плюс два признака к высоте: плотность решета и яркость.
-    int q = iround((1 - t) * (1.0f + p.sm * 3.0f));
+    int q = ((256 - tq) * (256 + 3 * p.smq) + 32768) >> 16;
     if (q <= 0 || SMOG_DITHER[(y & 7) * 8 + (x & 7)] >= q) continue;
-    float fade = 0.1f + t * 0.5f + (1.0f - p.sm) * 0.35f;
-    sink.px(x, y, lerp565(p.base, BG, fade));
+    int fadeq = 26 + (tq >> 1) + (((256 - p.smq) * 90) >> 8);
+    sink.px(x, y, lerp565q(p.base, BG, fadeq));
   }
 }
 
@@ -783,25 +836,36 @@ void redrawCell(int i) {
 // копоть отдельным проходом, осьминоги следующим тиком), и элементы проявлялись
 // разными волнами. Экран целиком в буфер не влезает: 320x240x2 = 150 КБ.
 void redrawRect(int rx, int ry, int rw, int rh) {
+  unsigned long t0 = micros();
+  usSmog = usOcto = usBlit = 0; nOcto = 0;
   float tt = millis() / 1000.0f;
   int x1 = rx + rw, y1 = ry + rh;
   for (int y0 = ry; y0 < y1; y0 += STRIP_H) {
     int h = min(STRIP_H, y1 - y0);
     stripBuf.moveTo(0, y0);
     stripBuf.fillScreen(BG);
-    composeCurrentScreen(stripBuf, y0, y0 + h - 1, tt);
+    composeCurrentScreen(stripBuf, y0, y0 + h - 1, rx, rx + rw - 1, tt);
 
     uint16_t *b = stripBuf.getBuffer();
+    unsigned long tb = micros();
     tft.startWrite();
     tft.setAddrWindow(rx, y0, rw, h);
-    for (int r = 0; r < h; r++) {
-      uint16_t *row = b + r * W + rx;      // своп на месте: полоса всё равно пересобирается
-      for (int i = 0; i < rw; i++) { uint16_t v = row[i]; row[i] = (uint16_t)((v << 8) | (v >> 8)); }
-      SPI.writeBytes((uint8_t *)row, rw * 2);
-    }
+    for (int r = 0; r < h; r++) blitRow(b + r * W + rx, rw);
     tft.endWrite();
+    usBlit += micros() - tb;
     yield();                              // блит длинный, watchdog кормим между полосами
   }
+  // Цена перерисовки — в обратный канал безусловно (а не под ESP_DIAG): полные
+  // перерисовки редкие, зато по этому числу видно, читается ли она как одно
+  // движение или как медленная протяжка. Иначе судить о «плавно» нечем.
+  Serial.print(F("{\"esp\":\"redraw\",\"w\":")); Serial.print(rw);
+  Serial.print(F(",\"h\":")); Serial.print(rh);
+  Serial.print(F(",\"ms\":")); Serial.print((micros() - t0) / 1000);
+  Serial.print(F(",\"smog\":")); Serial.print(usSmog / 1000);
+  Serial.print(F(",\"octo\":")); Serial.print(usOcto / 1000);
+  Serial.print(F(",\"nocto\":")); Serial.print(nOcto);
+  Serial.print(F(",\"blit\":")); Serial.print(usBlit / 1000);
+  Serial.println(F("}"));
 }
 
 // Экран собирается ПОЛОСАМИ в тот же буфер со смещением, которым делается снимок,
@@ -931,11 +995,7 @@ void blitCanvasRect(int sx, int sy, int w, int h, int dx, int dy) {
   uint16_t *buf = octoBuf.getBuffer();
   tft.startWrite();
   tft.setAddrWindow(dx, dy, w, h);
-  for (int r = 0; r < h; r++) {
-    uint16_t *row = &buf[(sy + r) * BUF_W + sx];
-    for (int i = 0; i < w; i++) { uint16_t v = row[i]; row[i] = (uint16_t)((v << 8) | (v >> 8)); }
-    SPI.writeBytes((uint8_t *)row, w * 2);
-  }
+  for (int r = 0; r < h; r++) blitRow(&buf[(sy + r) * BUF_W + sx], w);
   tft.endWrite();
 }
 
@@ -1239,7 +1299,7 @@ StaticJsonDocument<2048> doc;
 // Нужен затем, чтобы визуальные ошибки ловились до заливки, а не глазами человека.
 
 // Композиция для снимка: те же функции, что рисуют на экран, только цель — канва.
-void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, float tt) {
+void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, int left, int right, float tt) {
   if (curScreen == 1) { composeCafe(g); composeCafeScene(g, tt); return; }
   composeGrid(g);
   CanvasSink sink(g);
@@ -1247,16 +1307,23 @@ void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, float tt) {
     if (!sessions[i].active) continue;
     int col = i % COLS, row = i / COLS;
     if (row * cellH + cellH - 1 < top || row * cellH > bot) continue;
+    if (col * cellW + cellW - 1 < left || col * cellW > right) continue;
     SmogP p;
     smogParams(col, row, sessions[i].mb, p);
+    unsigned long ts = micros();
     if (p.on)
       for (int y = max(p.y0, top); y <= min(p.y1, bot); y++) smogRow(sink, p, y);
+    usSmog += micros() - ts;
     cardFrame(g, col, row, sessions[i]);
     int cx = col * cellW + 2 + (cellW - 4) / 2, cy = row * cellH + 2 + (cellH - 4) / 2 - 6;
     // осьминог занимает ~72 строки и попадает в несколько полос; в те, где его
     // нет, не лезем вовсе — иначе полная перерисовка считала бы его 15 раз впустую
-    if (cy + OCTO_H / 2 >= top && cy - OCTO_H / 2 <= bot)
+    if (cy + OCTO_H / 2 >= top && cy - OCTO_H / 2 <= bot) {
+      unsigned long to = micros();
       drawOctopus(g, cx, cy, sessions[i], tt + i * 0.4f);
+      usOcto += micros() - to;
+      nOcto++;
+    }
     g.fillRect(col * cellW + 5, row * cellH + 5, 3, 3, stateColor(sessions[i].state));
   }
 }
@@ -1281,7 +1348,7 @@ void sendShot() {
     int h = min(STRIP_H, H - ty);
     stripBuf.moveTo(0, ty);
     stripBuf.fillScreen(BG);
-    composeCurrentScreen(stripBuf, ty, ty + h - 1, tt);
+    composeCurrentScreen(stripBuf, ty, ty + h - 1, 0, W - 1, tt);
 
     Serial.print(F("{\"esp\":\"tile\",\"x\":0,\"y\":")); Serial.print(ty);
     Serial.print(F(",\"w\":")); Serial.print(W);
@@ -1512,6 +1579,7 @@ void setup() {
   evNext = millis() + 120000;        // первый вброс не раньше, чем через пару минут
 
   buildSin();
+  buildSmogNoise();
   buildSphere(0);
   for (int i = 0; i < MAX_SESSIONS; i++) sessions[i].active = false;
   redrawAll();
