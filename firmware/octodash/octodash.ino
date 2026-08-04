@@ -21,7 +21,7 @@
 #include <ArduinoJson.h>
 
 #define ESP_DIAG 0   // 1 = телеметрия boot/stat в serial (мост её логирует)
-#define FW_VER   25  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   27  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -104,19 +104,32 @@ class OffsetCanvas : public GFXcanvas16 {
   int16_t clipL = -32768, clipT = -32768, clipR = 32767, clipB = 32767;
   void clipTo(int l, int t, int r, int b) { clipL = l; clipT = t; clipR = r; clipB = b; }
   void clipOff() { clipTo(-32768, -32768, 32767, 32767); }
+  // Сдвиг начала координат. Бариста и реквизит кофейни нарисованы в ЛОКАЛЬНЫХ
+  // координатах своего окна — так их рисует кадр анимации в буфер. Чтобы теми же
+  // функциями собирать их в полосу целого экрана, цель сама переносит координаты:
+  // рисование остаётся одно, а куда оно ляжет, решает получатель.
+  int16_t trX = 0, trY = 0;
+  void originAt(int x, int y) { trX = x; trY = y; }
+  void originReset() { trX = 0; trY = 0; }
   void drawPixel(int16_t x, int16_t y, uint16_t c) override {
+    x += trX; y += trY;
     if (x < clipL || x > clipR || y < clipT || y > clipB) return;
     GFXcanvas16::drawPixel(x - offX, y - offY, c);
   }
-  void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t c) override {
-    for (int16_t i = 0; i < w; i++) drawPixel(x + i, y, c);
-  }
-  void drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t c) override {
-    for (int16_t i = 0; i < h; i++) drawPixel(x, y + i, c);
-  }
+  void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t c) override { fillRect(x, y, w, 1, c); }
+  void drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t c) override { fillRect(x, y, 1, h, c); }
+  // Пересечение с полосой и областью обрезки считается ДО циклов. Наивный обход
+  // «перебрать все пиксели и выбросить лишние» стоил дорого там, где заливки во всю
+  // ширину экрана: статика кофейни собиралась 527мс, потому что каждая из 15 полос
+  // честно перебирала полосы шапки и таблицы целиком.
   void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c) override {
-    for (int16_t j = 0; j < h; j++)
-      for (int16_t i = 0; i < w; i++) drawPixel(x + i, y + j, c);
+    int ax = x + trX, ay = y + trY;                   // экранные координаты
+    int x0 = max(max(ax, (int)clipL), (int)offX);
+    int y0 = max(max(ay, (int)clipT), (int)offY);
+    int x1 = min(min(ax + w - 1, (int)clipR), offX + width() - 1);
+    int y1 = min(min(ay + h - 1, (int)clipB), offY + height() - 1);
+    for (int yy = y0; yy <= y1; yy++)
+      for (int xx = x0; xx <= x1; xx++) GFXcanvas16::drawPixel(xx - offX, yy - offY, c);
   }
   // Текст особый случай: drawChar НЕ виртуальный, а отсекает по размеру холста.
   // Экранная координата имени (y≈108) для холста 68x76 всегда «за краем», поэтому
@@ -246,6 +259,7 @@ CafeSeg cafeSegs[8];
 bool cafeDirty = true;
 
 unsigned long lastTick[MAX_SESSIONS] = {0};
+unsigned long lastFrame = 0;      // номер последнего отрисованного кадра общей сетки
 unsigned long popupUntil = 0;
 int  popupPage = 0, popupPages = 0;
 bool popupDrawn = false;
@@ -270,7 +284,7 @@ uint16_t diagSnaps = 0, diagBadJson = 0, diagCells = 0;
 void buildSphere(int night);
 void redrawAll();
 void redrawRect(int rx, int ry, int rw, int rh);
-void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, int left, int right, float tt);
+void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
 void sendShot();
 void redrawCell(int i);
 void cardFrame(Adafruit_GFX &g, int col, int row, Session &s);
@@ -281,7 +295,13 @@ void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt);
 void applySnapshot();
 void handleLine(const char *line);
 void composeCafe(Adafruit_GFX &g);
-void composeCafeScene(Adafruit_GFX &g, float tt);
+void composeCafeScene(OffsetCanvas &g, float tt);
+void animateCafeScene(float tt);
+void baristaArt(Adafruit_GFX &g, float tt);
+void animateBarista(float tt);
+void propsArt(Adafruit_GFX &g, float tt, float fill, bool steam, bool pouring);
+void animateProps(float tt, float fill, bool steam, bool pouring);
+void cafePour(float tt, float &fill, bool &steam, bool &pouring);
 void drawPopup();
 void hidePopup();
 void enterSleep();
@@ -345,12 +365,18 @@ uint16_t stateColor(State s) {
 }
 
 // Период кадра по статусу: спящему IDLE 25 к/с не нужны, а шина одна на всех.
-unsigned long tickForState(State s) {
+// Кадр общий для всех карточек, а статус задаёт, через сколько кадров карточка
+// обновляется. Раньше у каждой был свой таймер со своим порогом (40/80/160мс), и
+// после перелистывания они расходились по фазе: обновления сыпались вразнобой, и
+// это читалось как рваная частота кадров. На общей сетке кратные делители всегда
+// совпадают — раз в 4 кадра обновляются все.
+#define FRAME_MS 40
+uint8_t frameDiv(State s) {
   switch (s) {
-    case WORKING: return 40;
-    case ERR:     return 40;
-    case WAITING: return 80;
-    default:      return 160;
+    case WORKING: return 1;
+    case ERR:     return 1;
+    case WAITING: return 2;
+    default:      return 4;
   }
 }
 
@@ -1028,9 +1054,7 @@ void cafeCounter() {
 }
 
 // Машина, стакан и пролив — в локальных координатах полосы.
-void cafeProps(float tt, float fill, bool steam, bool pouring) {
-  GFXcanvas16 &g = octoBuf;
-  g.fillScreen(BG);
+void propsArt(Adafruit_GFX &g, float tt, float fill, bool steam, bool pouring) {
   const int mx = MACH_X - BAND_X, my = 66 - BAND_Y, bottom = CNT_Y - BAND_Y;
 
   g.fillRect(mx, my, 24, bottom - my, lerp565(0xE73C, BG, 0.62f));
@@ -1061,15 +1085,18 @@ void cafeProps(float tt, float fill, bool steam, bool pouring) {
                   lerp565(CREAMC, BG, f * f * 0.9f + 0.1f));
     }
   }
+}
+
+// Кадр анимации: то же рисование в буфер и один блит окна.
+void animateProps(float tt, float fill, bool steam, bool pouring) {
+  octoBuf.fillScreen(BG);
+  propsArt(octoBuf, tt, fill, steam, pouring);
   blitCanvasRect(0, 0, BAND_W, BAND_H, BAND_X, BAND_Y);
 }
 
 // Сцена по статусу. Классы движения намеренно разные: работа — поток предметов,
 // перерыв — работа телом, обед — предмет ко рту, уборка — движение вбок по стойке.
-void drawBarista(float tt) {
-  GFXcanvas16 &g = octoBuf;
-  g.fillScreen(BG);
-
+void baristaArt(Adafruit_GFX &g, float tt) {
   bool lively = (cafeSt == 0 || cafeSt == 1 || cafeSt == 4);
   int bob = iround(fastSin(tt * (lively ? 1.8f : 1.1f)) * (lively ? 1.5f : 1.0f));
   int hy = BCY + bob + (cafeSt == 3 ? 6 : 0);
@@ -1157,21 +1184,55 @@ void drawBarista(float tt) {
     }
   }
 
+}
+
+// Кадр анимации баристы: буфер + один блит окна.
+void animateBarista(float tt) {
+  octoBuf.fillScreen(BG);
+  baristaArt(octoBuf, tt);
   blitCanvasRect(0, 0, BUF_W, BUF_H, CAFE_BOX_X, CAFE_BOX_Y);
 }
 
 // Динамика кофейни: окно баристы + полоса реквизита. Раз в 40мс, как аквариум.
 // Стойка НЕ перерисовывается — она статика и живёт между кадрами.
-void composeCafeScene(Adafruit_GFX &g, float tt) {
-  drawBarista(tt);
-  float fill = 0.5f;
-  bool pouring = false;
+// Фаза стакана — одна функция на оба пути, чтобы кадр и полная перерисовка
+// не разошлись в том, сколько налито.
+void cafePour(float tt, float &fill, bool &steam, bool &pouring) {
+  fill = 0.5f;
+  pouring = false;
   if (cafeSt == 0) {
     float cyc = fmodf(tt, 5.0f) / 5.0f;
     fill = min(1.0f, cyc * 1.45f);
     pouring = cyc < 0.72f;
   } else if (cafeSt == 3) fill = 0.15f;
-  cafeProps(tt, fill, cafeSt == 0 && fill > 0.45f, pouring);
+  steam = (cafeSt == 0 && fill > 0.45f);
+}
+
+// Сцена в ПОЛОСУ (полная перерисовка и снимок): те же функции рисования, что в кадре
+// анимации, но цель переносит их локальные координаты в окна на экране и обрезает
+// ровно по этим окнам — иначе кадр анимации потом не стёр бы то, что вылезло.
+void composeCafeScene(OffsetCanvas &g, float tt) {
+  float fill;
+  bool steam, pouring;
+  cafePour(tt, fill, steam, pouring);
+
+  g.originAt(CAFE_BOX_X, CAFE_BOX_Y);
+  g.clipTo(CAFE_BOX_X, CAFE_BOX_Y, CAFE_BOX_X + BUF_W - 1, CAFE_BOX_Y + BUF_H - 1);
+  baristaArt(g, tt);
+  g.originAt(BAND_X, BAND_Y);
+  g.clipTo(BAND_X, BAND_Y, BAND_X + BAND_W - 1, BAND_Y + BAND_H - 1);
+  propsArt(g, tt, fill, steam, pouring);
+  g.originReset();
+  g.clipOff();
+}
+
+// Кадр анимации кофейни: только два окна, остальной экран не трогаем.
+void animateCafeScene(float tt) {
+  float fill;
+  bool steam, pouring;
+  cafePour(tt, fill, steam, pouring);
+  animateBarista(tt);
+  animateProps(tt, fill, steam, pouring);
 }
 
 void composeCafe(Adafruit_GFX &g) {
@@ -1274,7 +1335,6 @@ void composeCafe(Adafruit_GFX &g) {
   g.setTextColor(C_WORKING);
   g.setCursor(220, rowY);
   g.print(cafeNet / 60); g.print(F("H ")); g.print(cafeNet % 60); g.print(F("M"));
-  cafeDirty = false;
 }
 
 // =============================================================================
@@ -1322,7 +1382,7 @@ StaticJsonDocument<2048> doc;
 // Нужен затем, чтобы визуальные ошибки ловились до заливки, а не глазами человека.
 
 // Композиция для снимка: те же функции, что рисуют на экран, только цель — канва.
-void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, int left, int right, float tt) {
+void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
   if (curScreen == 1) { composeCafe(g); composeCafeScene(g, tt); return; }
   composeGrid(g);
   CanvasSink sink(g);
@@ -1347,9 +1407,9 @@ void composeCurrentScreen(Adafruit_GFX &g, int top, int bot, int left, int right
       // рисуем РОВНО в то окно, которое обновляет анимация: то, что вышло бы за него
       // (клубы дыма, кончики щупалец), анимация уже никогда не сотрёт — и это
       // оставалось мусором у имени карточки
-      stripBuf.clipTo(wx, wy, wx + BUF_W - 1, wy + OCTO_H - 1);
+      g.clipTo(wx, wy, wx + BUF_W - 1, wy + OCTO_H - 1);
       drawOctopus(g, cx, cy, sessions[i], tt + i * 0.4f);
-      stripBuf.clipOff();
+      g.clipOff();
       usOcto += micros() - to;
       nOcto++;
     }
@@ -1486,7 +1546,6 @@ void handleLine(const char *line) {
         cafeSegN++;
       }
     }
-    if (cafeDirty) composeCafe(tft);
     return;
   }
 
@@ -1622,10 +1681,14 @@ void loop() {
   unsigned long now = millis();
 
   if (curScreen == 1) {
-    if (cafeDirty) composeCafe(tft);       // статика: шапка, статус, полоса дня, таблица
-    if (now - lastTick[0] >= 40) {   // динамика: бариста и реквизит, как в аквариуме
-      lastTick[0] = now;
-      composeCafeScene(tft, now / 1000.0f);
+    // Статика кофейни (шапка, статус, полоса дня, таблица) — тем же путём полосами,
+    // что и аквариум: раньше она рисовалась примитив за примитивом прямо на панель,
+    // и было видно, как текст выводится построчно.
+    if (cafeDirty) { cafeDirty = false; redrawAll(); }
+    unsigned long frame = now / FRAME_MS;
+    if (frame != lastFrame) {              // динамика: бариста и реквизит, два окна
+      lastFrame = frame;
+      animateCafeScene(now / 1000.0f);
     }
     return;
   }
@@ -1654,11 +1717,17 @@ void loop() {
 #if ESP_DIAG
   unsigned long frameT0 = micros();
 #endif
-  for (int i = 0; i < MAX_SESSIONS; i++) {
-    if (!sessions[i].active) continue;
-    if (now - lastTick[i] < tickForState(sessions[i].state)) continue;
-    lastTick[i] = now;
-    updateOctopusArea(i % COLS, i / COLS, sessions[i], now / 1000.0f + i * 0.4f);
+  // Общая сетка кадров: карточка обновляется, когда номер кадра делится на её
+  // делитель. Все обновления попадают на одни и те же границы, а не разъезжаются
+  // по своим таймерам — после перелистывания это было видно как рваная анимация.
+  unsigned long frame = now / FRAME_MS;
+  if (frame != lastFrame) {
+    lastFrame = frame;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+      if (!sessions[i].active) continue;
+      if (frame % frameDiv(sessions[i].state)) continue;
+      updateOctopusArea(i % COLS, i / COLS, sessions[i], now / 1000.0f + i * 0.4f);
+    }
   }
 #if ESP_DIAG
   unsigned long frameUs = micros() - frameT0;
