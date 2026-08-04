@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   38  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   39  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1053,6 +1053,7 @@ float roulPos = 0, roulVel = 0;
 RoulState roulState = R_IDLE;
 unsigned long roulWonAt = 0, roulLastPhys = 0;
 bool roulDirty = true;      // состав сменился — нужна полная перерисовка экрана
+int roulStatusShown = -1;   // какое состояние уже нарисовано в строке снизу
 
 int roulCount() { return roulN > 0 ? roulN : 1; }
 
@@ -2143,7 +2144,7 @@ void loop() {
   unsigned long now = millis();
 
   if (curScreen == 2) {
-    if (roulDirty) { roulDirty = false; redrawAll(); }
+    if (roulDirty) { roulDirty = false; roulStatusShown = -1; redrawAll(); }
     // Свой период кадра: барабан стоит ~39мс, и на сетке 40мс кадры то влезали, то
     // нет — частота скакала. Стабильные 20 к/с лучше прыгающих 24: глаз замечает
     // не абсолютную частоту, а её рывки.
@@ -2157,6 +2158,18 @@ void loop() {
       // ОДИНАКОВА, а не прыгает от 39 до 49мс.
       if (roulState != R_IDLE || (now - roulWonAt) < 2000)
         redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
+      // Строка снизу лежит ВНЕ перерисовываемых полос, поэтому обновляем её
+      // событием — когда состояние сменилось. Раньше она менялась только при
+      // полной перерисовке и подолгу висела неверной («крути ручку» на летящем
+      // барабане). На время вспышки победы обновляем каждый кадр: это 4мс.
+      int kind = roulState == R_WON ? 2
+                 : (roulState == R_SPIN || roulState == R_LAND) ? 1 : 0;
+      bool flashing = (roulState == R_WON) && (now - roulWonAt) < 1200;
+      if (kind != roulStatusShown || flashing) {
+        roulStatusShown = kind;
+        redrawRect(0, H - 16, W, 16);
+      }
+
       int bandH = (R_BOT - R_TOP + 4 + 2) / 3;
       int slice = (int)(frame % 3);
       int y0 = R_TOP - 2 + slice * bandH;
@@ -2167,7 +2180,7 @@ void loop() {
   }
 
   if (curScreen == 2) {
-    if (roulDirty) { roulDirty = false; redrawAll(); }
+    if (roulDirty) { roulDirty = false; roulStatusShown = -1; redrawAll(); }
     // Свой период кадра: барабан стоит ~39мс, и на сетке 40мс кадры то влезали, то
     // нет — частота скакала. Стабильные 20 к/с лучше прыгающих 24: глаз замечает
     // не абсолютную частоту, а её рывки.
@@ -2181,6 +2194,18 @@ void loop() {
       // ОДИНАКОВА, а не прыгает от 39 до 49мс.
       if (roulState != R_IDLE || (now - roulWonAt) < 2000)
         redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
+      // Строка снизу лежит ВНЕ перерисовываемых полос, поэтому обновляем её
+      // событием — когда состояние сменилось. Раньше она менялась только при
+      // полной перерисовке и подолгу висела неверной («крути ручку» на летящем
+      // барабане). На время вспышки победы обновляем каждый кадр: это 4мс.
+      int kind = roulState == R_WON ? 2
+                 : (roulState == R_SPIN || roulState == R_LAND) ? 1 : 0;
+      bool flashing = (roulState == R_WON) && (now - roulWonAt) < 1200;
+      if (kind != roulStatusShown || flashing) {
+        roulStatusShown = kind;
+        redrawRect(0, H - 16, W, 16);
+      }
+
       int bandH = (R_BOT - R_TOP + 4 + 2) / 3;
       int slice = (int)(frame % 3);
       int y0 = R_TOP - 2 + slice * bandH;
