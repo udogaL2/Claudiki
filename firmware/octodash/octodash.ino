@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   34  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   38  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -300,7 +300,7 @@ const int COLS = 3, ROWS = 2;
 const int MAX_SESSIONS = COLS * ROWS;
 const int W = 320, H = 240;
 // замер: что именно стоит дорого в полной перерисовке (гадать уже пробовал)
-unsigned long usSmog = 0, usOcto = 0, usBlit = 0; int nOcto = 0;
+unsigned long usSmog = 0, usOcto = 0, usBlit = 0, lastRedrawAt = 0; int nOcto = 0;
 OffsetCanvas stripBuf(W, STRIP_H);   // полоса сборки экрана и снимка
 int cellW, cellH;
 
@@ -362,6 +362,7 @@ void cafeTime(int minutes, char *out);
 void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
 void roulKick();
 void roulPhysics(unsigned long now);
+void roulBubblesStep(float dt, float spin);
 void animateCafeScene(float tt);
 void baristaArt(Adafruit_GFX &g, float tt);
 void animateBarista(float tt);
@@ -498,6 +499,7 @@ uint16_t stateColor(State s) {
 // это читалось как рваная частота кадров. На общей сетке кратные делители всегда
 // совпадают — раз в 4 кадра обновляются все.
 #define FRAME_MS 40
+#define ROUL_FRAME_MS 50   // экран рулетки: свой, стабильный период кадра
 uint8_t frameDiv(State s) {
   switch (s) {
     case WORKING: return 1;
@@ -1077,7 +1079,11 @@ void roulPhysics(unsigned long now) {
   float dt = roulLastPhys ? (now - roulLastPhys) / 1000.0f : 0.016f;
   if (dt > 0.05f) dt = 0.05f;
   roulLastPhys = now;
-  if (roulState == R_IDLE || roulState == R_WON) { roulVel = 0; return; }
+  if (roulState == R_IDLE || roulState == R_WON) {
+    roulVel = 0;
+    roulBubblesStep(dt, 0);          // пузыри всплывают и в покое: иначе экран мёртвый
+    return;
+  }
 
   roulVel -= (roulState == R_CHARGE ? R_FRICTION : R_SPIN_FRICTION) * dt;
   if (roulVel < 0) roulVel = 0;
@@ -1106,19 +1112,45 @@ void roulPhysics(unsigned long now) {
   }
   int n = roulCount();
   roulPos = fmodf(fmodf(roulPos, (float)n) + n, (float)n);
+  float spin = roulVel / 6.0f;
+  if (spin > 1) spin = 1;
+  roulBubblesStep(dt, spin);        // фазу двигает физика: ОДИН раз на кадр
 }
 
 // Пузыри вокруг крупье: слева иначе пустует полэкрана. Позиция — чистая функция
 // времени и номера, без random: кадр должен быть воспроизводим, иначе снимок
 // экрана перестаёт быть проверкой.
-void roulBubbles(Adafruit_GFX &g, int top, int bot, float tt, float spin, bool won) {
-  for (int i = 0; i < 9; i++) {
-    float speed = 9 + (i % 4) * 3 + spin * 14;
-    float ph = fmodf(tt * speed + i * 37, 190.0f) / 190.0f;
-    int y = R_BOT + 6 - (int)(ph * (R_BOT - R_TOP + 22));
-    int x = 12 + (i * 9) % 62 + (int)(fastSin(tt * 1.3f + i * 1.7f) * (2 + i % 3));
+// Пузыри вокруг крупье. Три вещи, на которых уже наступили:
+//
+// 1. Фаза НАКАПЛИВАЕТСЯ, а не считается как tt*speed. При скорости, зависящей от
+//    раскрутки, второй способ телепортирует пузырь при каждом изменении скорости —
+//    это и выглядело как дёрганье на отдельных щелчках.
+// 2. Пузырь живёт строго внутри полосы крупье. Раньше верх траектории уходил на
+//    y=28, выше перерисовываемого прямоугольника, и такие пузыри оставались на
+//    панели навсегда — та же болезнь, что копоть за окном осьминога.
+// 3. Позиция зависит только от накопленной фазы, поэтому кадр воспроизводим и
+//    снимок остаётся проверкой.
+#define R_BUB_N   9
+#define R_BUB_TOP (R_TOP + 4)
+#define R_BUB_BOT (R_BOT - 4)
+float roulBubPh[R_BUB_N];
+
+void roulBubblesStep(float dt, float spin) {
+  for (int i = 0; i < R_BUB_N; i++) {
+    float speed = (9 + (i % 4) * 3 + spin * 14) / (float)(R_BUB_BOT - R_BUB_TOP);
+    roulBubPh[i] += speed * dt;
+    if (roulBubPh[i] > 1) roulBubPh[i] -= 1;
+  }
+}
+
+void roulBubbles(Adafruit_GFX &g, int top, int bot, float tt, bool won) {
+  for (int i = 0; i < R_BUB_N; i++) {
+    float ph = roulBubPh[i];
+    int y = R_BUB_BOT - (int)(ph * (R_BUB_BOT - R_BUB_TOP));
     int r = 1 + ((i + (ph > 0.6f ? 1 : 0)) % 3);
-    if (y + r < top || y - r > bot) continue;
+    if (y - r < R_BUB_TOP || y + r > R_BUB_BOT) continue;   // за полосу не выходим
+    if (y + r < top || y - r > bot) continue;               // вне текущей полосы кадра
+    int x = 12 + (i * 9) % 62 + (int)(fastSin(tt * 1.3f + i * 1.7f) * (2 + i % 3));
     uint16_t col = lerp565(won ? C_WORKING : ACCENT, BG, 0.35f + ph * 0.5f);
     if (r <= 1) g.drawPixel(x, y, col);
     else {
@@ -1130,7 +1162,10 @@ void roulBubbles(Adafruit_GFX &g, int top, int bot, float tt, float spin, bool w
 
 // Крупье: щупальцем толкает барабан, частота взмаха растёт со скоростью —
 // движение читается как ПРИЧИНА вращения, а не как соседняя анимация.
-void roulOcto(Adafruit_GFX &g, float tt, unsigned long now, bool won) {
+void roulOcto(Adafruit_GFX &g, int top, int bot, float tt, unsigned long now, bool won) {
+  // Крупье занимает ~60 строк и попадает в несколько полос: без отсева он считался
+  // по четыре раза на каждый срез полосы (10мс из 12мс её цены).
+  if (R_WIN_Y + 44 < top || R_WIN_Y - 24 > bot) return;
   float spin = roulVel / 6.0f;
   if (spin > 1) spin = 1;
   const int ox = 52, oy = R_WIN_Y + 4;
@@ -1251,8 +1286,8 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
   float spin = roulVel / 6.0f;
   if (spin > 1) spin = 1;
   if (left < R_WX - 8) {
-    roulBubbles(g, top, bot, tt, spin, won);
-    roulOcto(g, tt, now, won);
+    roulBubbles(g, top, bot, tt, won);
+    roulOcto(g, top, bot, tt, now, won);
   }
 
   // состояние снизу
@@ -1304,7 +1339,9 @@ void redrawRect(int rx, int ry, int rw, int rh) {
   Serial.print(F(",\"octo\":")); Serial.print(usOcto / 1000);
   Serial.print(F(",\"nocto\":")); Serial.print(nOcto);
   Serial.print(F(",\"blit\":")); Serial.print(usBlit / 1000);
+  Serial.print(F(",\"dt\":")); Serial.print(lastRedrawAt ? (t0 - lastRedrawAt) / 1000 : 0);
   Serial.println(F("}"));
+  lastRedrawAt = t0;
 }
 
 // Экран собирается ПОЛОСАМИ в тот же буфер со смещением, которым делается снимок,
@@ -2107,34 +2144,48 @@ void loop() {
 
   if (curScreen == 2) {
     if (roulDirty) { roulDirty = false; redrawAll(); }
-    unsigned long frame = now / FRAME_MS;
+    // Свой период кадра: барабан стоит ~39мс, и на сетке 40мс кадры то влезали, то
+    // нет — частота скакала. Стабильные 20 к/с лучше прыгающих 24: глаз замечает
+    // не абсолютную частоту, а её рывки.
+    unsigned long frame = now / ROUL_FRAME_MS;
     if (frame != lastFrame) {
       lastFrame = frame;
       roulPhysics(now);
-      if (roulState != R_IDLE || (now - roulWonAt) < 2000) {
-        // Барабан — каждый кадр: он несёт движение. Крупье с пузырями — каждый
-        // третий: их покачивание на 8 к/с неотличимо, зато средняя цена кадра
-        // падает почти вдвое (полный экран каждый кадр не влезает в бюджет).
+      // Барабан — только когда движется: стоящий перерисовывать нечего, это 39мс
+      // впустую. Полоса крупье обновляется ВСЕГДА (пузыри дают экрану жизнь) и
+      // делится на три куска по высоте, по одному за кадр: так цена кадра
+      // ОДИНАКОВА, а не прыгает от 39 до 49мс.
+      if (roulState != R_IDLE || (now - roulWonAt) < 2000)
         redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
-        if ((frame % 3) == 0) redrawRect(0, R_TOP - 2, R_WX - 8, R_BOT - R_TOP + 4);
-      }
+      int bandH = (R_BOT - R_TOP + 4 + 2) / 3;
+      int slice = (int)(frame % 3);
+      int y0 = R_TOP - 2 + slice * bandH;
+      int h = min(bandH, R_BOT + 2 - y0);
+      if (h > 0) redrawRect(0, y0, R_WX - 8, h);
     }
     return;
   }
 
   if (curScreen == 2) {
     if (roulDirty) { roulDirty = false; redrawAll(); }
-    unsigned long frame = now / FRAME_MS;
+    // Свой период кадра: барабан стоит ~39мс, и на сетке 40мс кадры то влезали, то
+    // нет — частота скакала. Стабильные 20 к/с лучше прыгающих 24: глаз замечает
+    // не абсолютную частоту, а её рывки.
+    unsigned long frame = now / ROUL_FRAME_MS;
     if (frame != lastFrame) {
       lastFrame = frame;
       roulPhysics(now);
-      if (roulState != R_IDLE || (now - roulWonAt) < 2000) {
-        // Барабан — каждый кадр: он несёт движение. Крупье с пузырями — каждый
-        // третий: их покачивание на 8 к/с неотличимо, зато средняя цена кадра
-        // падает почти вдвое (полный экран каждый кадр не влезает в бюджет).
+      // Барабан — только когда движется: стоящий перерисовывать нечего, это 39мс
+      // впустую. Полоса крупье обновляется ВСЕГДА (пузыри дают экрану жизнь) и
+      // делится на три куска по высоте, по одному за кадр: так цена кадра
+      // ОДИНАКОВА, а не прыгает от 39 до 49мс.
+      if (roulState != R_IDLE || (now - roulWonAt) < 2000)
         redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
-        if ((frame % 3) == 0) redrawRect(0, R_TOP - 2, R_WX - 8, R_BOT - R_TOP + 4);
-      }
+      int bandH = (R_BOT - R_TOP + 4 + 2) / 3;
+      int slice = (int)(frame % 3);
+      int y0 = R_TOP - 2 + slice * bandH;
+      int h = min(bandH, R_BOT + 2 - y0);
+      if (h > 0) redrawRect(0, y0, R_WX - 8, h);
     }
     return;
   }
