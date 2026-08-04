@@ -6,6 +6,8 @@
 """
 import json
 import os
+import pathlib
+import random
 import types
 
 import pytest
@@ -1453,7 +1455,10 @@ def test_encoder_page_survives_shrinking_page_count(clock, liveness, sink):
 
 
 def test_encoder_key_switches_screen(bridge):
+    # экранов три: аквариум → кофейня → рулетка → аквариум
     assert bridge.handle_encoder("key") and bridge.screen == 1
+    bridge.handle_encoder("key")
+    assert bridge.screen == 2
     bridge.handle_encoder("key")
     assert bridge.screen == 0
 
@@ -1995,6 +2000,7 @@ def test_http_enc_endpoint_drives_screens_and_pages():
             server.bridge.handle_event({"event": "start", "session_id": f"e{i}",
                                         "cwd": f"/w/p{i}"})
         assert enc("key")["screen"] == 1
+        assert enc("key")["screen"] == 2
         r = enc("key")
         assert r["screen"] == 0 and r["pages"] == 2
         assert enc("cw")["page"] == 1
@@ -2016,3 +2022,156 @@ def test_http_enc_rejects_garbage():
     finally:
         server.shutdown()
         server.server_close()
+
+
+# ------------------------------------------------------------------ рулетка обеда
+# Список мест и победитель живут на мосту: список — состояние (правится без
+# перепрошивки), «не повторять прошлого» — правило, которому нужна память.
+
+def write_places(tmp_path, names, key="places"):
+    p = tmp_path / "places.json"
+    p.write_text(json.dumps({key: names}, ensure_ascii=False), encoding="utf-8")
+    return str(p)
+
+
+def test_prepare_place_uppercases_and_shortens():
+    assert b.prepare_place("Пельменная") == "ПЕЛЬМЕННАЯ"
+    assert b.prepare_place("  фьюжн   экспресс ") == "ФЬЮЖН ЭКСПРЕСС"
+    # '№' заменяется: лигатурный глиф в пяти пикселях выходит кривым
+    assert b.prepare_place("Столовая №5") == "СТОЛОВАЯ N5"
+    long = b.prepare_place("Очень длинное название кафе за углом")
+    assert len(long) == b.PLACE_NAME_MAX and "~" in long
+
+
+def test_load_places_reads_list_and_caps(tmp_path):
+    path = write_places(tmp_path, [f"Место {i}" for i in range(30)])
+    places = b.load_places(path)
+    assert len(places) == b.PLACES_MAX
+    assert places[0] == "МЕСТО 0"
+
+
+def test_load_places_accepts_bare_array(tmp_path):
+    p = tmp_path / "bare.json"
+    p.write_text(json.dumps(["Наполи", "Сказка"], ensure_ascii=False), encoding="utf-8")
+    assert b.load_places(str(p)) == ["НАПОЛИ", "СКАЗКА"]
+
+
+def test_load_places_skips_junk_entries(tmp_path):
+    path = write_places(tmp_path, ["Наполи", "", None, 42, "  ", "Сказка"])
+    assert b.load_places(path) == ["НАПОЛИ", "СКАЗКА"]
+
+
+def test_load_places_returns_none_on_broken_file(tmp_path):
+    # None и пустой список различаются: на None мост держит прошлый состав
+    assert b.load_places(str(tmp_path / "нет-файла.json")) is None
+    bad = tmp_path / "bad.json"
+    bad.write_text("{это не json", encoding="utf-8")
+    assert b.load_places(str(bad)) is None
+    wrong = tmp_path / "wrong.json"
+    wrong.write_text('{"places": "строка вместо списка"}', encoding="utf-8")
+    assert b.load_places(str(wrong)) is None
+
+
+def roulette_bridge(tmp_path, names=("Наполи", "Сказка", "Ростикс"), seed=1):
+    cfg = b.Config(max_sessions=6, places_file=write_places(tmp_path, list(names)))
+    return b.Bridge(cfg, sink=CollectingSink(), clock=FakeClock(), is_alive=FakeLiveness(),
+                    wall_clock=lambda: 1_700_000_000.0, registry_probe=lambda: None,
+                    rng=random.Random(seed))
+
+
+def test_roulette_snapshot_shape(tmp_path):
+    br = roulette_bridge(tmp_path)
+    br.screen = 2
+    snap = br.build_snapshot()
+    assert snap["scr"] == 2
+    assert snap["roul"]["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    assert snap["roul"]["win"] == -1 and snap["roul"]["sp"] == 0
+    # строка снэпшота обязана влезать в приёмный буфер прошивки
+    assert len(br.snapshot_line().encode("utf-8")) < 1024
+
+
+def test_roulette_never_repeats_previous_winner(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(6)])
+    seen = []
+    for _ in range(40):
+        assert br.spin_roulette() is True
+        seen.append(br.roul_win)
+    assert all(a != c for a, c in zip(seen, seen[1:])), "подряд выпало одно и то же"
+    assert len(set(seen)) > 1, "выбор вообще не меняется"
+    assert br.roul_spin == 40
+
+
+def test_roulette_single_place_always_wins(tmp_path):
+    br = roulette_bridge(tmp_path, names=["Пельменная"])
+    for _ in range(3):
+        assert br.spin_roulette() is True
+        assert br.roul_win == 0
+
+
+def test_roulette_empty_list_does_not_spin(tmp_path):
+    br = roulette_bridge(tmp_path, names=[])
+    assert br.spin_roulette() is False
+    assert br.roul_win == -1
+
+
+def test_roulette_reloads_file_by_mtime(tmp_path):
+    br = roulette_bridge(tmp_path)
+    assert br.build_roulette()["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    path = pathlib.Path(br.places_path())
+    path.write_text(json.dumps({"places": ["Кайзервюрст"]}, ensure_ascii=False), encoding="utf-8")
+    os.utime(path, (1e9, 1e9))                    # заведомо иной mtime
+    assert br.refresh_places() is True
+    assert br.build_roulette()["p"] == ["КАЙЗЕРВЮРСТ"]
+    assert br.refresh_places() is False            # второй раз без изменений
+
+
+def test_roulette_keeps_list_when_file_breaks(tmp_path):
+    """Файл могли править в момент чтения — обнулять барабан из-за этого нельзя."""
+    br = roulette_bridge(tmp_path)
+    br.refresh_places()
+    path = pathlib.Path(br.places_path())
+    path.write_text("{сломано", encoding="utf-8")
+    os.utime(path, (1e9, 1e9))
+    br.refresh_places()
+    assert br.build_roulette()["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    path.unlink()
+    br.refresh_places()
+    assert br.build_roulette()["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+
+
+def test_roulette_win_resets_when_list_changes(tmp_path):
+    br = roulette_bridge(tmp_path)
+    br.spin_roulette()
+    assert br.roul_win >= 0
+    path = pathlib.Path(br.places_path())
+    path.write_text(json.dumps({"places": ["Наполи"]}, ensure_ascii=False), encoding="utf-8")
+    os.utime(path, (1e9, 1e9))
+    br.refresh_places()
+    assert br.roul_win == -1, "старый индекс мог указывать в пустоту"
+
+
+def test_roulette_spin_via_encoder_marks_dirty(tmp_path):
+    br = roulette_bridge(tmp_path)
+    br.screen = 2
+    assert br.handle_encoder("spin") is True
+    assert br.roul_spin == 1
+    assert 0 <= br.roul_win < 3
+
+
+def test_three_screens_cycle_through_roulette(tmp_path):
+    br = roulette_bridge(tmp_path)
+    assert b.Bridge.SCREENS == 3
+    seen = []
+    for _ in range(4):
+        br.handle_encoder("key")
+        seen.append(br.screen)
+    assert seen == [1, 2, 0, 1]
+
+
+def test_debug_exposes_roulette(tmp_path):
+    br = roulette_bridge(tmp_path)
+    br.spin_roulette()
+    dbg = br.build_debug()["bridge"]
+    assert dbg["places"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    assert dbg["roulette_spins"] == 1
+    assert dbg["roulette_win"] in dbg["places"]

@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   28  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   34  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -128,6 +128,19 @@ class OffsetCanvas : public GFXcanvas16 {
   // «перебрать все пиксели и выбросить лишние» стоил дорого там, где заливки во всю
   // ширину экрана: статика кофейни собиралась 527мс, потому что каждая из 15 полос
   // честно перебирала полосы шапки и таблицы целиком.
+  // Приглушить прямоугольник решетом цвета фона. Пересечение с полосой считается
+  // ДО циклов: наивная версия перебирала весь прямоугольник на КАЖДОЙ полосе и
+  // стоила 198мс из 230мс кадра рулетки — 4 кадра в секунду.
+  void dimRect(int16_t x, int16_t y, int16_t w, int16_t h) {
+    int ax = x + trX, ay = y + trY;
+    int x0 = max(max(ax, (int)clipL), (int)offX);
+    int y0 = max(max(ay, (int)clipT), (int)offY);
+    int x1 = min(min(ax + w - 1, (int)clipR), offX + width() - 1);
+    int y1 = min(min(ay + h - 1, (int)clipB), offY + height() - 1);
+    for (int yy = y0; yy <= y1; yy++)
+      for (int xx = x0 + ((yy - ay) & 1); xx <= x1; xx += 2)
+        GFXcanvas16::drawPixel(xx - offX, yy - offY, BG);
+  }
   void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c) override {
     int ax = x + trX, ay = y + trY;                   // экранные координаты
     int x0 = max(max(ax, (int)clipL), (int)offX);
@@ -155,6 +168,49 @@ class OffsetCanvas : public GFXcanvas16 {
 };
 
 
+
+// =============================================================================
+// Кириллица: у ILI9341 её нет вовсе
+// =============================================================================
+// Заглавная кириллица 5x8, формат glcdfont (байт = столбец, бит 0 = верх).
+// 21 глифов x 5 байт = 105 байт флеша. Ещё 12 букв
+// (АВЕКМНОРСТУХ) совпадают с латинскими начертаниями — их рисует встроенный
+// шрифт, и начертания заведомо согласованы.
+static const uint8_t RU_FONT[][5] = {
+  {0xFE, 0x92, 0x92, 0x92, 0x62},   // Б
+  {0xFE, 0x02, 0x02, 0x02, 0x02},   // Г
+  {0xC0, 0x7C, 0x42, 0x42, 0xFE},   // Д
+  {0xFE, 0x10, 0xFE, 0x10, 0xFE},   // Ж
+  {0x44, 0x82, 0x92, 0x92, 0x6C},   // З
+  {0xFE, 0x20, 0x10, 0x08, 0xFE},   // И
+  {0x7E, 0x11, 0x09, 0x05, 0x7E},   // Й
+  {0xC0, 0x3C, 0x02, 0x02, 0xFE},   // Л
+  {0xFE, 0x02, 0x02, 0x02, 0xFE},   // П
+  {0x18, 0x24, 0xFE, 0x24, 0x18},   // Ф
+  {0x7E, 0x40, 0x40, 0x40, 0xFE},   // Ц
+  {0x0E, 0x10, 0x10, 0x10, 0xFE},   // Ч
+  {0xFE, 0x80, 0xFE, 0x80, 0xFE},   // Ш
+  {0x7E, 0x40, 0x7E, 0x40, 0xFE},   // Щ
+  {0x02, 0xFE, 0x90, 0x90, 0x60},   // Ъ
+  {0xFE, 0x90, 0x90, 0x60, 0xFE},   // Ы
+  {0xFE, 0x90, 0x90, 0x90, 0x60},   // Ь
+  {0x44, 0x82, 0x92, 0x92, 0x7C},   // Э
+  {0xFE, 0x10, 0xFE, 0x82, 0xFE},   // Ю
+  {0x8C, 0x52, 0x32, 0x12, 0xFE},   // Я
+  {0x7E, 0x4B, 0x4A, 0x4B, 0x42},   // Ё
+};
+
+// Перевод буквы в начертание. Индекс: 0..31 = А..Я в порядке Юникода, 32 = Ё.
+// Значение: < 0x80 — рисовать этим ASCII-символом встроенным шрифтом;
+// >= 0x80 — индекс в RU_FONT (значение минус 0x80).
+static const uint8_t RU_MAP[33] = {
+       'A',   0x80+0,      'B',   0x80+1,   0x80+2,      'E',
+    0x80+3,   0x80+4,   0x80+5,   0x80+6,      'K',   0x80+7,
+       'M',      'H',      'O',   0x80+8,      'P',      'C',
+       'T',      'Y',   0x80+9,      'X',  0x80+10,  0x80+11,
+   0x80+12,  0x80+13,  0x80+14,  0x80+15,  0x80+16,  0x80+17,
+   0x80+18,  0x80+19,  0x80+20,
+};
 
 // Порог решета копоти. Была формула (x*3 + y*5) & 3, но при dx=dy=1 это
 // 3+5=8 ≡ 0 (mod 4): порог ПОСТОЯНЕН вдоль диагонали 45°, и копоть читалась как
@@ -302,6 +358,10 @@ void applySnapshot();
 void handleLine(const char *line);
 void composeCafe(Adafruit_GFX &g);
 void composeCafeScene(OffsetCanvas &g, float tt);
+void cafeTime(int minutes, char *out);
+void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
+void roulKick();
+void roulPhysics(unsigned long now);
 void animateCafeScene(float tt);
 void baristaArt(Adafruit_GFX &g, float tt);
 void animateBarista(float tt);
@@ -343,6 +403,7 @@ uint16_t lerp565q(uint16_t a, uint16_t b, int q) {
   return (uint16_t)((r << 11) | (g << 5) | bl);
 }
 
+
 uint16_t lerp565(uint16_t a, uint16_t b, float t) {
   if (t < 0) t = 0;
   if (t > 1) t = 1;
@@ -351,6 +412,66 @@ uint16_t lerp565(uint16_t a, uint16_t b, float t) {
   r += (int)((r2 - r) * t); g += (int)((g2 - g) * t); bl += (int)((b2 - bl) * t);
   return (uint16_t)((r << 11) | (g << 5) | bl);
 }
+
+// Рисует строку с кириллицей. Латиница и цифры идут встроенным шрифтом через
+// write() (он виртуальный, поэтому холст со смещением их перехватывает), русские
+// буквы — своей таблицей. Шаг 6*scale на символ, как у GFX. Возвращает ширину.
+//
+// Разбор UTF-8 прямо здесь: русские заглавные — это 0xD0 0x90..0x9F (А..П),
+// 0xD1 0x80..0x8F (Р..Я) и 0xD0 0x81 (Ё). Перекодировать на мосту в однобайтовую
+// кодировку было бы дешевле по трафику, но JSON по спецификации UTF-8, и лишний
+// слой перекодировки — это ещё одно место, где стороны разъезжаются.
+int textWidthRu(const char *s, int scale) {
+  int n = 0;
+  for (const uint8_t *p = (const uint8_t *)s; *p; p++) {
+    if (*p >= 0xC0) { if (p[1]) p++; }          // ведущий байт двухбайтовой буквы
+    n++;
+  }
+  return n * 6 * scale;
+}
+
+void drawTextRu(Adafruit_GFX &g, int x, int y, const char *s, uint16_t col, int scale) {
+  g.setTextColor(col);
+  g.setTextSize(scale);
+  for (const uint8_t *p = (const uint8_t *)s; *p; p++) {
+    int glyph = -1;                             // >=0 — своё начертание
+    uint8_t ascii = 0;
+    if (*p < 0x80) {
+      ascii = *p;
+    } else if ((*p == 0xD0 || *p == 0xD1) && p[1]) {
+      uint8_t lead = *p, b = *++p;
+      int idx = -1;
+      if (lead == 0xD0 && b == 0x81) idx = 32;             // Ё
+      else if (lead == 0xD0 && b >= 0x90 && b <= 0xBF) idx = b - 0x90;
+      else if (lead == 0xD1 && b >= 0x80 && b <= 0x8F) idx = 16 + (b - 0x80);
+      if (idx >= 0 && idx <= 32) {
+        uint8_t v = RU_MAP[idx];
+        if (v & 0x80) glyph = v & 0x7F; else ascii = v;
+      } else {
+        ascii = '?';                            // строчные и прочее не рисуем
+      }
+    } else {
+      continue;                                 // хвостовой байт — уже съеден
+    }
+
+    if (glyph >= 0) {
+      for (int cx = 0; cx < 5; cx++) {
+        uint8_t bits = RU_FONT[glyph][cx];
+        if (!bits) continue;
+        for (int cy = 0; cy < 8; cy++) {
+          if (!(bits & (1 << cy))) continue;
+          if (scale == 1) g.drawPixel(x + cx, y + cy, col);
+          else            g.fillRect(x + cx * scale, y + cy * scale, scale, scale, col);
+        }
+      }
+    } else if (ascii) {
+      g.setCursor(x, y);
+      g.write(ascii);
+    }
+    x += 6 * scale;
+  }
+}
+
 
 // FNV-1a: характер сессии выводится из её id, поэтому не меняется при переезде
 // карточки между страницами.
@@ -420,7 +541,13 @@ void pollEncoder() {
   interrupts();
   if (d >= 4 || d <= -4) {
     int steps = d / 4;
-    for (int i = 0; i < abs(steps); i++) sendEnc(steps > 0 ? "cw" : "ccw", swDown);
+    for (int i = 0; i < abs(steps); i++) {
+      // На экране рулетки вращение НЕ уходит мостом как «листание»: барабан
+      // обязан отзываться на щелчок мгновенно, а круг через мост это ~50мс.
+      // Мосту уйдёт одно событие "spin", когда порог будет перевален.
+      if (curScreen == 2 && !swDown) roulKick();
+      else sendEnc(steps > 0 ? "cw" : "ccw", swDown);
+    }
     if (swDown) swHandled = true;   // это было «крутить с зажатой» — не слать key
   }
 
@@ -885,6 +1012,263 @@ void redrawCell(int i) {
 // Теперь структура появляется разом, а копоть проявляется следом: она фоновая
 // текстура, её постепенное появление глазу не мешает.
 // Совсем одновременно нельзя: под полный кадр 320×240 нужно 150 КБ, у ESP их нет.
+// =============================================================================
+// Экран рулетки обеда
+// =============================================================================
+// Список мест и победителя держит МОСТ: список — состояние (правится без
+// перепрошивки), «не повторять прошлого» — правило, которому нужна память.
+// Прошивке остаётся физика барабана и рисование.
+//
+// Числа физики подобраны моделью и проверены сквозняком в эмуляторе, а не на глаз:
+// у KY-040 20 детентов на оборот, а рукой реально провернуть один оборот. Ленивый
+// темп (3 щелчка/с) не раскручивает вовсе, спокойный (6/с) — 9 щелчков (полоборота
+// ручки), бодрый (10/с) — 8. Полёт 2.8-4.1с, это 3 оборота барабана.
+#define R_ROW      20         // высота строки барабана
+#define R_WIN_Y    104        // верх окна выбора
+#define R_TOP      44         // видимая часть барабана: ровно ±2 строки от окна,
+#define R_BOT      186        // иначе при шести местах в кадре видны повторы
+#define R_WX       92         // барабан правее: слева живёт крупье
+#define R_WW       216
+#define R_SPIN_MIN      2.8f  // порог пуска, строк/с
+#define R_FRICTION      2.0f  // трение при накрутке
+#define R_SPIN_FRICTION 4.0f  // трение после пуска — оно задаёт длину полёта
+#define R_LAUNCH_V     12.0f  // скорость пуска
+#define R_KICK          0.6f  // прибавка скорости за щелчок
+#define R_PLACES_MAX   12
+// 20 символов кириллицы в UTF-8 — это 40 байт, плюс завершающий ноль. Было 24:
+// имена резались бы посреди буквы, и поймал это только контракт-тест, сверяющий
+// буфер прошивки с лимитом моста.
+#define R_NAME_MAX     44
+
+enum RoulState { R_IDLE, R_CHARGE, R_SPIN, R_LAND, R_WON };
+
+char  roulPlaces[R_PLACES_MAX][R_NAME_MAX];
+int   roulN = 0;
+int   roulWin = -1;           // индекс победителя от моста
+int   roulSp = 0;             // номер запуска от моста
+int   roulSeenSp = 0;         // какой номер мы уже отработали
+float roulPos = 0, roulVel = 0;
+RoulState roulState = R_IDLE;
+unsigned long roulWonAt = 0, roulLastPhys = 0;
+bool roulDirty = true;      // состав сменился — нужна полная перерисовка экрана
+
+int roulCount() { return roulN > 0 ? roulN : 1; }
+
+// Щелчок ручки на этом экране: подкрутить барабан. Порог перевален — просим у моста
+// победителя и уходим в полёт.
+void roulKick() {
+  if (roulState == R_LAND) return;                  // доезжает — не мешаем
+  if (roulState == R_WON) { roulState = R_IDLE; roulWin = -1; }
+  roulVel += R_KICK * (roulState == R_SPIN ? 0.6f : 1.0f);
+  if (roulVel >= R_SPIN_MIN && roulState != R_SPIN) {
+    roulState = R_SPIN;
+    // чем сильнее раскрутил сверх порога, тем дольше полёт
+    float extra = (roulVel - R_SPIN_MIN) * 1.5f;
+    roulVel = R_LAUNCH_V + (extra > 3.0f ? 3.0f : extra);
+    Serial.print(F("{\"enc\":\"spin\",\"v\":"));
+    Serial.print(roulVel, 1);
+    Serial.println(F("}"));
+  } else if (roulState != R_SPIN) {
+    roulState = R_CHARGE;
+  }
+}
+
+void roulPhysics(unsigned long now) {
+  float dt = roulLastPhys ? (now - roulLastPhys) / 1000.0f : 0.016f;
+  if (dt > 0.05f) dt = 0.05f;
+  roulLastPhys = now;
+  if (roulState == R_IDLE || roulState == R_WON) { roulVel = 0; return; }
+
+  roulVel -= (roulState == R_CHARGE ? R_FRICTION : R_SPIN_FRICTION) * dt;
+  if (roulVel < 0) roulVel = 0;
+  roulPos += roulVel * dt;
+
+  if (roulState == R_CHARGE && roulVel == 0) roulState = R_IDLE;
+  // ответ моста пришёл — переходим к доводке
+  if (roulState == R_SPIN && roulWin >= 0 && roulSp != roulSeenSp && roulVel < R_SPIN_MIN * 1.6f) {
+    roulSeenSp = roulSp;
+    roulState = R_LAND;
+  }
+  if (roulState == R_LAND) {
+    // Доводим ТОЛЬКО вперёд: доводка назад читалась бы как подкрутка результата.
+    // Пол скорости обязан быть НИЖЕ порога остановки, иначе барабан не встанет
+    // никогда — в эмуляторе на этом уже наступали.
+    int n = roulCount();
+    float d = fmodf(fmodf((float)roulWin - roulPos, (float)n) + n, (float)n);
+    if (d < 0.04f && roulVel < 0.25f) {
+      roulPos = roulWin; roulVel = 0; roulState = R_WON; roulWonAt = now;
+    } else {
+      float cap = d * 2.4f;
+      roulVel = roulVel < cap ? roulVel : cap;
+      if (roulVel < 0.12f) roulVel = 0.12f;
+      roulPos += roulVel * dt;
+    }
+  }
+  int n = roulCount();
+  roulPos = fmodf(fmodf(roulPos, (float)n) + n, (float)n);
+}
+
+// Пузыри вокруг крупье: слева иначе пустует полэкрана. Позиция — чистая функция
+// времени и номера, без random: кадр должен быть воспроизводим, иначе снимок
+// экрана перестаёт быть проверкой.
+void roulBubbles(Adafruit_GFX &g, int top, int bot, float tt, float spin, bool won) {
+  for (int i = 0; i < 9; i++) {
+    float speed = 9 + (i % 4) * 3 + spin * 14;
+    float ph = fmodf(tt * speed + i * 37, 190.0f) / 190.0f;
+    int y = R_BOT + 6 - (int)(ph * (R_BOT - R_TOP + 22));
+    int x = 12 + (i * 9) % 62 + (int)(fastSin(tt * 1.3f + i * 1.7f) * (2 + i % 3));
+    int r = 1 + ((i + (ph > 0.6f ? 1 : 0)) % 3);
+    if (y + r < top || y - r > bot) continue;
+    uint16_t col = lerp565(won ? C_WORKING : ACCENT, BG, 0.35f + ph * 0.5f);
+    if (r <= 1) g.drawPixel(x, y, col);
+    else {
+      g.drawCircle(x, y, r, col);
+      g.drawPixel(x - r + 1, y - r + 1, lerp565(col, 0xFFFF, 0.5f));
+    }
+  }
+}
+
+// Крупье: щупальцем толкает барабан, частота взмаха растёт со скоростью —
+// движение читается как ПРИЧИНА вращения, а не как соседняя анимация.
+void roulOcto(Adafruit_GFX &g, float tt, unsigned long now, bool won) {
+  float spin = roulVel / 6.0f;
+  if (spin > 1) spin = 1;
+  const int ox = 52, oy = R_WIN_Y + 4;
+  float wob = fastSin(tt * (1.6f + spin * 9)) * (1 + spin * 2.5f);
+  int hy = oy + (int)(wob * 0.5f) - (won ? 3 : 0);
+  tentacles(g, ox, hy, 1, tt, 1.2f + spin * 4, 1 + spin * 2.5f);
+  sphereBody(g, ox, hy);
+  int eyY = hy - 5;
+  if (won) {                                   // радуется: щёлочки и улыбка
+    g.drawFastHLine(ox - 7, eyY, 5, EYE_DARK);
+    g.drawFastHLine(ox + 3, eyY, 5, EYE_DARK);
+    g.drawFastHLine(ox - 3, eyY + 7, 7, EYE_DARK);
+    g.drawPixel(ox - 4, eyY + 6, EYE_DARK);
+    g.drawPixel(ox + 4, eyY + 6, EYE_DARK);
+  } else {
+    drawEyes(g, ox, eyY, roulState == R_SPIN || roulState == R_LAND ? WORKING : IDLE,
+             tt, spin > 0.4f, 3.7f);
+  }
+  arm(g, ox + 14, hy + 3, R_WX - 7, R_WIN_Y + R_ROW / 2, 5 - spin * 4, tt, 1.4f + spin * 5);
+  if (roulVel > 1.2f) {                        // штрихи движения у кромки барабана
+    for (int i = 0; i < 3; i++) {
+      int y = R_TOP + (int)fmodf(now / 26.0f + i * 41, (float)(R_BOT - R_TOP - 6));
+      g.drawFastHLine(R_WX + 4, y, 5 + (i * 5) % 7, lerp565(ACCENT, BG, 0.5f));
+    }
+  }
+}
+
+// top/bot/left/right — границы полосы и перерисовываемого прямоугольника. Без них
+// каждая из девяти полос пересчитывала крупье, пузыри и надписи целиком: 52мс
+// композиции на кадр против 32мс блита.
+void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
+  unsigned long now = millis();
+  bool won = (roulState == R_WON);
+  g.fillScreen(BG);
+
+  // шапка: сколько мест и время — обед привязан ко времени, это уместно
+  bool headVis = (top <= 18);
+  if (headVis) {
+  g.fillRect(0, 0, W, 18, lerp565(ACCENT, BG, 0.8f));
+  g.drawFastHLine(0, 18, W, lerp565(ACCENT, BG, 0.4f));
+  drawTextRu(g, 8, 5, "ГДЕ ОБЕДАЕМ", lerp565(CREAMC, BG, 0.05f), 1);
+  char head[48];
+  char hm[8];
+  cafeTime(cafeNm, hm);
+  snprintf(head, sizeof(head), "%d МЕСТ  %s", roulN, hm);
+  drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, lerp565(CREAMC, BG, 0.35f), 1);
+  }
+
+  bool drumVis = (right >= R_WX - 8);
+  if (drumVis) {
+  // корпус барабана: рейки и подсветка окна ПОД текстом
+  g.drawFastVLine(R_WX - 6, R_TOP, R_BOT - R_TOP, lerp565(ACCENT, BG, 0.72f));
+  g.drawFastVLine(R_WX + R_WW + 5, R_TOP, R_BOT - R_TOP, lerp565(ACCENT, BG, 0.72f));
+  if (won) g.fillRect(R_WX + 1, R_WIN_Y - 2, R_WW - 2, R_ROW, lerp565(C_WORKING, BG, 0.86f));
+
+  // строки барабана
+  int base = (int)(roulPos + 0.5f);
+  float frac = roulPos - base;
+  for (int k = -2; k <= 2; k++) {
+    int n = roulCount();
+    int idx = ((base + k) % n + n) % n;
+    if (idx >= roulN) continue;
+    int y = R_WIN_Y + k * R_ROW - (int)(frac * R_ROW + 0.5f);
+    if (y < R_TOP - 2 || y > R_BOT - 8) continue;
+    if (y + 8 < top || y > bot) continue;      // вне полосы — даже не считаем
+    int off = y > R_WIN_Y ? y - R_WIN_Y : R_WIN_Y - y;
+    bool inWin = off < R_ROW / 2;
+    float fade = 0.4f + (off / (float)(R_ROW * 3.2f));
+    if (fade > 0.9f) fade = 0.9f;
+    uint16_t col = inWin ? (won ? 0xFFFF : CREAMC) : lerp565(CREAMC, BG, fade);
+    const char *nm = roulPlaces[idx];
+    drawTextRu(g, R_WX + ((R_WW - textWidthRu(nm, 1)) >> 1), y + 3, nm, col, 1);
+  }
+
+  // края барабана глуше — окно читается как окно
+  g.dimRect(R_WX - 5, R_TOP, R_WW + 10, R_WIN_Y - R_TOP - 3);
+  g.dimRect(R_WX - 5, R_WIN_Y + R_ROW + 1, R_WW + 10, R_BOT - (R_WIN_Y + R_ROW + 1));
+
+  // Заряд показываем ЦВЕТОМ РАМКИ: чем ближе к порогу пуска, тем горячее. Раньше
+  // тут была шкала внизу экрана, но она вне перерисовываемой полосы и не
+  // обновлялась вовсе, а тянуть ради неё лишний блит каждый кадр — расточительно.
+  float charge = roulVel / R_SPIN_MIN;
+  if (charge > 1) charge = 1;
+  uint16_t winCol = won ? C_WORKING
+                        : (roulState == R_CHARGE ? lerp565(lerp565(ACCENT, BG, 0.3f), C_WORKING, charge)
+                                                 : lerp565(ACCENT, BG, 0.3f));
+  g.drawRect(R_WX, R_WIN_Y - 3, R_WW, R_ROW + 2, winCol);
+  g.drawRect(R_WX - 1, R_WIN_Y - 4, R_WW + 2, R_ROW + 4, lerp565(winCol, BG, 0.6f));
+  g.fillRect(R_WX - 5, R_WIN_Y + R_ROW / 2 - 3, 4, 6, winCol);
+  g.fillRect(R_WX + R_WW + 1, R_WIN_Y + R_ROW / 2 - 3, 4, 6, winCol);
+
+  // насечки на рейке двигаются вместе с барабаном — сильнейший признак вращения
+  int notch = ((int)(roulPos * R_ROW)) % 8;
+  for (int y = R_TOP; y < R_BOT; y += 8) {
+    int yy = y + notch;
+    if (yy < R_TOP || yy >= R_BOT) continue;
+    if (yy < top || yy > bot) continue;
+    g.drawPixel(R_WX - 6, yy, lerp565(ACCENT, BG, 0.25f));
+    g.drawPixel(R_WX + R_WW + 5, yy, lerp565(ACCENT, BG, 0.25f));
+  }
+
+  if (won) {                                   // искры вокруг окна
+    unsigned long age = now - roulWonAt;
+    for (int i = 0; i < 10; i++) {
+      float ph = fmodf(age / 260.0f + i * 0.37f, 1.0f);
+      if (ph > 0.75f) continue;
+      int sx = R_WX + 6 + (i * 97) % (R_WW - 12);
+      int sy = R_WIN_Y + ((i & 1) ? R_ROW + 4 + (int)(ph * 10) : -6 - (int)(ph * 10));
+      g.drawPixel(sx, sy, lerp565(0xFFFF, BG, ph));
+    }
+  }
+
+  }                                      // конец блока барабана
+
+  // Крупье и пузыри живут СЛЕВА от барабана и рисуются независимо от него: пока
+  // закрывающая скобка блока барабана стояла ниже, крупье попадал внутрь него и
+  // не рисовался вовсе — в прямоугольнике барабана его отсекало по x.
+  float spin = roulVel / 6.0f;
+  if (spin > 1) spin = 1;
+  if (left < R_WX - 8) {
+    roulBubbles(g, top, bot, tt, spin, won);
+    roulOcto(g, tt, now, won);
+  }
+
+  // состояние снизу
+  if (top <= H - 4 && bot >= H - 14)
+  if (won) {
+    bool flash = (now - roulWonAt) < 1200 && (((now - roulWonAt) / 130) & 1) == 0;
+    drawTextRu(g, 8, H - 13, "ИДЁМ СЮДА!", flash ? 0xFFFF : C_WORKING, 1);
+    const char *again = "КРУТНИ ЕЩЁ";
+    drawTextRu(g, W - 8 - textWidthRu(again, 1), H - 13, again, lerp565(CREAMC, BG, 0.62f), 1);
+  } else if (roulState == R_SPIN || roulState == R_LAND) {
+    drawTextRu(g, 8, H - 13, "КРУТИТСЯ...", lerp565(CREAMC, BG, 0.3f), 1);
+  } else {
+    drawTextRu(g, 8, H - 13, "КРУТИ РУЧКУ ПОБОДРЕЕ", lerp565(CREAMC, BG, 0.45f), 1);
+  }
+}
+
 // ЕДИНСТВЕННЫЙ путь отрисовки. Любая перерисовка — это прямоугольник, собранный
 // полосами в буфер и вылитый блитом: весь экран, одна карточка, место всплывашки.
 // Отдельных путей нет намеренно — раньше каждый рисовал по-своему (сетка отдельно,
@@ -1006,11 +1390,11 @@ void cafeTime(int minutes, char *out) {
 
 const char *cafeLabel(int st) {
   switch (st) {
-    case 0: return "OPEN";
-    case 1: return "BREAK";
-    case 2: return "LUNCH";
-    case 4: return "CLEANING";
-    default: return "CLOSED";
+    case 0: return "ОТКРЫТО";
+    case 1: return "ПЕРЕРЫВ";
+    case 2: return "ОБЕД";
+    case 4: return "УБОРКА";
+    default: return "ЗАКРЫТО";
   }
 }
 
@@ -1246,38 +1630,27 @@ void composeCafe(Adafruit_GFX &g) {
   g.fillScreen(BG);
   g.fillRect(0, 0, W, 18, lerp565(COFFEE_DK, BG, 0.35f));
   g.drawFastHLine(0, 18, W, COFFEEC);
-  g.setTextSize(1);
-  g.setTextColor(CREAMC);
-  g.setCursor(8, 5);
-  g.print(F("OCTO COFFEE"));
+  drawTextRu(g, 8, 5, "КОФЕЙНЯ ОСЬМИНОГА", CREAMC, 1);
 
-  static const char *DOW[7] = {"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
+  static const char *DOW[7] = {"ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"};
   cafeTime(cafeNm, buf);
-  g.setCursor(W - 66, 5);
-  g.print(DOW[cafeDow % 7]);
-  g.print(' ');
-  g.print(buf);
+  char head[48];
+  snprintf(head, sizeof(head), "%s %s", DOW[cafeDow % 7], buf);
+  drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, CREAMC, 1);
 
   // статус крупно + до какого времени и сколько осталось
   uint16_t col = cafeColor(cafeSt);
   g.fillRect(126, 38, 4, 26, col);
-  g.setTextColor(col);
-  g.setTextSize(3);
-  g.setCursor(138, 38);
-  g.print(cafeLabel(cafeSt));
+  drawTextRu(g, 138, 38, cafeLabel(cafeSt), col, 3);
   cafeTime(cafeTill, buf);
-  g.setTextSize(1);
-  g.setTextColor(lerp565(CREAMC, BG, 0.25f));
-  g.setCursor(138, 66);
-  g.print(cafeSt == 3 ? F("OPENS ") : F("UNTIL "));
-  g.print(buf);
+  char line[48];        // кириллица в UTF-8 — два байта на символ:
+                        // «ОТКРОЕТСЯ В 00:00» это 29 байт, в 24 не влезало
+  snprintf(line, sizeof(line), "%s %s", cafeSt == 3 ? "ОТКРОЕТСЯ В" : "ДО", buf);
+  drawTextRu(g, 138, 66, line, lerp565(CREAMC, BG, 0.25f), 1);
   int left = (cafeTill - cafeNm + 1440) % 1440;
-  g.setTextSize(2);
-  g.setTextColor(col);
-  g.setCursor(138, 80);
-  if (left >= 60) { g.print(left / 60); g.print('H'); g.print(' '); }
-  g.print(left % 60);
-  g.print(F("M LEFT"));
+  if (left >= 60) snprintf(line, sizeof(line), "ЕЩЁ %dЧ %dМ", left / 60, left % 60);
+  else            snprintf(line, sizeof(line), "ЕЩЁ %dМ", left);
+  drawTextRu(g, 138, 80, line, col, 2);
 
   // полоса дня: вся длина — рабочее время, вырезы — перерывы и уборка
   const int bx = 12, by = 140, bw = 296, bh = 14;
@@ -1305,8 +1678,7 @@ void composeCafe(Adafruit_GFX &g) {
     g.fillRect(bx, by, bw, bh, lerp565(C_IDLE, BG, 0.75f));
     g.setTextSize(1);
     g.setTextColor(lerp565(CREAMC, BG, 0.45f));
-    g.setCursor(140, by + 18);
-    g.print(F("DAY OFF"));
+    drawTextRu(g, 140, by + 18, "ВЫХОДНОЙ", lerp565(CREAMC, BG, 0.45f), 1);
   }
 
   // таблица: часы, обед/уборка, чистое время
@@ -1315,20 +1687,20 @@ void composeCafe(Adafruit_GFX &g) {
   g.setTextSize(1);
   int rowY = 176;
   g.setTextColor(lerp565(CREAMC, BG, 0.55f));
-  g.setCursor(12, rowY); g.print(F("HOURS"));
+  drawTextRu(g, 12, rowY, "ЧАСЫ", lerp565(CREAMC, BG, 0.55f), 1);
   g.setTextColor(0xE71C);
   g.setCursor(220, rowY);
   if (cafeCm > cafeOm) {
     cafeTime(cafeOm, buf); g.print(buf); g.print('-');
     cafeTime(cafeCm, buf); g.print(buf);
-  } else g.print(F("CLOSED"));
+  } else drawTextRu(g, 220, rowY, "ЗАКРЫТО", 0xE71C, 1);
 
   for (int i = 0; i < cafeSegN; i++) {
     if (cafeSegs[i].kind == 0) continue;
     rowY += 15;
     g.setTextColor(lerp565(CREAMC, BG, 0.55f));
-    g.setCursor(12, rowY);
-    g.print(cafeSegs[i].kind == 1 ? F("LUNCH") : F("CLEAN"));
+    drawTextRu(g, 12, rowY, cafeSegs[i].kind == 1 ? "ОБЕД" : "УБОРКА",
+               lerp565(CREAMC, BG, 0.55f), 1);
     g.setTextColor(cafeSegs[i].kind == 1 ? 0xFC80 : ACCENT);
     g.setCursor(220, rowY);
     cafeTime(cafeSegs[i].from, buf); g.print(buf); g.print('-');
@@ -1337,10 +1709,11 @@ void composeCafe(Adafruit_GFX &g) {
 
   rowY += 15;
   g.setTextColor(lerp565(CREAMC, BG, 0.55f));
-  g.setCursor(12, rowY); g.print(F("NET"));
+  drawTextRu(g, 12, rowY, "ИТОГО", lerp565(CREAMC, BG, 0.55f), 1);
   g.setTextColor(C_WORKING);
   g.setCursor(220, rowY);
-  g.print(cafeNet / 60); g.print(F("H ")); g.print(cafeNet % 60); g.print(F("M"));
+  snprintf(line, sizeof(line), "%dЧ %dМ", cafeNet / 60, cafeNet % 60);
+  drawTextRu(g, 220, rowY, line, C_WORKING, 1);
 }
 
 // =============================================================================
@@ -1390,6 +1763,7 @@ StaticJsonDocument<2048> doc;
 // Композиция для снимка: те же функции, что рисуют на экран, только цель — канва.
 void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
   if (curScreen == 1) { composeCafe(g); composeCafeScene(g, tt); return; }
+  if (curScreen == 2) { composeRoulette(g, top, bot, left, right, tt); return; }
   composeGrid(g);
   CanvasSink sink(g);
   for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -1517,6 +1891,9 @@ void handleLine(const char *line) {
 #if ESP_SHOT
     if (strcmp(cmd, "shot") == 0) sendShot();
 #endif
+    // Щелчок ручки «руками моста»: единственный способ проверить физику барабана
+    // без человека у энкодера.
+    if (strcmp(cmd, "kick") == 0 && curScreen == 2) roulKick();
     return;
   }
 #if ESP_DIAG
@@ -1546,6 +1923,35 @@ void handleLine(const char *line) {
       redrawAll();
     }
     cafeDirty = true;
+    roulDirty = true;
+  }
+
+  if (scr == 2) {
+    JsonObject r = doc["roul"];
+    if (!r.isNull()) {
+      JsonArray arr = r["p"].as<JsonArray>();
+      int n = 0;
+      bool changed = false;
+      for (JsonVariant v : arr) {
+        if (n >= R_PLACES_MAX) break;
+        const char *nm = v | "";
+        if (strcmp(roulPlaces[n], nm) != 0) {
+          strlcpy(roulPlaces[n], nm, R_NAME_MAX);
+          changed = true;
+        }
+        n++;
+      }
+      if (n != roulN) { roulN = n; changed = true; }
+      int win = r["win"] | -1, sp = r["sp"] | 0;
+      cafeNm = r["nm"] | cafeNm;      // время для шапки: блока кофейни здесь нет
+      if (sp != roulSp) { roulSp = sp; roulWin = win; }   // новый ответ на нашу раскрутку
+      else roulWin = win;
+      if (changed) {                                     // состав сменился — сбрасываем барабан
+        roulState = R_IDLE; roulVel = 0; roulPos = 0; roulSeenSp = roulSp;
+        roulDirty = true;
+      }
+    }
+    return;
   }
 
   if (scr == 1) {
@@ -1698,6 +2104,40 @@ void loop() {
   if (sleeping) return;              // спим: ни кадров, ни SPI
 
   unsigned long now = millis();
+
+  if (curScreen == 2) {
+    if (roulDirty) { roulDirty = false; redrawAll(); }
+    unsigned long frame = now / FRAME_MS;
+    if (frame != lastFrame) {
+      lastFrame = frame;
+      roulPhysics(now);
+      if (roulState != R_IDLE || (now - roulWonAt) < 2000) {
+        // Барабан — каждый кадр: он несёт движение. Крупье с пузырями — каждый
+        // третий: их покачивание на 8 к/с неотличимо, зато средняя цена кадра
+        // падает почти вдвое (полный экран каждый кадр не влезает в бюджет).
+        redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
+        if ((frame % 3) == 0) redrawRect(0, R_TOP - 2, R_WX - 8, R_BOT - R_TOP + 4);
+      }
+    }
+    return;
+  }
+
+  if (curScreen == 2) {
+    if (roulDirty) { roulDirty = false; redrawAll(); }
+    unsigned long frame = now / FRAME_MS;
+    if (frame != lastFrame) {
+      lastFrame = frame;
+      roulPhysics(now);
+      if (roulState != R_IDLE || (now - roulWonAt) < 2000) {
+        // Барабан — каждый кадр: он несёт движение. Крупье с пузырями — каждый
+        // третий: их покачивание на 8 к/с неотличимо, зато средняя цена кадра
+        // падает почти вдвое (полный экран каждый кадр не влезает в бюджет).
+        redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
+        if ((frame % 3) == 0) redrawRect(0, R_TOP - 2, R_WX - 8, R_BOT - R_TOP + 4);
+      }
+    }
+    return;
+  }
 
   if (curScreen == 1) {
     // Статика кофейни (шапка, статус, полоса дня, таблица) — тем же путём полосами,

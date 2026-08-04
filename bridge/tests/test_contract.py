@@ -54,6 +54,9 @@ class Snap:
         self.aquarium = self.br.build_snapshot()
         self.br.screen = 1
         self.cafe = self.br.build_snapshot()
+        self.br.screen = 2
+        self.br.places = ["НАПОЛИ", "СКАЗКА"]
+        self.roulette = self.br.build_snapshot()
         self.br.screen = 0
         self.br.sleeping = True
         self.sleep = self.br.build_snapshot()
@@ -72,7 +75,7 @@ COMMAND_KEYS = {"cmd"}
 
 def test_firmware_top_level_keys_are_sent(sketch, snap):
     read = keys_read_from(sketch, "doc") - COMMAND_KEYS
-    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep)
+    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette)
     missing = read - available
     assert not missing, f"прошивка читает, а мост не шлёт: {sorted(missing)}"
 
@@ -94,7 +97,7 @@ def test_shot_command_matches_firmware(sketch):
 
 def test_bridge_top_level_keys_are_understood(sketch, snap):
     read = keys_read_from(sketch, "doc")
-    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep)
+    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette)
     # "v" прошивка намеренно игнорирует: версия нужна людям и логам
     unread = sent - read - {"v"}
     assert not unread, f"мост шлёт, а прошивка не разбирает: {sorted(unread)}"
@@ -133,7 +136,8 @@ def test_state_codes_match_firmware_enum(sketch):
 
 def test_cafe_status_codes_match_firmware_labels(sketch):
     # cafeLabel(): case 0..4 → мост должен использовать те же номера
-    cases = dict(re.findall(r'case\s+(\d+):\s*return\s+"([A-Z]+)"', sketch))
+    # подписи по-русски: [A-Z] их не поймает, а тест молча позеленел бы
+    cases = dict(re.findall(r'case\s+(\d+):\s*return\s+"([^"]+)"', sketch))
     for code, label in cases.items():
         assert b.CAFE_LABEL[int(code)] == label, f"код {code}: мост {b.CAFE_LABEL[int(code)]}, прошивка {label}"
 
@@ -164,9 +168,12 @@ def test_held_flag_key_matches(sketch):
 def test_screen_count_matches(sketch):
     """Число экранов в мосту и в прошивке должно совпадать, иначе кнопка уводит
     на экран, которого прошивка не умеет рисовать."""
-    # в скетче экраны различаются по curScreen == 1 (кофейня) и 0 (аквариум)
-    assert "curScreen == 1" in sketch or "scr == 1" in sketch
-    assert b.Bridge.SCREENS == 2
+    # в скетче экраны различаются по curScreen == N
+    for n in range(1, b.Bridge.SCREENS):
+        assert f"curScreen == {n}" in sketch, f"прошивка не знает экран {n}"
+    assert b.Bridge.SCREENS == 3
+    # экрана, которого прошивка не умеет, у моста быть не должно
+    assert f"curScreen == {b.Bridge.SCREENS}" not in sketch
 
 
 def test_max_sessions_matches_grid(sketch):
@@ -224,3 +231,48 @@ def test_shot_row_encodings_match(sketch):
         "мост не разбирает сжатые строки снимка"
     # длина серии — 2 hex-цифры, значит серия не длиннее 255: прошивка обязана резать
     assert "run < 255" in plain, "серия в прошивке не ограничена 255 — мост её не разберёт"
+
+
+def test_roulette_fields_match(sketch, tmp_path):
+    """Поля блока roul сверяются в обе стороны — иначе барабан молча пуст."""
+    read = keys_read_from(sketch, "r")
+    cfg = b.Config(max_sessions=6, places_file=str(tmp_path / "нет.json"))
+    br = b.Bridge(cfg, sink=None, clock=lambda: 1.0, is_alive=lambda p: True,
+                  wall_clock=lambda: 1_700_000_000.0, registry_probe=lambda: None)
+    br.places = ["НАПОЛИ", "СКАЗКА"]
+    sent = set(br.build_roulette())
+    assert read, "в скетче не нашлось чтения полей рулетки — регулярка устарела?"
+    assert not (read - sent), f"прошивка читает, а мост не шлёт: {sorted(read - sent)}"
+    assert not (sent - read), f"мост шлёт, а прошивка не разбирает: {sorted(sent - read)}"
+
+
+def test_roulette_limits_match_firmware(sketch):
+    """Список мест должен влезать в буферы прошивки — иначе имена обрежутся молча."""
+    places_max = int(re.search(r"#define R_PLACES_MAX\s+(\d+)", sketch).group(1))
+    name_buf = int(re.search(r"#define R_NAME_MAX\s+(\d+)", sketch).group(1))
+    assert b.PLACES_MAX <= places_max, "мост шлёт больше мест, чем помещается"
+    # кириллица в UTF-8 — два байта на символ, плюс завершающий ноль
+    assert b.PLACE_NAME_MAX * 2 + 1 <= name_buf, "имя места не влезает в буфер прошивки"
+
+
+def test_roulette_spin_event_understood_by_bridge(sketch):
+    """Событие раскрутки, которое печатает прошивка, мост обязан понимать."""
+    plain = sketch.replace("\\", "")
+    assert '"enc":"spin"' in plain, "прошивка перестала слать событие раскрутки"
+    parsed = b.parse_esp_line('{"enc":"spin","v":12.4}')
+    assert parsed == {"enc": "spin", "held": False}
+    src = pathlib.Path(b.__file__).read_text(encoding="utf-8")
+    assert 'event == "spin"' in src, "мост не разбирает событие раскрутки"
+
+
+def test_cyrillic_font_covers_place_names(sketch, tmp_path):
+    """Каждая буква имён мест обязана иметь начертание, иначе на экране «?»."""
+    # у прошивки таблица RU_MAP: 32 буквы А..Я по порядку Юникода плюс Ё
+    assert re.search(r"RU_MAP\[33\]", sketch), "таблица начертаний изменилась"
+    real = b.load_places(str(pathlib.Path(b.__file__).parent / b.PLACES_FILE))
+    assert real, "боевой список мест не прочитался"
+    allowed = set("АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ") | set(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -.,:'\"~()!?/N&+")
+    for name in real:
+        bad = set(name) - allowed
+        assert not bad, f"в «{name}» нет начертаний для: {sorted(bad)}"

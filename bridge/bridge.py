@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import socket
 import sys
 import threading
@@ -114,6 +115,8 @@ class Config:
     # Тишина во всех сессиях столько минут — гасим панель (0 = не гасить).
     # Сном управляет мост: он один знает, есть ли жизнь, и умеет разбудить экран.
     sleep_min: float = field(default_factory=lambda: float(_env("OCTO_SLEEP_MIN", "20")))
+    # Куда ходим обедать (экран рулетки). Пусто → lunch-places.json рядом с мостом.
+    places_file: str = field(default_factory=lambda: _env("OCTO_PLACES_FILE", ""))
 
 
 def default_log_path() -> str:
@@ -213,12 +216,59 @@ def display_name(cwd: str, max_len: int = 16) -> str:
     return shorten_middle(transliterate(basename_of(cwd)), max_len)
 
 
+# --- рулетка обеда ------------------------------------------------------------
+# Третий экран. Список мест и выбор победителя держит МОСТ: список — это состояние
+# (правится без перепрошивки), а «не повторять прошлого» — правило, которому нужна
+# память. Прошивке остаётся физика барабана и рисование.
+PLACES_MAX = 12               # больше на барабан не нужно, а строка снэпшота дорога
+PLACE_NAME_MAX = 20           # столько влезает в окно барабана
+PLACES_FILE = "lunch-places.json"
+
+
+def prepare_place(name: str) -> str:
+    """Готовое к выводу имя места: верхний регистр → '№'→'N' → обрезка по центру.
+
+    Верхний регистр потому, что растровый шрифт ESP содержит только заглавные:
+    5x7 в нижнем регистре по-русски читается плохо, а интерфейс и так капсом.
+    '№' заменяется, потому что лигатурный глиф в пяти пикселях выходит кривым.
+    Обрезка по СЕРЕДИНЕ — та же конвенция, что у имён карточек: «СТОЛОВАЯ 5» и
+    «СТОЛОВАЯ 7» при обрезке с конца дали бы одинаковые огрызки.
+    """
+    s = " ".join(str(name or "").split()).upper().replace("№", "N")
+    return shorten_middle(s, PLACE_NAME_MAX)
+
+
+def load_places(path: str) -> list[str] | None:
+    """Читает список мест. None — файла нет или он не разобрался.
+
+    None и пустой список различаются намеренно: на None показываем прошлый список
+    (файл могли править в момент чтения), а не пустой барабан.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    raw = data.get("places") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        return None
+    out = []
+    for item in raw[:PLACES_MAX]:
+        name = prepare_place(item if isinstance(item, str) else "")
+        if name:
+            out.append(name)
+    return out
+
+
 # --- расписание кофейни -------------------------------------------------------
 # Второй экран гаджета. Расписание и статус считает МОСТ: он один знает время и
 # умеет менять часы без перепрошивки, а на ESP уезжает готовый код состояния.
 CAFE_OPEN, CAFE_BREAK, CAFE_LUNCH, CAFE_SHUT, CAFE_CLEAN = 0, 1, 2, 3, 4
-CAFE_LABEL = {CAFE_OPEN: "OPEN", CAFE_BREAK: "BREAK", CAFE_LUNCH: "LUNCH",
-              CAFE_SHUT: "CLOSED", CAFE_CLEAN: "CLEANING"}
+# Подписи по-русски: у прошивки появился растровый шрифт кириллицы (он делался для
+# рулетки), и держать англицизмы на домашнем гаджете больше незачем. Слова короткие
+# намеренно — статус рисуется кеглем 3, это 18 px на символ.
+CAFE_LABEL = {CAFE_OPEN: "ОТКРЫТО", CAFE_BREAK: "ПЕРЕРЫВ", CAFE_LUNCH: "ОБЕД",
+              CAFE_SHUT: "ЗАКРЫТО", CAFE_CLEAN: "УБОРКА"}
 
 # Перерывы одни и те же каждый день; в силе только попадающие в часы дня.
 CAFE_BREAKS = [(620, 630), (670, 680), (870, 880), (970, 980)]
@@ -764,6 +814,7 @@ class Bridge:
         registry_probe: Callable[[], list[dict] | None] | None = None,
         size_probe: Callable[[str], float] = transcript_size_mb,
         transcript_probe: Callable[[str], str] | None = None,
+        rng: random.Random | None = None,
     ):
         self.cfg = cfg
         self.log = logger or logging.getLogger("octo.bridge")
@@ -775,6 +826,8 @@ class Bridge:
         self._registry_probe = registry_probe or (
             lambda: read_session_registry(self.cfg.registry_root))
         self._size_probe = size_probe
+        # Случайность внедряется: иначе выбор победителя рулетки нечем проверить.
+        self._rng = rng or random.Random()
         self._transcript_probe = transcript_probe or (
             lambda sid: find_transcript(sid, self.cfg.registry_root))
 
@@ -796,11 +849,19 @@ class Bridge:
         # Что сейчас на экране. Страницу и экран держит МОСТ, а не прошивка: ESP
         # присылает только событие энкодера и получает готовый снэпшот.
         self.page = 0
-        self.screen = 0                       # 0 — аквариум, 1 — кофейня
+        self.screen = 0                       # 0 — аквариум, 1 — кофейня, 2 — рулетка
         self.sleeping = False
         self._last_activity = self._clock()
         self._enc_n = 0                       # диагностика: сколько событий пришло с ручки
         self.shot = ShotCollector()           # отладочные снимки с платы
+
+        # Рулетка обеда: список мест и победитель. Перечитывается по mtime, поэтому
+        # файл можно править на живом мосту.
+        self.places: list[str] = []
+        self._places_mtime: float | None = None
+        self.roul_win = -1                    # индекс победителя текущего запуска
+        self.roul_spin = 0                    # номер запуска: по нему прошивка видит новый ответ
+        self.roul_last = -1                   # прошлый победитель — его не повторяем
 
     # -- обработка события от хука; возвращает True, если снэпшот стал грязным --
     def handle_event(self, data: dict) -> bool:
@@ -1125,7 +1186,7 @@ class Bridge:
         return chosen, hidden + stale
 
     # -- энкодер и сон ---------------------------------------------------------
-    SCREENS = 2                                   # 0 — аквариум, 1 — кофейня
+    SCREENS = 3                                   # 0 — аквариум, 1 — кофейня, 2 — рулетка
 
     def touch_activity(self, wake: bool = False) -> None:
         """Признак жизни: сдвигает точку отсчёта автосна, при wake — будит экран."""
@@ -1176,6 +1237,11 @@ class Bridge:
                 return False                      # вне аквариума листать нечего
         elif event == "key":
             self.screen = (self.screen + 1) % self.SCREENS
+        elif event == "spin":
+            # Прошивка накопила скорость барабана и просит результат. Экран не
+            # проверяем: событие приходит только с экрана рулетки, а мост мог
+            # рассинхронизироваться с прошивкой при рестарте.
+            return self.spin_roulette()
         elif event == "hold":
             return self.set_sleep(True)
         else:
@@ -1190,6 +1256,74 @@ class Bridge:
         """День недели и минуты от полуночи по часам моста."""
         tm = time.localtime(self._wall())
         return tm.tm_wday, tm.tm_hour * 60 + tm.tm_min
+
+    # -- экран рулетки ---------------------------------------------------------
+    def places_path(self) -> str:
+        return self.cfg.places_file or os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                    PLACES_FILE)
+
+    def refresh_places(self) -> bool:
+        """Перечитывает список мест, если файл изменился. True — состав поменялся.
+
+        По mtime, а не однократно на старте: список правят руками, и перезапускать
+        из-за этого мост незачем. Нечитаемый файл НЕ обнуляет прошлый список —
+        его могли править в момент чтения.
+        """
+        path = self.places_path()
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            if self._places_mtime is not None:
+                return False                   # файл пропал — держим что было
+            mtime = None
+        if mtime is not None and mtime == self._places_mtime:
+            return False
+        places = load_places(path)
+        if places is None:
+            if not self.places:
+                self.log.warning("список мест не прочитался: %s", path)
+            return False
+        self._places_mtime = mtime
+        if places == self.places:
+            return False
+        self.places = places
+        self.roul_win = -1                     # состав сменился — прошлый выбор недействителен
+        self.log.info("список мест обновлён (%d): %s", len(places), ", ".join(places))
+        return True
+
+    def spin_roulette(self) -> bool:
+        """Выбирает победителя. Вызывается на событие 'spin' от прошивки.
+
+        Выбор здесь, а не в прошивке: список и правило «не повторять прошлого» —
+        это состояние, а состояние держит мост. Прошивка накопила скорость и просит
+        результат; барабан доедет ровно до присланного индекса.
+        """
+        self.refresh_places()
+        n = len(self.places)
+        if n == 0:
+            self.log.warning("рулетка: список мест пуст, крутить нечего")
+            return False
+        if n == 1:
+            pick = 0
+        else:
+            pick = self._rng.randrange(n - 1)   # выбираем среди всех, кроме прошлого
+            if self.roul_last >= 0 and pick >= self.roul_last:
+                pick += 1
+            if pick >= n:                       # прошлый индекс уехал за границы нового списка
+                pick = self._rng.randrange(n)
+        self.roul_win = pick
+        self.roul_last = pick
+        self.roul_spin += 1
+        self.log.info("рулетка #%d: %s", self.roul_spin, self.places[pick])
+        self.mark_dirty()
+        return True
+
+    def build_roulette(self) -> dict:
+        self.refresh_places()
+        # nm — текущее время: шапка экрана его показывает, а без блока кофейни
+        # прошивке взять его негде (стояло 00:00)
+        return {"p": list(self.places), "win": self.roul_win, "sp": self.roul_spin,
+                "nm": self.cafe_now()[1]}
 
     def build_cafe(self) -> dict:
         """Готовый статус кофейни для прошивки: она в расписании не разбирается.
@@ -1239,6 +1373,8 @@ class Bridge:
             return {"v": 1, "slp": 1}
         if self.screen == 1:
             return {"v": 1, "scr": 1, "cafe": self.build_cafe()}
+        if self.screen == 2:
+            return {"v": 1, "scr": 2, "roul": self.build_roulette()}
         visible, hidden = self.select_visible()
         # heartbeat строит снэпшот раз в 5с — логируем только смену состава скрытых,
         # иначе лог заплывёт одинаковыми строками
@@ -1395,6 +1531,12 @@ class Bridge:
                 "sleeping": self.sleeping,
                 "quiet_sec": round(now - self._last_activity, 1),
                 "encoder_events": self._enc_n,
+                # рулетка: чем крутили и что выпало — иначе «почему опять оно»
+                # снаружи не разобрать
+                "places": list(self.places),
+                "roulette_spins": self.roul_spin,
+                "roulette_win": (self.places[self.roul_win]
+                                 if 0 <= self.roul_win < len(self.places) else None),
             },
             "config": {
                 "max_sessions": self.cfg.max_sessions,
@@ -1720,9 +1862,24 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # --- управление (локальный порт, поэтому без авторизации) ---
-        self._drain_body()
+        body = self._drain_body()
         if self.path == "/shot":
             self._do_shot()
+            return
+        if self.path == "/cmd":
+            # Отладочная команда прямо на плату. Нужна, чтобы проверять то, что
+            # иначе воспроизводится только руками (физика барабана рулетки).
+            try:
+                data = json.loads(body or b"{}")
+            except ValueError:
+                data = {}
+            cmd = str(data.get("cmd", ""))
+            if not cmd.isalnum():
+                self._respond(400, {"ok": False, "error": "cmd: буквы и цифры"})
+                return
+            n = max(1, min(60, int(data.get("n", 1) or 1)))
+            ok = all(self.bridge.sink.send('{"cmd":"%s"}\n' % cmd) for _ in range(n))
+            self._respond(200 if ok else 503, {"ok": ok, "cmd": cmd, "n": n})
             return
         if self.path == "/resync":
             changed = self.bridge.reconcile()
