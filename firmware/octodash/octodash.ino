@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   52  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   55  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1082,8 +1082,11 @@ void redrawCell(int i) {
 // ручки), бодрый (10/с) — 8. Полёт 2.8-4.1с, это 3 оборота барабана.
 #define R_ROW      20         // высота строки барабана
 #define R_WIN_Y    104        // верх окна выбора
-#define R_TOP      44         // видимая часть барабана: ровно ±2 строки от окна,
-#define R_BOT      186        // иначе при шести местах в кадре видны повторы
+// Видимая часть барабана — ±1 строка. Так весь живой ряд влезает в один
+// прямоугольник на кадр, и пузыри с крупье перестают дёргаться: раньше полоса
+// делилась на три среза, и всё в ней обновлялось на треть частоты.
+#define R_TOP      82
+#define R_BOT      146
 #define R_WX       92         // барабан правее: слева живёт крупье
 #define R_WW       216
 #define R_SPIN_MIN      2.8f  // порог пуска, строк/с
@@ -1280,7 +1283,7 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
   // строки барабана
   int base = (int)(roulPos + 0.5f);
   float frac = roulPos - base;
-  for (int k = -2; k <= 2; k++) {
+  for (int k = -1; k <= 1; k++) {
     int n = roulCount();
     int idx = ((base + k) % n + n) % n;
     if (idx >= roulN) continue;
@@ -1506,7 +1509,7 @@ void slotSprite(Adafruit_GFX &g, int idx, int x, int y, int scale, int clipT, in
   }
 }
 
-void slotCabinet(Adafruit_GFX &g, int top, int bot, float tt, unsigned long now, bool jackpot) {
+void slotCabinet(Adafruit_GFX &g, int top, int bot, float tt) {
   if (S_CAB_Y + S_CAB_H < top || S_CAB_Y > bot) return;
   g.fillRect(S_CAB_X, S_CAB_Y, S_CAB_W, S_CAB_H, lerp565(BRASS, BG, 0.78f));
   g.drawRect(S_CAB_X, S_CAB_Y, S_CAB_W, S_CAB_H, BRASS);
@@ -1522,13 +1525,15 @@ void slotCabinet(Adafruit_GFX &g, int top, int bot, float tt, unsigned long now,
     g.fillRect(S_CAB_X + S_CAB_W - 4, y, 2, 2, BRASS_HI);
   }
 
-  // жемчужины-огни: бегут по кругу в покое, мигают все на тройке
-  int run = (int)((now / 110) % 12);
+  // Жемчужины — СТАТИЧНЫЕ накладки, а не бегущий огонёк. Огонёк тут невозможен:
+  // их ряды лежат вне полос, которые обновляются в кадре, поэтому «бегущая» точка
+  // стояла на месте и перескакивала только после спина, когда экран перерисовывался
+  // целиком. Оживлять ради украшения ещё две полосы — не та цена.
   for (int i = 0; i < 12; i++) {
     int px = (i < 6) ? S_CAB_X + 16 + i * 38 : S_CAB_X + S_CAB_W - 16 - (i - 6) * 38;
     int py = (i < 6) ? S_CAB_Y + 8 : S_CAB_Y + S_CAB_H - 10;
-    bool on = jackpot ? ((((now / 90) + i) & 1) == 0) : (i == run);
-    g.fillCircle(px, py, 2, on ? PEARL : lerp565(PEARL, BG, 0.78f));
+    g.fillCircle(px, py, 2, lerp565(PEARL, BG, 0.55f));
+    g.drawPixel(px - 1, py - 1, PEARL);            // блик, чтобы читались как жемчуг
   }
 
   const char *name = "ОСЬМИ-СЛОТ";
@@ -1624,7 +1629,7 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
 
   unsigned long tc = micros();
   slotWeeds(g, top, bot, tt);
-  if (right >= S_CAB_X) slotCabinet(g, top, bot, tt, now, jackpot);
+  if (right >= S_CAB_X) slotCabinet(g, top, bot, tt);
   usSmog += micros() - tc;
 
   if (right >= S_WX - 8) {
@@ -2609,11 +2614,10 @@ void loop() {
       lastFrame = frame;
       roulPhysics(now);
       // Барабан — только когда движется: стоящий перерисовывать нечего, это 39мс
-      // впустую. Полоса крупье обновляется ВСЕГДА (пузыри дают экрану жизнь) и
-      // делится на три куска по высоте, по одному за кадр: так цена кадра
-      // ОДИНАКОВА, а не прыгает от 39 до 49мс.
-      if (roulState != R_IDLE || (now - roulWonAt) < 2000)
-        redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
+      // впустую. Живой ряд (барабан, крупье, пузыри) перерисовывается ОДНИМ
+      // прямоугольником каждый кадр: раньше он делился на три среза, и всё в нём
+      // обновлялось на треть частоты — пузыри и покачивание читались рвано.
+      redrawRect(0, R_TOP - 2, W, R_BOT - R_TOP + 4);
       // Строка снизу лежит ВНЕ перерисовываемых полос, поэтому обновляем её
       // событием — когда состояние сменилось. Раньше она менялась только при
       // полной перерисовке и подолгу висела неверной («крути ручку» на летящем
@@ -2626,11 +2630,6 @@ void loop() {
         redrawRect(0, H - 16, W, 16);
       }
 
-      int bandH = (R_BOT - R_TOP + 4 + 2) / 3;
-      int slice = (int)(frame % 3);
-      int y0 = R_TOP - 2 + slice * bandH;
-      int h = min(bandH, R_BOT + 2 - y0);
-      if (h > 0) redrawRect(0, y0, R_WX - 8, h);
     }
     return;
   }
@@ -2676,11 +2675,10 @@ void loop() {
       lastFrame = frame;
       roulPhysics(now);
       // Барабан — только когда движется: стоящий перерисовывать нечего, это 39мс
-      // впустую. Полоса крупье обновляется ВСЕГДА (пузыри дают экрану жизнь) и
-      // делится на три куска по высоте, по одному за кадр: так цена кадра
-      // ОДИНАКОВА, а не прыгает от 39 до 49мс.
-      if (roulState != R_IDLE || (now - roulWonAt) < 2000)
-        redrawRect(R_WX - 8, R_TOP - 2, W - (R_WX - 8), R_BOT - R_TOP + 4);
+      // впустую. Живой ряд (барабан, крупье, пузыри) перерисовывается ОДНИМ
+      // прямоугольником каждый кадр: раньше он делился на три среза, и всё в нём
+      // обновлялось на треть частоты — пузыри и покачивание читались рвано.
+      redrawRect(0, R_TOP - 2, W, R_BOT - R_TOP + 4);
       // Строка снизу лежит ВНЕ перерисовываемых полос, поэтому обновляем её
       // событием — когда состояние сменилось. Раньше она менялась только при
       // полной перерисовке и подолгу висела неверной («крути ручку» на летящем
@@ -2693,11 +2691,6 @@ void loop() {
         redrawRect(0, H - 16, W, 16);
       }
 
-      int bandH = (R_BOT - R_TOP + 4 + 2) / 3;
-      int slice = (int)(frame % 3);
-      int y0 = R_TOP - 2 + slice * bandH;
-      int h = min(bandH, R_BOT + 2 - y0);
-      if (h > 0) redrawRect(0, y0, R_WX - 8, h);
     }
     return;
   }
