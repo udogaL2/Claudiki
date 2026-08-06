@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   48  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   49  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -118,6 +118,9 @@ class OffsetCanvas : public GFXcanvas16 {
     clipTo(l, t, r, b);
   }
   void clipOff() { clipTo(baseL, baseT, baseR, baseB); }
+  static int16_t clampClip(int32_t v) {
+    return v < -32768 ? -32768 : (v > 32767 ? 32767 : (int16_t)v);
+  }
   // Сдвиг начала координат. Бариста и реквизит кофейни нарисованы в ЛОКАЛЬНЫХ
   // координатах своего окна — так их рисует кадр анимации в буфер. Чтобы теми же
   // функциями собирать их в полосу целого экрана, цель сама переносит координаты:
@@ -177,11 +180,18 @@ class OffsetCanvas : public GFXcanvas16 {
   size_t write(uint8_t c) override {
     if (c == '\r') return 1;
     if (c == '\n') { cursor_x = 0; cursor_y += textsize_y * 8; return 1; }
+    // Внутри drawChar координаты уже холстовые, поэтому и область обрезки нужно
+    // перевести в холстовые. Пока этого не было, имя карточки исчезало с ПАНЕЛИ, а в
+    // снимке оставалось: снимок не выставлял базовую обрезку и потому врал.
     int16_t sx = offX, sy = offY;
+    int16_t cl = clipL, ct = clipT, cr = clipR, cb = clipB;
     offX = 0; offY = 0;
+    clipL = clampClip((int32_t)cl - sx); clipT = clampClip((int32_t)ct - sy);
+    clipR = clampClip((int32_t)cr - sx); clipB = clampClip((int32_t)cb - sy);
     GFXcanvas16::drawChar(cursor_x - sx, cursor_y - sy, c, textcolor, textbgcolor,
                           textsize_x, textsize_y);
     offX = sx; offY = sy;
+    clipL = cl; clipT = ct; clipR = cr; clipB = cb;
     cursor_x += textsize_x * 6;          // перенос строки не нужен: рисуем в плитку
     return 1;
   }
@@ -2264,7 +2274,11 @@ void sendShot() {
     int h = min(STRIP_H, H - ty);
     stripBuf.moveTo(0, ty);
     stripBuf.fillScreen(BG);
+    // Та же базовая обрезка, что у панели: без неё снимок рисовал то, чего на панели
+    // нет, и один раз уже соврал (имя карточки).
+    stripBuf.clipBase(0, ty, W - 1, ty + h - 1);
     composeCurrentScreen(stripBuf, ty, ty + h - 1, 0, W - 1, tt);
+    stripBuf.clipBase(-32768, -32768, 32767, 32767);
 
     Serial.print(F("{\"esp\":\"tile\",\"x\":0,\"y\":")); Serial.print(ty);
     Serial.print(F(",\"w\":")); Serial.print(W);
