@@ -121,7 +121,7 @@ class Config:
     # сессии: пять сессий параллельно дают пять баллов за те же двадцать минут, потому
     # что работы действительно вдвое-впятеро больше. Считается только время в WORKING,
     # иначе гаджет, забытый включённым, копил бы баллы сам.
-    point_min: float = field(default_factory=lambda: float(_env("OCTO_POINT_MIN", "20")))
+    point_min: float = field(default_factory=lambda: float(_env("OCTO_POINT_MIN", "15")))
     slot_bet: int = field(default_factory=lambda: int(_env("OCTO_SLOT_BET", "5")))
     points_file: str = field(default_factory=lambda: _env("OCTO_POINTS_FILE", ""))
 
@@ -278,10 +278,12 @@ def load_places(path: str) -> list[str] | None:
 # исход спина считает МОСТ, потому что и счёт, и случайность — это состояние,
 # которое обязано переживать перезагрузку платы.
 SLOT_SYMS = 6                 # столько символов на барабане (спрайты в прошивке)
-SLOT_PAY_TRIPLE = 8.0         # три одинаковых
-SLOT_PAY_PAIR = 1.4           # два одинаковых — ставка почти возвращается
-# Отдача при шести символах: 6/216 тройки и 90/216 пары дают ≈81% от ставки.
-# Меньше единицы намеренно: баллы должны кончаться, иначе автомат не нужен.
+SLOT_PAY_TRIPLE = 15.0        # три одинаковых
+SLOT_PAY_PAIR = 1.6           # два одинаковых — ставка возвращается с прибавкой
+# Отдача при шести символах: тройка 6/216, пара 90/216, итого 15/36 + 1.6*90/216 ≈ 1.08.
+# Чуть БОЛЬШЕ единицы намеренно: при 81% игрок уходил в минус на любой дистанции, а
+# автомат тут не казино — он должен раскачивать счёт в обе стороны, а не съедать его.
+# Копится счёт всё равно медленнее, чем тратится: спин занимает секунды, балл — минуты.
 
 
 # --- расписание кофейни -------------------------------------------------------
@@ -2044,8 +2046,11 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 data = {}
             ev = str(data.get("enc", ""))
-            if ev not in ("cw", "ccw", "key", "hold"):
-                self._respond(400, {"ok": False, "error": "enc: cw|ccw|key|hold"})
+            # spin/slot — те же события, что шлёт прошивка, раскрутив барабан. Без них
+            # исход рулетки и автомата (в том числе отказ «не хватает баллов») нельзя
+            # ни воспроизвести, ни снять на скриншот, не стоя у платы с ручкой в руке.
+            if ev not in ("cw", "ccw", "key", "hold", "spin", "slot"):
+                self._respond(400, {"ok": False, "error": "enc: cw|ccw|key|hold|spin|slot"})
                 return
             self.bridge.handle_encoder(ev, held=bool(data.get("held") or data.get("k")))
             self._respond(200, {"ok": True, "screen": self.bridge.screen,

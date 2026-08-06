@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   66 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   68 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1728,11 +1728,11 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
     drawTextRu(g, 8, 5, "АВТОМАТ", lerp565(CREAMC, BG, 0.05f), 1);
     char head[48];
     snprintf(head, sizeof(head), "%d Б  СТАВКА %d  РЕКОРД %d", slotPts, slotBet, slotRec);
-    // Не хватает на спин — счёт мигает красным: отказ должен быть виден до того,
-    // как человек начнёт крутить.
+    // Не хватает на спин — счёт горит красным РОВНО, без мигания: шапку не обновляет
+    // ни одна покадровая полоса, и «мигание» тут застывало бы в случайной фазе —
+    // то ярким, то тусклым до следующей полной перерисовки. Цвета достаточно.
     bool low = slotPts < slotBet;
-    uint16_t hc = low ? (((now / 300) & 1) ? C_ERROR : lerp565(C_ERROR, BG, 0.45f))
-                      : lerp565(CREAMC, BG, 0.25f);
+    uint16_t hc = low ? C_ERROR : lerp565(CREAMC, BG, 0.25f);
     drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, hc, 1);
   }
 
@@ -1773,7 +1773,7 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
       g.drawFastVLine(S_WX + 3 * S_BW + 2 * S_GAP + 5 - t, plY - t, 2 * t + 1, plCol);
     }
 
-    const char *pay = "ТРОЙКА x8   ПАРА x1.4";
+    const char *pay = "ТРОЙКА x15   ПАРА x1.6";
     drawTextRu(g, S_CAB_X + ((S_CAB_W - textWidthRu(pay, 1)) >> 1), S_WIN_Y + S_ROW + 6, pay,
                lerp565(BRASS_HI, BG, 0.5f), 1);
 
@@ -2699,88 +2699,34 @@ void loop() {
     if (frame != lastFrame) {
       lastFrame = frame;
       slotPhysics(now);
-      // Строка снизу вне перерисовываемой полосы — обновляем событием, как в рулетке.
-      int kind = slotWin == -1 ? 3
-                 : slotState == S_SHOWN ? 2
-                 : (slotState == S_SPINNING || slotState == S_LANDING) ? 1 : 0;
-      bool flashing = (slotState == S_SHOWN) && (now - slotShownAt) < 1200;
-      if (kind != slotStatusShown || flashing) {
-        slotStatusShown = kind;
-        redrawRect(0, H - 16, W, 16);
-      }
       // Барабаны — каждый кадр, они несут движение. Остальное живое (пузыри,
       // водоросли, огни корпуса) обновляется срезами по одному за кадр: цена кадра
       // от этого постоянная, а не прыгает.
       if (slotState == S_SPINNING || slotState == S_LANDING || (now - slotShownAt) < 2000)
         redrawRect(S_WX - 10, S_WIN_Y - 8, 3 * S_BW + 2 * S_GAP + 20, S_ROW + 12);
       // Крупье с рычагом — каждый кадр: заливки стали дешёвыми, и полоса влезает.
-      // Дно (водоросли) качается медленно, ему хватает каждого третьего кадра.
-      redrawRect(0, 78, S_CAB_X, 120);   // вся механика рычага внутри полосы
+      // Полоса кончается ВЫШЕ строки состояния: раньше она задевала её верхние
+      // две строки пикселей на левых 84px — и мигающий текст перерисовывался
+      // огрызком, что читалось как «что-то накладывается».
+      redrawRect(0, 78, S_CAB_X, S_STATUS_Y - 78);
       // Дно — половинками через кадр: целиком оно стоило 16мс и выбивало каждый
       // третий кадр за бюджет. Водоросли качаются медленно, деление незаметно.
       if ((frame & 1) == 0) redrawRect(0, S_BED_Y, W / 2, H - S_BED_Y);
       else                  redrawRect(W / 2, S_BED_Y, W / 2, H - S_BED_Y);
-    }
-    return;
-  }
-
-  if (curScreen == 2) {
-    if (roulDirty) { roulDirty = false; roulStatusShown = -1; redrawAll(); }
-    // Свой период кадра: барабан стоит ~39мс, и на сетке 40мс кадры то влезали, то
-    // нет — частота скакала. Стабильные 20 к/с лучше прыгающих 24: глаз замечает
-    // не абсолютную частоту, а её рывки.
-    unsigned long frame = now / ROUL_FRAME_MS;
-    if (frame != lastFrame) {
-      lastFrame = frame;
-      roulPhysics(now);
-      // Барабан — только когда движется: стоящий перерисовывать нечего, это 39мс
-      // впустую. Живой ряд (барабан, крупье, пузыри) перерисовывается ОДНИМ
-      // прямоугольником каждый кадр: раньше он делился на три среза, и всё в нём
-      // обновлялось на треть частоты — пузыри и покачивание читались рвано.
-      redrawRect(0, R_TOP - 2, W, R_BOT - R_TOP + 4);
-      // Строка снизу лежит ВНЕ перерисовываемых полос, поэтому обновляем её
-      // событием — когда состояние сменилось. Раньше она менялась только при
-      // полной перерисовке и подолгу висела неверной («крути ручку» на летящем
-      // барабане). На время вспышки победы обновляем каждый кадр: это 4мс.
-      int kind = roulState == R_WON ? 2
-                 : (roulState == R_SPIN || roulState == R_LAND) ? 1 : 0;
-      bool flashing = (roulState == R_WON) && (now - roulWonAt) < 1200;
-      if (kind != roulStatusShown || flashing) {
-        roulStatusShown = kind;
-        redrawRect(0, H - 16, W, 16);
-      }
-
-    }
-    return;
-  }
-
-  if (curScreen == 3) {
-    if (slotDirty) { slotDirty = false; slotStatusShown = -1; redrawAll(); }
-    unsigned long frame = now / ROUL_FRAME_MS;
-    if (frame != lastFrame) {
-      lastFrame = frame;
-      slotPhysics(now);
-      // Строка снизу вне перерисовываемой полосы — обновляем событием, как в рулетке.
+      // Строка состояния — ПОСЛЕДНЕЙ и целиком: она мигает, а мигающее нельзя
+      // обновлять по кускам в разных кадрах — половины окажутся в разных фазах.
+      // Прямоугольник ведёт по S_STATUS_Y, а не по низу экрана: строка автомата
+      // сидит выше рулеточной, и старый (0,H-16) не накрывал её вовсе — потому
+      // надпись и застревала, пока её случайно не задевали соседние полосы.
       int kind = slotWin == -1 ? 3
                  : slotState == S_SHOWN ? 2
                  : (slotState == S_SPINNING || slotState == S_LANDING) ? 1 : 0;
-      bool flashing = (slotState == S_SHOWN) && (now - slotShownAt) < 1200;
+      bool flashing = (slotState == S_SHOWN   && now - slotShownAt   < 1200) ||
+                      (slotState == S_REFUSED && now - slotRefusedAt < 1600);
       if (kind != slotStatusShown || flashing) {
         slotStatusShown = kind;
-        redrawRect(0, H - 16, W, 16);
+        redrawRect(0, S_STATUS_Y - 2, W, 13);
       }
-      // Барабаны — каждый кадр, они несут движение. Остальное живое (пузыри,
-      // водоросли, огни корпуса) обновляется срезами по одному за кадр: цена кадра
-      // от этого постоянная, а не прыгает.
-      if (slotState == S_SPINNING || slotState == S_LANDING || (now - slotShownAt) < 2000)
-        redrawRect(S_WX - 10, S_WIN_Y - 8, 3 * S_BW + 2 * S_GAP + 20, S_ROW + 12);
-      // Крупье с рычагом — каждый кадр: заливки стали дешёвыми, и полоса влезает.
-      // Дно (водоросли) качается медленно, ему хватает каждого третьего кадра.
-      redrawRect(0, 78, S_CAB_X, 120);   // вся механика рычага внутри полосы
-      // Дно — половинками через кадр: целиком оно стоило 16мс и выбивало каждый
-      // третий кадр за бюджет. Водоросли качаются медленно, деление незаметно.
-      if ((frame & 1) == 0) redrawRect(0, S_BED_Y, W / 2, H - S_BED_Y);
-      else                  redrawRect(W / 2, S_BED_Y, W / 2, H - S_BED_Y);
     }
     return;
   }

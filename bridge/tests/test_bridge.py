@@ -2277,17 +2277,27 @@ def test_slot_payouts_cover_all_three_cases(tmp_path):
     assert seen == {"0", "2", "3"}, f"встретились не все исходы: {seen}"
 
 
-def test_slot_return_is_below_bet(tmp_path):
-    """Отдача должна быть меньше ставки: иначе баллы не кончаются и автомат не нужен."""
+def test_slot_return_matches_payout_table(tmp_path):
+    """Фактическая отдача обязана сойтись с таблицей выплат.
+
+    Ждём не «меньше ставки»: при 81% игрок уходил в минус на любой дистанции, и
+    автомат превращался в налог на баллы. Теперь коэффициенты дают ≈1.08 — счёт
+    качает в обе стороны. Ожидание считается из констант, а не вписано числом,
+    иначе тест придётся править руками при каждой правке выплат.
+    """
     br, _ = slot_bridge(tmp_path, bet=5, seed=1)
     br._points_loaded = True
+    n = b.SLOT_SYMS
+    want = (b.SLOT_PAY_TRIPLE / (n * n) +          # три одинаковых
+            b.SLOT_PAY_PAIR * 3 * (n - 1) / (n * n))  # ровно два одинаковых
     spins, won = 3000, 0
     for _ in range(spins):
         br.points = 100
         br.spin_slot()
         won += br.slot_win
     rtp = won / (spins * 5)
-    assert 0.7 < rtp < 0.95, f"отдача {rtp:.2f} вне разумного (ждали ~0.81)"
+    assert abs(rtp - want) < 0.12, f"отдача {rtp:.2f}, а таблица обещает {want:.2f}"
+    assert want > 1.0, "выплаты снова ниже ставки — игрок будет только терять"
 
 
 def test_slot_best_win_is_a_record(tmp_path):
