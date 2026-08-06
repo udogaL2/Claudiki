@@ -1126,6 +1126,8 @@
 
   let sPts = 37, sBet = 5, sRec = 64, sPrg = 62;   // так это выглядит с моста
   let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
+  let sLanding = [false,false,false], sLanded = [false,false,false];
+  let sLandFrom = [0,0,0], sLandDist = [0,0,0], sLandT0 = [0,0,0], sLandDur = [0,0,0];
   let sState = "idle";                    // idle | charging | spinning | landing | shown | refused
   let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0, sRefusedAt = 0, sLev = 0;
 
@@ -1151,7 +1153,10 @@
       return;
     }
     if(sState === "landing") return;
-    if(sState === "shown" || sState === "refused"){ sState = "idle"; sTarget = [-1,-1,-1]; sWin = 0; }
+    if(sState === "shown" || sState === "refused"){
+      sState = "idle"; sTarget = [-1,-1,-1]; sWin = 0;
+      sLanding = [false,false,false]; sLanded = [false,false,false];
+    }
     sVel[0] += S_KICK;
     if(sVel[0] >= S_SPIN_MIN && sState !== "spinning"){
       sState = "spinning";
@@ -1185,13 +1190,21 @@
       const myFr = fr * (1 - i*0.16);     // следующий барабан тормозит позже
       sVel[i] = Math.max(0, sVel[i] - myFr*dt);
       sPos[i] += sVel[i]*dt;
-      if(sState !== "charging" && sTarget[i] >= 0 && sVel[i] < S_SPIN_MIN*1.6){
+      // Доводка по ВРЕМЕНИ. Признак «уже приехал» обязателен: без него условие
+      // начала доводки срабатывало сразу после её конца, и барабан бесконечно
+      // уезжал ещё на символ каждые полсекунды.
+      if(sState !== "charging" && sTarget[i] >= 0 && !sLanding[i] && !sLanded[i] && sVel[i] < 3){
+        sLanding[i] = true; sLandFrom[i] = sPos[i]; sLandT0[i] = now;
         const n = sN();
-        const d = ((sTarget[i] - sPos[i]) % n + n) % n;
-        if(d < 0.04 && sVel[i] < 0.25){ sPos[i] = sTarget[i]; sVel[i] = 0; }
-        else { sVel[i] = Math.max(0.12, Math.min(sVel[i], d*2.4)); sPos[i] += sVel[i]*dt; }
+        sLandDist[i] = ((sTarget[i] - sPos[i]) % n + n) % n + 1;
+        sLandDur[i] = 420 + i*140;                    // остановка слева направо
       }
-      if(sVel[i] > 0) allStopped = false;
+      if(sLanding[i]){
+        const t = (now - sLandT0[i]) / sLandDur[i];
+        if(t >= 1){ sPos[i] = sTarget[i]; sVel[i] = 0; sLanding[i] = false; sLanded[i] = true; }
+        else { sPos[i] = sLandFrom[i] + sLandDist[i] * (1 - Math.pow(1-t, 3)); sVel[i] = 0.01; }
+      }
+      if(sVel[i] > 0 || sLanding[i]) allStopped = false;
       sPos[i] = ((sPos[i] % sN()) + sN()) % sN();
     }
     if(sState === "charging" && allStopped) sState = "idle";
@@ -1427,6 +1440,7 @@
   let rPlaces = ["КАЙЗЕРВЮРСТ", "ФЬЮЖН ЭКСПРЕСС", "ПЕЛЬМЕННАЯ",
                  "НАПОЛИ", "СКАЗКА", "РОСТИКС"];
   let rPos = 0, rVel = 0, rWin = -1, rWonAt = 0, rLastTick = 0;
+  let rLanding = false, rLandFrom = 0, rLandDist = 0, rLandT0 = 0;
   let rState = "idle";                    // idle | charging | spinning | landing | won
 
   const rN = () => Math.max(1, rPlaces.length);
@@ -1441,7 +1455,7 @@
 
   function roulKick(dir){
     if(rState==="landing") return;                    // доезжает — не мешаем
-    if(rState==="won"){ rState="idle"; rWin=-1; }     // новый заход
+    if(rState==="won"){ rState="idle"; rWin=-1; rLanding=false; }     // новый заход
     rVel += R_KICK * (rState==="spinning" ? 0.6 : 1);
     if(rVel >= R_SPIN_MIN && rState!=="spinning"){
       rState = "spinning";

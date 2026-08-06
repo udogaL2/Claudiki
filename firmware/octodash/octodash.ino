@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   59  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   61  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1117,6 +1117,11 @@ int   roulWin = -1;           // индекс победителя от мост
 int   roulSp = 0;             // номер запуска от моста
 int   roulSeenSp = 0;         // какой номер мы уже отработали
 float roulPos = 0, roulVel = 0;
+// Доводка ограничена по времени — та же причина, что в автомате: скорость,
+// пропорциональная остатку, с полом 0.12 строки/с превращала хвост в ползание.
+bool  roulLanding = false;
+float roulLandFrom = 0, roulLandDist = 0;
+unsigned long roulLandT0 = 0;
 RoulState roulState = R_IDLE;
 unsigned long roulWonAt = 0, roulLastPhys = 0;
 bool roulDirty = true;      // состав сменился — нужна полная перерисовка экрана
@@ -1128,7 +1133,7 @@ int roulCount() { return roulN > 0 ? roulN : 1; }
 // победителя и уходим в полёт.
 void roulKick() {
   if (roulState == R_LAND) return;                  // доезжает — не мешаем
-  if (roulState == R_WON) { roulState = R_IDLE; roulWin = -1; }
+  if (roulState == R_WON) { roulState = R_IDLE; roulWin = -1; roulLanding = false; }
   roulVel += R_KICK * (roulState == R_SPIN ? 0.6f : 1.0f);
   if (roulVel >= R_SPIN_MIN && roulState != R_SPIN) {
     roulState = R_SPIN;
@@ -1164,18 +1169,25 @@ void roulPhysics(unsigned long now) {
     roulState = R_LAND;
   }
   if (roulState == R_LAND) {
-    // Доводим ТОЛЬКО вперёд: доводка назад читалась бы как подкрутка результата.
-    // Пол скорости обязан быть НИЖЕ порога остановки, иначе барабан не встанет
-    // никогда — в эмуляторе на этом уже наступали.
+    // Доводим ТОЛЬКО вперёд (доводка назад читалась бы как подкрутка результата) и
+    // за ФИКСИРОВАННЫЙ срок с кубическим замедлением: скорость, пропорциональная
+    // остатку, давала ползание на секунду с лишним в самом конце.
     int n = roulCount();
-    float d = fmodf(fmodf((float)roulWin - roulPos, (float)n) + n, (float)n);
-    if (d < 0.04f && roulVel < 0.25f) {
-      roulPos = roulWin; roulVel = 0; roulState = R_WON; roulWonAt = now;
+    if (!roulLanding) {
+      roulLanding = true;
+      roulLandFrom = roulPos;
+      float d = fmodf(fmodf((float)roulWin - roulPos, (float)n) + n, (float)n);
+      roulLandDist = d + 1.0f;              // ещё одно место, чтобы не встать резко
+      roulLandT0 = now;
+    }
+    float t = (float)(now - roulLandT0) / 520.0f;
+    if (t >= 1) {
+      roulPos = roulWin; roulVel = 0; roulLanding = false;
+      roulState = R_WON; roulWonAt = now;
     } else {
-      float cap = d * 2.4f;
-      roulVel = roulVel < cap ? roulVel : cap;
-      if (roulVel < 0.12f) roulVel = 0.12f;
-      roulPos += roulVel * dt;
+      float e = 1 - (1 - t) * (1 - t) * (1 - t);
+      roulPos = roulLandFrom + roulLandDist * e;
+      roulVel = 0.01f;                       // «ещё крутится» для крупье и штрихов
     }
   }
   int n = roulCount();
@@ -1410,6 +1422,18 @@ int   slotTarget[3] = {-1, -1, -1};
 int   slotWin = 0;
 int   slotSp = 0, slotSeenSp = 0;
 float slotPos[3] = {0, 0, 0}, slotVel[3] = {0, 0, 0};
+// Доводка ОГРАНИЧЕНА ПО ВРЕМЕНИ. Раньше скорость задавалась пропорционально остатку
+// с полом 0.12 строки/с, и хвост превращался в ползание на секунду с лишним — особенно
+// у третьего барабана, у которого трение меньше. Теперь: остаток проходится за
+// фиксированный срок с кубическим замедлением, поэтому «прилёт» всегда одинаково
+// короткий и мягкий.
+bool  slotLanding[3] = {false, false, false};
+// Отдельный признак «уже приехал»: без него условие начала доводки срабатывало
+// снова сразу после её конца, и барабан бесконечно уезжал ещё на символ каждые
+// полсекунды — на экране это выглядело как «крутится и не встаёт».
+bool  slotLanded[3] = {false, false, false};
+float slotLandFrom[3], slotLandDist[3];
+unsigned long slotLandT0[3], slotLandDur[3];
 SlotState slotState = S_IDLE;
 unsigned long slotShownAt = 0, slotRefusedAt = 0, slotLastPhys = 0;
 float slotLev = 0;          // угол рычага 0..1, ходит плавно
@@ -1440,6 +1464,8 @@ void slotKick() {
   if (slotState == S_SHOWN || slotState == S_REFUSED) {
     slotState = S_IDLE;
     slotTarget[0] = slotTarget[1] = slotTarget[2] = -1;
+    slotLanding[0] = slotLanding[1] = slotLanding[2] = false;
+    slotLanded[0] = slotLanded[1] = slotLanded[2] = false;
     slotWin = 0;
     slotDirty = true;
   }
@@ -1474,18 +1500,28 @@ void slotPhysics(unsigned long now) {
     slotVel[i] -= myFr * dt;
     if (slotVel[i] < 0) slotVel[i] = 0;
     slotPos[i] += slotVel[i] * dt;
-    if (slotState != S_CHARGE && slotTarget[i] >= 0 && slotVel[i] < S_SPIN_MIN * 1.6f) {
+    if (slotState != S_CHARGE && slotTarget[i] >= 0 && !slotLanding[i] && !slotLanded[i]
+        && slotVel[i] < 3.0f) {
+      slotLanding[i] = true;                     // начинаем доводку по времени
+      slotLandFrom[i] = slotPos[i];
       float d = fmodf(fmodf((float)slotTarget[i] - slotPos[i], (float)SLOT_SYMS) + SLOT_SYMS,
                       (float)SLOT_SYMS);
-      if (d < 0.04f && slotVel[i] < 0.25f) { slotPos[i] = slotTarget[i]; slotVel[i] = 0; }
-      else {
-        float cap = d * 2.4f;
-        slotVel[i] = slotVel[i] < cap ? slotVel[i] : cap;
-        if (slotVel[i] < 0.12f) slotVel[i] = 0.12f;
-        slotPos[i] += slotVel[i] * dt;
+      slotLandDist[i] = d + 1.0f;                // ещё один символ, чтобы не встать резко
+      slotLandT0[i] = now;
+      slotLandDur[i] = 420 + i * 140;            // разное время — остановка слева направо
+    }
+    if (slotLanding[i]) {
+      float t = (float)(now - slotLandT0[i]) / slotLandDur[i];
+      if (t >= 1) {
+        slotPos[i] = slotTarget[i]; slotVel[i] = 0;
+        slotLanding[i] = false; slotLanded[i] = true;
+      } else {
+        float e = 1 - (1 - t) * (1 - t) * (1 - t);         // кубическое замедление
+        slotPos[i] = slotLandFrom[i] + slotLandDist[i] * e;
+        slotVel[i] = 0.01f;                                // «ещё крутится» для рычага
       }
     }
-    if (slotVel[i] > 0) allStopped = false;
+    if (slotVel[i] > 0 || slotLanding[i]) allStopped = false;
     slotPos[i] = fmodf(fmodf(slotPos[i], (float)SLOT_SYMS) + SLOT_SYMS, (float)SLOT_SYMS);
   }
   if (slotState == S_CHARGE && allStopped) slotState = S_IDLE;
