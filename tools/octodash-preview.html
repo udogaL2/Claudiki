@@ -1128,7 +1128,6 @@
   let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
   let sState = "idle";                    // idle | charging | spinning | landing | shown | refused
   let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0, sRefusedAt = 0;
-  let sBubPh = [0,0,0,0,0,0,0];
 
   const sN = () => SLOT_SPRITES.length;
 
@@ -1177,11 +1176,6 @@
   function slotPhysics(now){
     const dt = Math.min(0.05, sLastTick ? (now - sLastTick)/1000 : 0.016);
     sLastTick = now;
-    // пузыри и водоросли живут всегда, даже когда барабаны стоят
-    for(let i=0;i<sBubPh.length;i++){
-      sBubPh[i] += (0.05 + (i%3)*0.02 + Math.min(1, sVel[0]/6)*0.12) * dt * 2;
-      if(sBubPh[i] > 1) sBubPh[i] -= 1;
-    }
     if(sState === "refused" && now - sRefusedAt > 1600) sState = "idle";
     if(sState === "idle" || sState === "shown" || sState === "refused"){ sVel = [0,0,0]; return; }
 
@@ -1259,24 +1253,17 @@
     for(let i=0;i<22;i++){
       const bx = 6 + i*14;
       const h = 10 + (i%4)*7;
+      // Наклон считается ОДИН раз на стебель, а не на пиксель: синус на пиксель стоил
+      // 10мс из 19мс среза дна и рвал период кадра.
+      const lean = Math.sin(tt*0.9 + i*1.3) * 3;
       for(let k=0;k<h;k++){
-        const sway = Math.sin(tt*0.9 + i*1.3 + k*0.18) * (k/h) * 3;
-        g.drawPixel((bx + sway)|0, DH - 2 - k, lerp(WEED, BG, 0.15 + k/h*0.5));
+        const f = k/h;
+        g.drawPixel((bx + lean*f)|0, DH - 2 - k, lerp(WEED, BG, 0.15 + f*0.5));
       }
     }
   }
 
-  function slotBubbles(){
-    for(let i=0;i<sBubPh.length;i++){
-      const ph = sBubPh[i];
-      const y = (DH - 46) - ph*(DH - 92);
-      const x = 10 + (i*11) % 60 + Math.sin(ph*6.2 + i)*3;
-      const r = 1 + (i % 3);
-      const col = lerp(ACCENT, BG, 0.3 + ph*0.5);
-      if(r <= 1) g.drawPixel(x|0, y|0, col);
-      else { g.drawCircle(x|0, y|0, r, col); g.drawPixel((x-r+1)|0, (y-r+1)|0, lerp(col,0xFFFF,0.5)); }
-    }
-  }
+
 
   function renderSlots(tt){
     const now = performance.now();
@@ -1294,7 +1281,6 @@
          low ? (((now/300)|0)&1 ? C_ERR : lerp(C_ERR,BG,0.45)) : lerp(CREAM,BG,0.25));
 
     slotWeeds(tt);
-    slotBubbles();
     slotCabinet(tt, now, jackpot);
 
     // барабаны
@@ -1360,18 +1346,20 @@
       drawEyes(ox, eyY, sState==="spinning"||sState==="landing" ? 0 : 2, tt, spin>0.4, {blink:3.9});
     }
 
-    // Большая красная кнопка вместо рычага: рукоять на пять пикселей в этом масштабе
-    // не читалась — «непонятно, что осьминог держит». Кнопка вдавливается на спине.
-    const bx = S_CAB_X - 18, by = 120;
-    const pressed = (sState==="spinning"||sState==="landing"||(sState==="charging"&&spin>0.15));
-    const cap = by + (pressed ? 3 : 0);
-    g.fillRect(bx-11, by+9, 22, 5, lerp(BRASS,BG,0.35));
-    g.drawRect(bx-11, by+9, 22, 5, lerp(BRASS_HI,BG,0.4));
-    g.fillCircle(bx, cap, 9, pressed ? lerp(C_ERR,BG,0.45) : C_ERR);
-    g.drawCircle(bx, cap, 9, lerp(BRASS_HI,BG,0.25));
-    if(!pressed) g.fillCircle(bx-3, cap-3, 2, lerp(0xFFFF,C_ERR,0.35));
-    if(jackpot) g.drawCircle(bx, cap, 11, C_WORK);
-    arm(ox+14, hy+2, bx, cap-7, 6-spin*5, tt, 1.4+spin*5);
+    // Рычаг: толстая штанга и КРУПНАЯ рукоять. Первая версия была на пять пикселей и
+    // не читалась вовсе, поэтому здесь всё нарочито большое.
+    const lx = S_CAB_X - 20, lTop = 96, lBottom = 150;
+    const pulled = (sState==="spinning"||sState==="landing");
+    const ky = lTop + (pulled ? 20 : (sState==="charging" ? (10*spin)|0 : 0));
+    g.fillRect(lx-6, lBottom, 13, 6, lerp(BRASS,BG,0.3));
+    g.drawRect(lx-6, lBottom, 13, 6, lerp(BRASS_HI,BG,0.35));
+    g.fillRect(lx-1, ky, 3, lBottom-ky, lerp(BRASS_HI,BG,0.45));
+    g.drawFastVLine(lx-1, ky, lBottom-ky, lerp(BRASS,BG,0.2));
+    g.fillCircle(lx, ky, 7, jackpot ? C_WORK : C_ERR);
+    g.drawCircle(lx, ky, 7, lerp(BRASS_HI,BG,0.2));
+    g.fillCircle(lx-2, ky-3, 2, lerp(0xFFFF,C_ERR,0.3));
+    if(jackpot) g.drawCircle(lx, ky, 9, C_WORK);
+    arm(ox+14, hy+2, lx-3, ky+2, 6-spin*5, tt, 1.4+spin*5);
   }
 
   function slotStatus(now, shown, jackpot){
