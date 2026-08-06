@@ -1127,7 +1127,7 @@
   let sPts = 37, sBet = 5, sRec = 64, sPrg = 62;   // так это выглядит с моста
   let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
   let sLanding = [false,false,false], sLanded = [false,false,false];
-  let sLandA = [0,0,0], sLandEnd = [0,0,0];
+  let sLandA = [0,0,0], sLandEnd = [0,0,0], sLandT0 = [0,0,0];
   let sState = "idle";                    // idle | charging | spinning | landing | shown | refused
   let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0, sRefusedAt = 0, sLev = 0;
 
@@ -1200,16 +1200,22 @@
         const d = ((sTarget[i] - sPos[i]) % n + n) % n;
         const aBase = S_SPIN_FRICTION * (1 - i*0.16);
         const natural = sVel[i]*sVel[i] / (2*aBase);
-        const k = Math.max(i, Math.round((natural - d) / n));   // каждому следующему +оборот
-        const D = d + k*n;
+        // каждому следующему барабану +оборот, но не дальше двух: иначе доводка тянется
+        let k = Math.max(i, Math.round((natural - d) / n));
+        if(k > i + 1) k = i + 1;
+        let D = d + k*n;
+        if(D < 0.5) D += n;                   // путь строго положительный, иначе NaN
         const vNeed = Math.sqrt(2*aBase*D);
         if(sVel[i] < vNeed) sVel[i] = vNeed;
         sLandA[i] = sVel[i]*sVel[i] / (2*D);
+        if(!(sLandA[i] > 0)) sLandA[i] = aBase;
         sLandEnd[i] = sPos[i] + D;
+        sLandT0[i] = now;
         sLanding[i] = true;
       }
       if(sLanding[i]){
         sVel[i] -= sLandA[i]*dt;
+        if(now - sLandT0[i] > 8000) sVel[i] = 0;   // предохранитель от зависания
         if(sVel[i] <= 0){ sPos[i] = sTarget[i]; sVel[i] = 0; sLanding[i] = false; sLanded[i] = true; }
         else sPos[i] = sLandEnd[i] - sVel[i]*sVel[i] / (2*sLandA[i]);
       }
@@ -1449,7 +1455,7 @@
   let rPlaces = ["КАЙЗЕРВЮРСТ", "ФЬЮЖН ЭКСПРЕСС", "ПЕЛЬМЕННАЯ",
                  "НАПОЛИ", "СКАЗКА", "РОСТИКС"];
   let rPos = 0, rVel = 0, rWin = -1, rWonAt = 0, rLastTick = 0;
-  let rLanding = false, rLandA = 0, rLandEnd = 0;
+  let rLanding = false, rLandA = 0, rLandEnd = 0, rLandT0 = 0;
   let rState = "idle";                    // idle | charging | spinning | landing | won
 
   const rN = () => Math.max(1, rPlaces.length);

@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   62  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   64  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1121,6 +1121,7 @@ float roulPos = 0, roulVel = 0;
 // пропорциональная остатку, с полом 0.12 строки/с превращала хвост в ползание.
 bool  roulLanding = false;
 float roulLandA = 0, roulLandEnd = 0;   // трение и конец пути на доводке
+unsigned long roulLandT0 = 0;
 RoulState roulState = R_IDLE;
 unsigned long roulWonAt = 0, roulLastPhys = 0;
 bool roulDirty = true;      // состав сменился — нужна полная перерисовка экрана
@@ -1183,13 +1184,17 @@ void roulPhysics(unsigned long now) {
       int k = (int)((natural - d) / n + 0.5f);
       if (k < 0) k = 0;
       float D = d + k * (float)n;
+      if (D < 0.5f) D += n;                  // путь строго положительный, иначе NaN
       float vNeed = sqrtf(2 * R_SPIN_FRICTION * D);
       if (roulVel < vNeed) roulVel = vNeed;
       roulLandA = roulVel * roulVel / (2 * D);
+      if (!(roulLandA > 0)) roulLandA = R_SPIN_FRICTION;   // страховка от нуля и NaN
       roulLandEnd = roulPos + D;
+      roulLandT0 = now;
       roulLanding = true;
     }
     roulVel -= roulLandA * dt;
+    if (now - roulLandT0 > 8000) roulVel = 0;   // предохранитель от зависания, не ограничитель
     if (roulVel <= 0) {
       roulPos = roulWin; roulVel = 0; roulLanding = false;
       roulState = R_WON; roulWonAt = now;
@@ -1448,6 +1453,7 @@ float slotLandA[3];            // подогнанное трение на до�
 // математически точно, и финального «доснапа» на символ не существует — именно он
 // читался как смена без анимации.
 float slotLandEnd[3];
+unsigned long slotLandT0[3];
 SlotState slotState = S_IDLE;
 unsigned long slotShownAt = 0, slotRefusedAt = 0, slotLastPhys = 0;
 float slotLev = 0;          // угол рычага 0..1, ходит плавно
@@ -1528,15 +1534,28 @@ void slotPhysics(unsigned long now) {
       float natural = slotVel[i] * slotVel[i] / (2 * aBase);
       int k = (int)((natural - d) / SLOT_SYMS + 0.5f);
       if (k < i) k = i;
+      if (k > i + 1) k = i + 1;              // дальше двух оборотов доводка тянется зря
       float D = d + k * (float)SLOT_SYMS;
+      // Путь обязан быть положительным: если барабан на момент доводки оказался почти
+      // на цели, D выходил нулевым, трение считалось как v²/0, положение становилось
+      // NaN — и признак «идёт доводка» не снимался никогда: вечный спин и нажатый рычаг.
+      if (D < 0.5f) D += SLOT_SYMS;
       float vNeed = sqrtf(2 * aBase * D);
       if (slotVel[i] < vNeed) slotVel[i] = vNeed;     // ответ пришёл поздно — подтолкнуть
       slotLandA[i] = slotVel[i] * slotVel[i] / (2 * D);
+      if (!(slotLandA[i] > 0)) slotLandA[i] = aBase;    // страховка от нуля и NaN
       slotLandEnd[i] = slotPos[i] + D;
+      slotLandT0[i] = now;
       slotLanding[i] = true;
     }
     if (slotLanding[i]) {
       slotVel[i] -= slotLandA[i] * dt;                // едем по физике до нуля
+      // Предохранитель — только от зависания (порядка секунд «сверх любого разумного»),
+      // а НЕ ограничитель длительности: у третьего барабана путь длиннее и доводка
+      // честно занимает до трёх секунд. На пороге 3с он обрывал движение в ноль и
+      // снапал на цель — это и читалось как «последний не докручивается и резко
+      // меняется на следующий».
+      if (now - slotLandT0[i] > 8000) slotVel[i] = 0;
       if (slotVel[i] <= 0) {
         slotPos[i] = slotTarget[i]; slotVel[i] = 0;
         slotLanding[i] = false; slotLanded[i] = true;
