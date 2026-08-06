@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   68 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   69 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -589,6 +589,23 @@ void sendEnc(const char *what, bool held) {
 }
 
 void pollEncoder() {
+  // Кнопку опрашиваем ПЕРЕД вращением. Раньше было наоборот, и первый щелчок с
+  // зажатой кнопкой видел ещё старое swDown=false: он уходил как листание страниц
+  // (а на рулетке и автомате — как рывок барабана), и переключать экраны начинало
+  // только со второго щелчка. Порядок внутри одного вызова и есть весь баг.
+  bool down = (digitalRead(ENC_SW) == LOW);
+  unsigned long now = millis();
+  if (down != swDown && now - swChanged > SW_DEBOUNCE) {
+    swChanged = now;
+    swDown = down;
+    if (down) { swSince = now; swHandled = false; }
+    else if (!swHandled)      sendEnc("key", false);
+  }
+  if (swDown && !swHandled && now - swSince >= SW_HOLD) {
+    swHandled = true;
+    sendEnc("hold", false);
+  }
+
   // вращение: накопитель прерываний делим на 4 — один детент энкодера
   int8_t d;
   noInterrupts();
@@ -610,20 +627,6 @@ void pollEncoder() {
       else sendEnc(steps > 0 ? "cw" : "ccw", swDown);
     }
     if (swDown) swHandled = true;   // это было «крутить с зажатой» — не слать key
-  }
-
-  // кнопка: короткое нажатие и удержание различаются на отпускании
-  bool down = (digitalRead(ENC_SW) == LOW);
-  unsigned long now = millis();
-  if (down != swDown && now - swChanged > SW_DEBOUNCE) {
-    swChanged = now;
-    swDown = down;
-    if (down) { swSince = now; swHandled = false; }
-    else if (!swHandled)      sendEnc("key", false);
-  }
-  if (swDown && !swHandled && now - swSince >= SW_HOLD) {
-    swHandled = true;
-    sendEnc("hold", false);
   }
 }
 
