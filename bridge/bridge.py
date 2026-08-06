@@ -890,7 +890,11 @@ class Bridge:
         self.points = 0
         self.pts_earned = 0                   # всего заработано — для рекордов
         self.pts_spins = 0
-        self.pts_best = 0                     # лучший выигрыш
+        self.pts_best = 0                     # лучший выигрыш за спин (для /debug)
+        # Рекорд на экране — ПИКОВЫЙ счёт, а не лучший выигрыш: при фиксированной
+        # ставке максимум за спин равен bet*8 и рекорд замирал после первой тройки.
+        # Пиковый счёт растёт и от удачи, и от работы, потолка у него нет.
+        self.pts_peak = 0
         self._work_sec = 0.0                  # накопленные секунды работы до балла
         self._work_mark = self._clock()
         self.slot_reels = [0, 0, 0]           # что должно выпасть на текущем спине
@@ -1316,6 +1320,7 @@ class Bridge:
         self.pts_earned = max(0, int(data.get("earned", 0) or 0))
         self.pts_spins = max(0, int(data.get("spins", 0) or 0))
         self.pts_best = max(0, int(data.get("best", 0) or 0))
+        self.pts_peak = max(0, int(data.get("peak", 0) or 0), self.points)
         self._work_sec = max(0.0, float(data.get("work_sec", 0) or 0))
         self.log.info("баллы загружены: %d (заработано %d, спинов %d, рекорд %d)",
                       self.points, self.pts_earned, self.pts_spins, self.pts_best)
@@ -1325,7 +1330,8 @@ class Bridge:
         оставить обрезанный json, из которого счёт потом не прочитается."""
         path = self.points_path()
         data = {"points": self.points, "earned": self.pts_earned, "spins": self.pts_spins,
-                "best": self.pts_best, "work_sec": round(self._work_sec, 1)}
+                "best": self.pts_best, "peak": self.pts_peak,
+                "work_sec": round(self._work_sec, 1)}
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".tmp"
@@ -1336,6 +1342,12 @@ class Bridge:
         except OSError as exc:
             self.log.warning("не удалось сохранить баллы: %s", exc)
             return False
+
+    def _touch_peak(self) -> None:
+        """Пик счёта фиксируется при ЛЮБОМ наблюдении баланса, а не только после
+        выигрыша: иначе счёт, с которого зашли в спин, в рекорд не попадал."""
+        if self.points > self.pts_peak:
+            self.pts_peak = self.points
 
     def accrue_points(self) -> bool:
         """Начисляет баллы за отработанное время. Дёргается из reaper-цикла.
@@ -1362,6 +1374,7 @@ class Bridge:
         self._work_sec -= gained * need
         self.points += gained
         self.pts_earned += gained
+        self._touch_peak()
         self.log.info("+%d балл(ов) за работу, всего %d", gained, self.points)
         self.save_points()
         self.mark_dirty()
@@ -1375,6 +1388,7 @@ class Bridge:
         """
         if not self._points_loaded:
             self.load_points()
+        self._touch_peak()                    # счёт до спина — тоже рекорд
         bet = max(1, self.cfg.slot_bet)
         if self.points < bet:
             self.slot_win = -1                # -1 = не хватило баллов, барабаны стоят
@@ -1397,6 +1411,7 @@ class Bridge:
         self.pts_spins += 1
         if win > self.pts_best:
             self.pts_best = win
+        self._touch_peak()
         self.log.info("автомат #%d: %s → %+d, баллов %d",
                       self.slot_sp, self.slot_reels, win - bet, self.points)
         self.save_points()
@@ -1406,9 +1421,10 @@ class Bridge:
     def build_slot(self) -> dict:
         if not self._points_loaded:
             self.load_points()
+        self._touch_peak()
         return {"pts": self.points, "bet": max(1, self.cfg.slot_bet),
                 "r": list(self.slot_reels), "win": self.slot_win, "sp": self.slot_sp,
-                "rec": self.pts_best,
+                "rec": self.pts_peak,
                 # сколько осталось до следующего балла, в процентах — видно, что копится
                 "prg": int(min(99, self._work_sec / max(1.0, self.cfg.point_min * 60) * 100))}
 
@@ -1699,6 +1715,7 @@ class Bridge:
                 "points_to_next": round(max(0.0, self.cfg.point_min * 60 - self._work_sec)),
                 "slot_spins": self.pts_spins,
                 "slot_best": self.pts_best,
+                "points_peak": self.pts_peak,
             },
             "config": {
                 "max_sessions": self.cfg.max_sessions,

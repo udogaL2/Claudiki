@@ -1119,7 +1119,9 @@
   const S_LAUNCH_V = 13, S_KICK = 0.6;
   const S_STAGGER = 0.55;                 // задержка остановки каждого следующего
 
-  let sPts = 37, sBet = 5, sRec = 40, sPrg = 62;   // так это выглядит с моста
+  let sPts = 37, sBet = 5, sRec = 64, sPrg = 62;   // так это выглядит с моста
+  // Рекорд — ПИКОВЫЙ счёт, а не лучший выигрыш: при фиксированной ставке максимум
+  // за спин равен bet*8, и рекорд замирал после первой же тройки.
   let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
   let sState = "idle";                    // idle | charging | spinning | landing | shown
   let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0;
@@ -1173,7 +1175,7 @@
         const [a,b,c] = r;
         sWin = (a===b && b===c) ? Math.round(sBet*8) : (a===b||b===c||a===c) ? Math.round(sBet*1.4) : 0;
         sPts += sWin; sSpins++;
-        if(sWin > sRec) sRec = sWin;
+        if(sPts > sRec) sRec = sPts;
         sTarget = r;
         wire("out", {scr:3, r, win:sWin, pts:sPts});
       }, 140);

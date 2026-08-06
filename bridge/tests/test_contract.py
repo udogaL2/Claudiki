@@ -57,6 +57,9 @@ class Snap:
         self.br.screen = 2
         self.br.places = ["НАПОЛИ", "СКАЗКА"]
         self.roulette = self.br.build_snapshot()
+        self.br.screen = 3
+        self.br._points_loaded = True
+        self.slot = self.br.build_snapshot()
         self.br.screen = 0
         self.br.sleeping = True
         self.sleep = self.br.build_snapshot()
@@ -75,7 +78,7 @@ COMMAND_KEYS = {"cmd"}
 
 def test_firmware_top_level_keys_are_sent(sketch, snap):
     read = keys_read_from(sketch, "doc") - COMMAND_KEYS
-    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette)
+    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.slot)
     missing = read - available
     assert not missing, f"прошивка читает, а мост не шлёт: {sorted(missing)}"
 
@@ -97,7 +100,7 @@ def test_shot_command_matches_firmware(sketch):
 
 def test_bridge_top_level_keys_are_understood(sketch, snap):
     read = keys_read_from(sketch, "doc")
-    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette)
+    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.slot)
     # "v" прошивка намеренно игнорирует: версия нужна людям и логам
     unread = sent - read - {"v"}
     assert not unread, f"мост шлёт, а прошивка не разбирает: {sorted(unread)}"
@@ -171,7 +174,7 @@ def test_screen_count_matches(sketch):
     # в скетче экраны различаются по curScreen == N
     for n in range(1, b.Bridge.SCREENS):
         assert f"curScreen == {n}" in sketch, f"прошивка не знает экран {n}"
-    assert b.Bridge.SCREENS == 3
+    assert b.Bridge.SCREENS == 4
     # экрана, которого прошивка не умеет, у моста быть не должно
     assert f"curScreen == {b.Bridge.SCREENS}" not in sketch
 
@@ -276,3 +279,36 @@ def test_cyrillic_font_covers_place_names(sketch, tmp_path):
     for name in real:
         bad = set(name) - allowed
         assert not bad, f"в «{name}» нет начертаний для: {sorted(bad)}"
+
+
+def test_slot_fields_match(sketch, tmp_path):
+    """Поля блока slot сверяются в обе стороны — иначе автомат молча пуст."""
+    read = keys_read_from(sketch, "sl")
+    cfg = b.Config(max_sessions=6, points_file=str(tmp_path / "p.json"))
+    br = b.Bridge(cfg, sink=None, clock=lambda: 1.0, is_alive=lambda p: True,
+                  wall_clock=lambda: 1_700_000_000.0, registry_probe=lambda: None)
+    br._points_loaded = True
+    sent = set(br.build_slot())
+    assert read, "в скетче не нашлось чтения полей автомата — регулярка устарела?"
+    assert not (read - sent), f"прошивка читает, а мост не шлёт: {sorted(read - sent)}"
+    assert not (sent - read), f"мост шлёт, а прошивка не разбирает: {sorted(sent - read)}"
+
+
+def test_slot_symbol_count_matches(sketch):
+    """Число символов должно совпадать: мост шлёт индексы, прошивка их берёт по модулю."""
+    syms = int(re.search(r"#define SLOT_SYMS\s+(\d+)", sketch).group(1))
+    assert syms == b.SLOT_SYMS, f"символов в прошивке {syms}, у моста {b.SLOT_SYMS}"
+
+
+def test_slot_event_understood(sketch):
+    plain = sketch.replace("\\", "")
+    assert '"enc":"slot"' in plain, "прошивка перестала слать событие автомата"
+    assert b.parse_esp_line('{"enc":"slot"}') == {"enc": "slot", "held": False}
+    src = pathlib.Path(b.__file__).read_text(encoding="utf-8")
+    assert 'event == "slot"' in src, "мост не разбирает событие автомата"
+
+
+def test_slot_payouts_match_firmware_hint(sketch):
+    """Подпись на экране обязана совпадать с реальной таблицей выплат."""
+    assert "x8" in sketch and "x1.4" in sketch, "подпись выплат изменилась"
+    assert b.SLOT_PAY_TRIPLE == 8.0 and abs(b.SLOT_PAY_PAIR - 1.4) < 1e-9,         "мост платит не то, что написано на экране"

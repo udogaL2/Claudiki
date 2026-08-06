@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   42  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   44  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -212,6 +212,26 @@ static const uint8_t RU_MAP[33] = {
    0x80+18,  0x80+19,  0x80+20,
 };
 
+// Символы слот-машины 8x8: бит на пиксель в трёх слоях (тусклый/основной/блик),
+// по 8 байт на слой. Один источник с эмулятором (scratchpad/slot-sprites.py).
+#define SLOT_SYMS 6
+static const uint8_t SLOT_SPRITE[SLOT_SYMS][3][8] = {
+  {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x3C, 0x7E, 0xDB, 0xFF, 0x7E, 0x5A, 0x94, 0x49}, {0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00}},   // ОСЬМИНОГ
+  {{0x1C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7E}, {0x00, 0x00, 0xFF, 0xFE, 0xFA, 0x7E, 0x3C, 0x00}, {0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00}},   // КОФЕ
+  {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x3D, 0x7B, 0xFF, 0xFF, 0x7B, 0x3D, 0x00}, {0x00, 0x00, 0x04, 0x00, 0x00, 0x04, 0x00, 0x00}},   // РЫБКА
+  {{0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x00, 0x00, 0x1C, 0x38, 0x60, 0xC0}, {0x00, 0x00, 0x02, 0x06, 0x00, 0x00, 0x00, 0x00}},   // СИГАРЕТА
+  {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x3C, 0x66, 0xC3, 0x81, 0x81, 0xC3, 0x66, 0x3C}, {0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00}},   // ПУЗЫРЬ
+  {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, {0xFF, 0xFF, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30}, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},   // СЕМЁРКА
+};
+static const uint16_t SLOT_PAL[SLOT_SYMS][3] = {
+  {0x5A94, 0x947C, 0xFFFF},   // ОСЬМИНОГ
+  {0x7AC7, 0xD5F2, 0xFFFF},   // КОФЕ
+  {0x2C11, 0x5E9B, 0xFFFF},   // РЫБКА
+  {0xA515, 0xEF5D, 0xFBC2},   // СИГАРЕТА
+  {0x2B6F, 0x6EFD, 0xFFFF},   // ПУЗЫРЬ
+  {0x93C3, 0xFE88, 0xFFFF},   // СЕМЁРКА
+};
+
 // Порог решета копоти. Была формула (x*3 + y*5) & 3, но при dx=dy=1 это
 // 3+5=8 ≡ 0 (mod 4): порог ПОСТОЯНЕН вдоль диагонали 45°, и копоть читалась как
 // ровная штриховка, а не как дым. Таблица 8x8 (по 16 значений каждого) ломает
@@ -360,6 +380,10 @@ void composeCafe(Adafruit_GFX &g);
 void composeCafeScene(OffsetCanvas &g, float tt);
 void cafeTime(int minutes, char *out);
 void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
+void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
+void slotKick();
+void slotPhysics(unsigned long now);
+bool slotHot(int i);
 void roulKick();
 void roulPhysics(unsigned long now);
 void roulBubblesStep(float dt, float spin);
@@ -548,6 +572,7 @@ void pollEncoder() {
       // обязан отзываться на щелчок мгновенно, а круг через мост это ~50мс.
       // Мосту уйдёт одно событие "spin", когда порог будет перевален.
       if (curScreen == 2 && !swDown) roulKick();
+      else if (curScreen == 3 && !swDown) slotKick();
       else sendEnc(steps > 0 ? "cw" : "ccw", swDown);
     }
     if (swDown) swHandled = true;   // это было «крутить с зажатой» — не слать key
@@ -1305,6 +1330,241 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
   }
 }
 
+// =============================================================================
+// Экран автомата на баллы
+// =============================================================================
+// Баллы капают за отработанные минуты, исход спина считает МОСТ: счёт и случайность
+// это состояние, оно обязано переживать перезагрузку платы. Прошивке приходят
+// готовые индексы, она доводит барабаны и показывает результат.
+//
+// Физика та же, что у рулетки (числа проверены калибровкой), но барабанов три и
+// тормозят они с разным трением: остановка слева направо — половина удовольствия.
+#define S_ROW      56         // шаг символа на барабане
+#define S_WIN_Y    92         // верх окна барабана
+#define S_WX       112        // левый край первого барабана
+#define S_GAP      8
+#define S_BW       56         // ширина барабана
+#define S_TOP      24         // видимая часть барабанов
+#define S_BOT      148
+#define S_SPIN_MIN      2.8f
+#define S_FRICTION      2.0f
+#define S_SPIN_FRICTION 4.2f
+#define S_LAUNCH_V     13.0f
+#define S_KICK          0.6f
+
+enum SlotState { S_IDLE, S_CHARGE, S_SPINNING, S_LANDING, S_SHOWN };
+
+int   slotPts = 0, slotBet = 5, slotRec = 0, slotPrg = 0;
+int   slotTarget[3] = {-1, -1, -1};
+int   slotWin = 0;            // -1 = не хватило баллов
+int   slotSp = 0, slotSeenSp = 0;
+float slotPos[3] = {0, 0, 0}, slotVel[3] = {0, 0, 0};
+SlotState slotState = S_IDLE;
+unsigned long slotShownAt = 0, slotLastPhys = 0;
+bool slotDirty = true;
+int slotStatusShown = -1;
+
+// Вошёл ли барабан в выигрышную комбинацию: подсвечивать лишний нельзя — зелёная
+// рамка у третьего читалась бы как тройка при выплате за пару.
+bool slotHot(int i) {
+  int a = slotTarget[0], b = slotTarget[1], c = slotTarget[2];
+  if (a < 0) return false;
+  if (a == b && b == c) return true;
+  if (a == b) return i < 2;
+  if (b == c) return i > 0;
+  if (a == c) return i != 1;
+  return false;
+}
+
+void slotKick() {
+  if (slotState == S_LANDING) return;
+  if (slotState == S_SHOWN) {
+    slotState = S_IDLE;
+    slotTarget[0] = slotTarget[1] = slotTarget[2] = -1;
+    slotWin = 0;
+    slotDirty = true;                    // счёт и рамки надо перерисовать целиком
+  }
+  slotVel[0] += S_KICK;
+  if (slotVel[0] >= S_SPIN_MIN && slotState != S_SPINNING) {
+    slotState = S_SPINNING;
+    for (int i = 0; i < 3; i++) slotVel[i] = S_LAUNCH_V + i * 0.8f;
+    Serial.println(F("{\"enc\":\"slot\"}"));
+  } else if (slotState != S_SPINNING) {
+    slotState = S_CHARGE;
+  }
+}
+
+void slotPhysics(unsigned long now) {
+  float dt = slotLastPhys ? (now - slotLastPhys) / 1000.0f : 0.016f;
+  if (dt > 0.05f) dt = 0.05f;
+  slotLastPhys = now;
+  if (slotState == S_IDLE || slotState == S_SHOWN) {
+    slotVel[0] = slotVel[1] = slotVel[2] = 0;
+    return;
+  }
+
+  float fr = (slotState == S_CHARGE) ? S_FRICTION : S_SPIN_FRICTION;
+  bool allStopped = true;
+  for (int i = 0; i < 3; i++) {
+    float myFr = fr * (1 - i * 0.16f);   // следующий барабан тормозит позже
+    slotVel[i] -= myFr * dt;
+    if (slotVel[i] < 0) slotVel[i] = 0;
+    slotPos[i] += slotVel[i] * dt;
+
+    if (slotState != S_CHARGE && slotTarget[i] >= 0 && slotVel[i] < S_SPIN_MIN * 1.6f) {
+      float d = fmodf(fmodf((float)slotTarget[i] - slotPos[i], (float)SLOT_SYMS) + SLOT_SYMS,
+                      (float)SLOT_SYMS);
+      if (d < 0.04f && slotVel[i] < 0.25f) { slotPos[i] = slotTarget[i]; slotVel[i] = 0; }
+      else {
+        // доводка только вперёд, пол скорости НИЖЕ порога остановки — иначе барабан
+        // не встанет никогда (в рулетке уже наступали)
+        float cap = d * 2.4f;
+        slotVel[i] = slotVel[i] < cap ? slotVel[i] : cap;
+        if (slotVel[i] < 0.12f) slotVel[i] = 0.12f;
+        slotPos[i] += slotVel[i] * dt;
+      }
+    }
+    if (slotVel[i] > 0) allStopped = false;
+    slotPos[i] = fmodf(fmodf(slotPos[i], (float)SLOT_SYMS) + SLOT_SYMS, (float)SLOT_SYMS);
+  }
+  if (slotState == S_CHARGE && allStopped) slotState = S_IDLE;
+  if (slotState == S_SPINNING && slotSp != slotSeenSp && (slotTarget[0] >= 0 || slotWin == -1)) {
+    slotSeenSp = slotSp;
+    slotState = S_LANDING;
+  }
+  if (slotState == S_LANDING && allStopped) {
+    slotState = S_SHOWN;
+    slotShownAt = now;
+    slotDirty = true;                    // результат меняет шапку и рамки
+  }
+}
+
+// Один символ 8x8 в увеличении, обрезанный по окну барабана: соседний символ должен
+// ВЪЕЗЖАТЬ в окно, а не вылезать за рамку.
+void slotSprite(Adafruit_GFX &g, int idx, int x, int y, int scale, int clipT, int clipB) {
+  int k = ((idx % SLOT_SYMS) + SLOT_SYMS) % SLOT_SYMS;
+  for (int layer = 0; layer < 3; layer++) {
+    uint16_t col = SLOT_PAL[k][layer];
+    for (int ry = 0; ry < 8; ry++) {
+      uint8_t bits = SLOT_SPRITE[k][layer][ry];
+      if (!bits) continue;
+      int py = y + ry * scale;
+      int top = py < clipT ? clipT : py;
+      int bot = (py + scale) > clipB ? clipB : (py + scale);
+      if (bot <= top) continue;
+      for (int rx = 0; rx < 8; rx++)
+        if (bits & (1 << (7 - rx))) g.fillRect(x + rx * scale, top, scale, bot - top, col);
+    }
+  }
+}
+
+void slotOcto(Adafruit_GFX &g, int top, int bot, float tt, bool shown, bool jackpot) {
+  const int ox = 52, oy = S_WIN_Y + 22;
+  if (oy + 44 < top || oy - 30 > bot) return;      // крупье не в этой полосе
+  float spin = slotVel[0] / 6.0f;
+  if (spin > 1) spin = 1;
+  float wob = fastSin(tt * (1.6f + spin * 9)) * (1 + spin * 2.5f);
+  int hy = oy + (int)(wob * 0.5f) - (jackpot ? 4 : 0);
+  tentacles(g, ox, hy, 1, tt, 1.2f + spin * 4, 1 + spin * 2.5f);
+  sphereBody(g, ox, hy);
+  int eyY = hy - 5;
+  if (shown && slotWin > 0) {
+    g.drawFastHLine(ox - 7, eyY, 5, EYE_DARK);
+    g.drawFastHLine(ox + 3, eyY, 5, EYE_DARK);
+    g.drawFastHLine(ox - 3, eyY + 7, 7, EYE_DARK);
+  } else if (shown) {
+    g.drawFastHLine(ox - 7, eyY, 5, EYE_DARK);
+    g.drawFastHLine(ox + 3, eyY, 5, EYE_DARK);
+    g.drawFastHLine(ox - 3, eyY + 8, 7, EYE_DARK);   // губы вниз: мимо
+    g.drawPixel(ox - 4, eyY + 7, EYE_DARK);
+    g.drawPixel(ox + 4, eyY + 7, EYE_DARK);
+  } else {
+    drawEyes(g, ox, eyY, slotState == S_SPINNING || slotState == S_LANDING ? WORKING : IDLE,
+             tt, spin > 0.4f, 3.9f);
+  }
+  // рычаг: тянется вниз, пока барабаны крутятся
+  int pull = (slotState == S_SPINNING || slotState == S_LANDING) ? 12
+             : (slotState == S_CHARGE ? (int)(6 * spin) : 0);
+  int lx = ox + 26;
+  g.drawFastVLine(lx, hy - 18, 22, lerp565(CREAMC, BG, 0.6f));
+  g.fillCircle(lx, hy - 18 + pull, 4, jackpot ? C_WORKING : lerp565(C_ERROR, BG, 0.25f));
+  arm(g, ox + 13, hy + 2, lx, hy - 16 + pull, 5 - spin * 4, tt, 1.4f + spin * 5);
+}
+
+void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
+  unsigned long now = millis();
+  bool shown = (slotState == S_SHOWN);
+  bool jackpot = shown && slotWin >= slotBet * 8;
+  g.fillScreen(BG);
+
+  if (top <= 18) {
+    g.fillRect(0, 0, W, 18, lerp565(C_WAITING, BG, 0.82f));
+    g.drawFastHLine(0, 18, W, lerp565(C_WAITING, BG, 0.45f));
+    drawTextRu(g, 8, 5, "АВТОМАТ", lerp565(CREAMC, BG, 0.05f), 1);
+    char head[48];
+    snprintf(head, sizeof(head), "%d Б  СТАВКА %d  РЕКОРД %d", slotPts, slotBet, slotRec);
+    drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, lerp565(CREAMC, BG, 0.3f), 1);
+  }
+
+  if (right >= S_WX - 8) {
+    const int winT = S_WIN_Y - 1, winB = S_WIN_Y + S_ROW - 6;
+    for (int i = 0; i < 3; i++) {
+      int x = S_WX + i * (S_BW + S_GAP);
+      int base = (int)(slotPos[i] + 0.5f);
+      float frac = slotPos[i] - base;
+      for (int k = -1; k <= 1; k++) {
+        int y = S_WIN_Y + k * S_ROW - (int)(frac * S_ROW + 0.5f);
+        if (y + 8 * 5 < top || y > bot) continue;
+        slotSprite(g, base + k, x + 8, y + 4, 5, winT, winB);
+      }
+      bool hot = shown && slotWin > 0 && slotHot(i);
+      uint16_t col = hot ? (jackpot ? C_WORKING : lerp565(C_WORKING, BG, 0.35f))
+                         : lerp565(C_WAITING, BG, 0.5f);
+      g.drawRect(x, S_WIN_Y - 2, S_BW, S_ROW - 4, col);
+      g.drawRect(x - 1, S_WIN_Y - 3, S_BW + 2, S_ROW - 2, lerp565(col, BG, 0.65f));
+      g.dimRect(x + 1, S_TOP, S_BW - 2, S_WIN_Y - S_TOP - 3);
+      g.dimRect(x + 1, S_WIN_Y + S_ROW - 7, S_BW - 2, S_BOT - (S_WIN_Y + S_ROW - 7));
+    }
+
+    // Что за что платят — прямо под барабанами: иначе правила знает только автор.
+    const char *pay = "ТРОЙКА x8   ПАРА x1.4";
+    int payW = textWidthRu(pay, 1);
+    drawTextRu(g, S_WX + ((3 * S_BW + 2 * S_GAP - payW) >> 1), S_WIN_Y + S_ROW + 4, pay,
+               lerp565(CREAMC, BG, 0.55f), 1);
+
+    // Прогресс до следующего балла: видно, что работа капает, даже когда баллов нет.
+    const int pw = 3 * S_BW + 2 * S_GAP;
+    drawTextRu(g, S_WX, H - 30, "ДО БАЛЛА", lerp565(CREAMC, BG, 0.6f), 1);
+    g.drawRect(S_WX + 56, H - 31, pw - 56, 9, lerp565(CREAMC, BG, 0.72f));
+    g.fillRect(S_WX + 58, H - 29, (pw - 60) * slotPrg / 100, 5, lerp565(C_WAITING, BG, 0.35f));
+  }
+
+  if (left < S_WX - 8) slotOcto(g, top, bot, tt, shown, jackpot);
+
+  if (top <= H - 4 && bot >= H - 14) {
+    if (slotWin == -1) {
+      drawTextRu(g, 8, H - 13, "НЕ ХВАТАЕТ БАЛЛОВ, ИДИ РАБОТАЙ", lerp565(C_ERROR, BG, 0.15f), 1);
+    } else if (shown) {
+      bool flash = (now - slotShownAt) < 1200 && (((now - slotShownAt) / 130) & 1) == 0;
+      char line[48];
+      if (slotWin > 0) {
+        if (jackpot) snprintf(line, sizeof(line), "ТРОЙКА! +%d БАЛЛОВ", slotWin);
+        else         snprintf(line, sizeof(line), "ПАРА, +%d", slotWin);
+        drawTextRu(g, 8, H - 13, line, flash ? 0xFFFF : C_WORKING, 1);
+      } else {
+        snprintf(line, sizeof(line), "МИМО, -%d", slotBet);
+        drawTextRu(g, 8, H - 13, line, lerp565(CREAMC, BG, 0.35f), 1);
+      }
+      const char *again = "КРУТНИ ЕЩЁ";
+      drawTextRu(g, W - 8 - textWidthRu(again, 1), H - 13, again, lerp565(CREAMC, BG, 0.62f), 1);
+    } else if (slotState == S_SPINNING || slotState == S_LANDING) {
+      drawTextRu(g, 8, H - 13, "КРУТИТСЯ...", lerp565(CREAMC, BG, 0.3f), 1);
+    } else {
+      drawTextRu(g, 8, H - 13, "КРУТИ РУЧКУ ПОБОДРЕЕ", lerp565(CREAMC, BG, 0.45f), 1);
+    }
+  }
+}
+
 // ЕДИНСТВЕННЫЙ путь отрисовки. Любая перерисовка — это прямоугольник, собранный
 // полосами в буфер и вылитый блитом: весь экран, одна карточка, место всплывашки.
 // Отдельных путей нет намеренно — раньше каждый рисовал по-своему (сетка отдельно,
@@ -1802,6 +2062,7 @@ StaticJsonDocument<2048> doc;
 void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
   if (curScreen == 1) { composeCafe(g); composeCafeScene(g, tt); return; }
   if (curScreen == 2) { composeRoulette(g, top, bot, left, right, tt); return; }
+  if (curScreen == 3) { composeSlots(g, top, bot, left, right, tt); return; }
   composeGrid(g);
   CanvasSink sink(g);
   for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -1931,7 +2192,10 @@ void handleLine(const char *line) {
 #endif
     // Щелчок ручки «руками моста»: единственный способ проверить физику барабана
     // без человека у энкодера.
-    if (strcmp(cmd, "kick") == 0 && curScreen == 2) roulKick();
+    if (strcmp(cmd, "kick") == 0) {
+      if (curScreen == 2) roulKick();
+      else if (curScreen == 3) slotKick();
+    }
     return;
   }
 #if ESP_DIAG
@@ -1962,6 +2226,26 @@ void handleLine(const char *line) {
     }
     cafeDirty = true;
     roulDirty = true;
+    slotDirty = true;
+  }
+
+  if (scr == 3) {
+    JsonObject sl = doc["slot"];
+    if (!sl.isNull()) {
+      int pts = sl["pts"] | 0, bet = sl["bet"] | 5, rec = sl["rec"] | 0, prg = sl["prg"] | 0;
+      if (pts != slotPts || bet != slotBet || rec != slotRec) slotDirty = true;
+      slotPts = pts; slotBet = bet; slotRec = rec; slotPrg = prg;
+      int sp = sl["sp"] | 0, win = sl["win"] | 0;
+      if (sp != slotSp) {                  // новый ответ на нашу раскрутку
+        slotSp = sp;
+        slotWin = win;
+        JsonArray arr = sl["r"].as<JsonArray>();
+        int i = 0;
+        for (JsonVariant v : arr) { if (i < 3) slotTarget[i++] = v | 0; }
+        if (win == -1) { slotTarget[0] = slotTarget[1] = slotTarget[2] = -1; }
+      }
+    }
+    return;
   }
 
   if (scr == 2) {
@@ -1987,6 +2271,7 @@ void handleLine(const char *line) {
       if (changed) {                                     // состав сменился — сбрасываем барабан
         roulState = R_IDLE; roulVel = 0; roulPos = 0; roulSeenSp = roulSp;
         roulDirty = true;
+    slotDirty = true;
       }
     }
     return;
@@ -2143,6 +2428,32 @@ void loop() {
 
   unsigned long now = millis();
 
+  if (curScreen == 3) {
+    if (slotDirty) { slotDirty = false; slotStatusShown = -1; redrawAll(); }
+    unsigned long frame = now / ROUL_FRAME_MS;
+    if (frame != lastFrame) {
+      lastFrame = frame;
+      slotPhysics(now);
+      // Строка снизу вне перерисовываемой полосы — обновляем событием, как в рулетке.
+      int kind = slotWin == -1 ? 3
+                 : slotState == S_SHOWN ? 2
+                 : (slotState == S_SPINNING || slotState == S_LANDING) ? 1 : 0;
+      bool flashing = (slotState == S_SHOWN) && (now - slotShownAt) < 1200;
+      if (kind != slotStatusShown || flashing) {
+        slotStatusShown = kind;
+        redrawRect(0, H - 16, W, 16);
+      }
+      if (slotState != S_IDLE || (now - slotShownAt) < 2000)
+        redrawRect(S_WX - 8, S_TOP, W - (S_WX - 8), S_BOT - S_TOP);
+      int bandH = (S_BOT - S_TOP + 2) / 3;
+      int slice = (int)(frame % 3);
+      int y0 = S_TOP + slice * bandH;
+      int h = min(bandH, S_BOT - y0);
+      if (h > 0) redrawRect(0, y0, S_WX - 8, h);
+    }
+    return;
+  }
+
   if (curScreen == 2) {
     if (roulDirty) { roulDirty = false; roulStatusShown = -1; redrawAll(); }
     // Свой период кадра: барабан стоит ~39мс, и на сетке 40мс кадры то влезали, то
@@ -2175,6 +2486,32 @@ void loop() {
       int y0 = R_TOP - 2 + slice * bandH;
       int h = min(bandH, R_BOT + 2 - y0);
       if (h > 0) redrawRect(0, y0, R_WX - 8, h);
+    }
+    return;
+  }
+
+  if (curScreen == 3) {
+    if (slotDirty) { slotDirty = false; slotStatusShown = -1; redrawAll(); }
+    unsigned long frame = now / ROUL_FRAME_MS;
+    if (frame != lastFrame) {
+      lastFrame = frame;
+      slotPhysics(now);
+      // Строка снизу вне перерисовываемой полосы — обновляем событием, как в рулетке.
+      int kind = slotWin == -1 ? 3
+                 : slotState == S_SHOWN ? 2
+                 : (slotState == S_SPINNING || slotState == S_LANDING) ? 1 : 0;
+      bool flashing = (slotState == S_SHOWN) && (now - slotShownAt) < 1200;
+      if (kind != slotStatusShown || flashing) {
+        slotStatusShown = kind;
+        redrawRect(0, H - 16, W, 16);
+      }
+      if (slotState != S_IDLE || (now - slotShownAt) < 2000)
+        redrawRect(S_WX - 8, S_TOP, W - (S_WX - 8), S_BOT - S_TOP);
+      int bandH = (S_BOT - S_TOP + 2) / 3;
+      int slice = (int)(frame % 3);
+      int y0 = S_TOP + slice * bandH;
+      int h = min(bandH, S_BOT - y0);
+      if (h > 0) redrawRect(0, y0, S_WX - 8, h);
     }
     return;
   }

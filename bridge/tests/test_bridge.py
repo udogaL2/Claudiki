@@ -2330,3 +2330,37 @@ def test_slot_event_from_firmware_spins(tmp_path):
     br.screen = 3
     assert br.handle_encoder("slot") is True
     assert br.slot_sp == 1 and br.points != 50
+
+
+def test_record_is_peak_balance_not_best_win(tmp_path):
+    """Лучший выигрыш упирается в bet*8 и замирает — рекордом служит пиковый счёт."""
+    br, _ = slot_bridge(tmp_path, bet=5)
+    br._points_loaded = True
+    br.points = 100
+    br.spin_slot()
+    assert br.pts_peak >= 100, "пик должен учитывать счёт до спина"
+    br.points = 500
+    br.spin_slot()
+    assert br.pts_peak >= 500, "пик обязан расти вместе со счётом"
+    assert br.build_slot()["rec"] == br.pts_peak
+
+
+def test_peak_grows_with_work_too(tmp_path):
+    br, clock = slot_bridge(tmp_path, point_min=1)
+    br.handle_event({"event": "start", "session_id": "s", "cwd": "/w/p"})
+    br.handle_event({"event": "working", "session_id": "s"})
+    br._work_mark = clock()
+    clock.advance(300)
+    br.accrue_points()
+    assert br.points == 5 and br.pts_peak == 5
+
+
+def test_peak_survives_restart(tmp_path):
+    br, _ = slot_bridge(tmp_path)
+    br._points_loaded = True
+    br.points = 77
+    br.pts_peak = 77
+    br.save_points()
+    again, _ = slot_bridge(tmp_path)
+    again.load_points()
+    assert again.pts_peak == 77
