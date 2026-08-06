@@ -2364,3 +2364,29 @@ def test_peak_survives_restart(tmp_path):
     again, _ = slot_bridge(tmp_path)
     again.load_points()
     assert again.pts_peak == 77
+
+
+def test_points_scale_with_parallel_sessions(tmp_path):
+    """Пять сессий параллельно дают пять баллов за то же время: работы впятеро больше."""
+    br, clock = slot_bridge(tmp_path, point_min=1)     # балл за минуту работы одной сессии
+    for i in range(5):
+        br.handle_event({"event": "start", "session_id": f"s{i}", "cwd": f"/w/p{i}"})
+        br.handle_event({"event": "working", "session_id": f"s{i}"})
+    br._work_mark = clock()
+    clock.advance(60)
+    assert br.accrue_points() is True
+    assert br.points == 5, "пять работающих сессий за минуту должны дать пять баллов"
+
+
+def test_points_count_only_working_sessions(tmp_path):
+    """Простаивающие сессии в счёт не идут, сколько бы их ни было."""
+    br, clock = slot_bridge(tmp_path, point_min=1)
+    for i in range(4):
+        br.handle_event({"event": "start", "session_id": f"s{i}", "cwd": f"/w/p{i}"})
+        br.handle_event({"event": "idle", "session_id": f"s{i}"})
+    br.handle_event({"event": "start", "session_id": "live", "cwd": "/w/live"})
+    br.handle_event({"event": "working", "session_id": "live"})
+    br._work_mark = clock()
+    clock.advance(60)
+    br.accrue_points()
+    assert br.points == 1, "считаться должна только работающая сессия"

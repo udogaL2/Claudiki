@@ -117,9 +117,11 @@ class Config:
     sleep_min: float = field(default_factory=lambda: float(_env("OCTO_SLEEP_MIN", "20")))
     # Куда ходим обедать (экран рулетки). Пусто → lunch-places.json рядом с мостом.
     places_file: str = field(default_factory=lambda: _env("OCTO_PLACES_FILE", ""))
-    # Баллы за работу и автомат (экран слотов). Балл капает за столько минут, пока
-    # хотя бы одна сессия РАБОТАЕТ: иначе гаджет, забытый включённым, копил бы их сам.
-    point_min: float = field(default_factory=lambda: float(_env("OCTO_POINT_MIN", "30")))
+    # Баллы за работу и автомат (экран слотов). Балл — за столько минут работы ОДНОЙ
+    # сессии: пять сессий параллельно дают пять баллов за те же двадцать минут, потому
+    # что работы действительно вдвое-впятеро больше. Считается только время в WORKING,
+    # иначе гаджет, забытый включённым, копил бы баллы сам.
+    point_min: float = field(default_factory=lambda: float(_env("OCTO_POINT_MIN", "20")))
     slot_bet: int = field(default_factory=lambda: int(_env("OCTO_SLOT_BET", "5")))
     points_file: str = field(default_factory=lambda: _env("OCTO_POINTS_FILE", ""))
 
@@ -1352,8 +1354,12 @@ class Bridge:
     def accrue_points(self) -> bool:
         """Начисляет баллы за отработанное время. Дёргается из reaper-цикла.
 
-        Считаются только минуты, когда хотя бы одна сессия в WORKING: иначе гаджет,
-        забытый включённым, копил бы баллы сам, и они бы ничего не значили.
+        Время считается ПО КАЖДОЙ работающей сессии: пять сессий параллельно за
+        двадцать минут дают пять баллов, потому что и работы впятеро больше. Простая
+        «хоть одна работает» приравнивала пятерых к одному.
+
+        Считаются только сессии в WORKING: иначе гаджет, забытый включённым, копил бы
+        баллы сам, и они бы ничего не значили.
         """
         if not self._points_loaded:
             self.load_points()
@@ -1363,10 +1369,10 @@ class Bridge:
         if dt <= 0 or dt > 300:               # часы прыгнули или мост стоял — не считаем
             return False
         with self.lock:
-            working = any(s.state == WORKING for s in self.sessions.values())
+            working = sum(1 for s in self.sessions.values() if s.state == WORKING)
         if not working:
             return False
-        self._work_sec += dt
+        self._work_sec += dt * working        # время каждой работающей сессии
         need = max(1.0, self.cfg.point_min * 60)
         if self._work_sec < need:
             return False
