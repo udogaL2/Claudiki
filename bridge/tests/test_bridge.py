@@ -2378,6 +2378,29 @@ def test_points_scale_with_parallel_sessions(tmp_path):
     assert br.points == 5, "пять работающих сессий за минуту должны дать пять баллов"
 
 
+def test_slot_eta_shrinks_with_parallel_sessions(tmp_path):
+    """eta — минуты РЕАЛЬНОГО времени до балла: вдвое больше сессий → вдвое меньше ждать.
+
+    Надпись на экране берётся отсюда. Если eta не делить на число работающих, она
+    покажет двадцать минут и при одной сессии, и при пяти — а балл придёт за четыре.
+    """
+    br, clock = slot_bridge(tmp_path, point_min=20)
+    br._points_loaded = True
+    assert br.build_slot()["eta"] == -1, "никто не работает — счётчик стоит"
+
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a"})
+    br.handle_event({"event": "working", "session_id": "a"})
+    assert br.build_slot()["eta"] == 20
+
+    for i in range(3):
+        br.handle_event({"event": "start", "session_id": f"b{i}", "cwd": f"/w/b{i}"})
+        br.handle_event({"event": "working", "session_id": f"b{i}"})
+    assert br.build_slot()["eta"] == 5, "четыре сессии — балл вчетверо быстрее"
+
+    br._work_sec = 20 * 60 - 1                        # балл вот-вот
+    assert br.build_slot()["eta"] == 1, "остаток меньше минуты округляется вверх, не в ноль"
+
+
 def test_points_count_only_working_sessions(tmp_path):
     """Простаивающие сессии в счёт не идут, сколько бы их ни было."""
     br, clock = slot_bridge(tmp_path, point_min=1)

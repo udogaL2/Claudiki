@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   65  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   66 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1435,6 +1435,7 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
 enum SlotState { S_IDLE, S_CHARGE, S_SPINNING, S_LANDING, S_SHOWN, S_REFUSED };
 
 int   slotPts = 0, slotBet = 5, slotRec = 0, slotPrg = 0;
+int   slotEta = -1;                   // минут реального времени до балла, −1 = никто не работает
 int   slotTarget[3] = {-1, -1, -1};
 int   slotWin = 0;
 int   slotSp = 0, slotSeenSp = 0;
@@ -1709,7 +1710,8 @@ void slotOcto(Adafruit_GFX &g, int top, int bot, float tt, bool shown, bool jack
   g.drawCircle(hx, hy2, 8, lerp565(ball, BG, 0.45f));               // обводка-тень
   g.drawCircle(hx, hy2, 5, lerp565(ball, 0xFFFF, 0.25f));           // внутренний блеск
   g.fillCircle(hx - 3, hy2 - 3, 2, lerp565(0xFFFF, ball, 0.15f));   // блик
-  g.fillRect(hx - 3, hy2 + 6, 7, 3, lerp565(BRASS_HI, BG, 0.3f));   // хомут под шаром
+  // Хомут под шаром был прямоугольником в ЭКРАННЫХ координатах: штанга наклонялась,
+  // а он оставался внизу круга и отклеивался от рычага. Шар сидит на штанге и без него.
   if (jackpot) g.drawCircle(hx, hy2, 11, C_WORKING);
   arm(g, ox + 13, hy + 1, hx - 4, hy2 + 3, 6 - spin * 5, tt, 1.4f + spin * 5);
 }
@@ -1777,7 +1779,15 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
 
     // прогресс до балла — внутри корпуса, это его же показатель
     const int pbx = S_CAB_X + 16, pbw = S_CAB_W - 32;
-    drawTextRu(g, pbx, S_CAB_Y + S_CAB_H - 22, "ДО БАЛЛА", lerp565(CREAMC, BG, 0.6f), 1);
+    // Надпись живая: балл начисляется за работу КАЖДОЙ сессии, поэтому статичное
+    // «до балла» врало — на пяти сессиях полоса идёт впятеро быстрее. Мост считает
+    // eta в реальных минутах при нынешнем числе работающих (−1 = никто не работает).
+    char eta[24];              // кириллица в UTF-8 по 2 байта: «ЧЕРЕЗ 20М» это 15
+    if (slotEta < 0)       strlcpy(eta, "ПАУЗА", sizeof(eta));
+    else if (slotEta <= 1) strlcpy(eta, "СКОРО", sizeof(eta));
+    else                   snprintf(eta, sizeof(eta), "ЧЕРЕЗ %dМ", slotEta);
+    drawTextRu(g, pbx, S_CAB_Y + S_CAB_H - 22, eta,
+               lerp565(CREAMC, BG, slotEta < 0 ? 0.75f : 0.6f), 1);
     g.drawRect(pbx + 56, S_CAB_Y + S_CAB_H - 23, pbw - 56, 9, lerp565(BRASS_HI, BG, 0.7f));
     g.fillRect(pbx + 58, S_CAB_Y + S_CAB_H - 21, (pbw - 60) * slotPrg / 100, 5,
                lerp565(BRASS_HI, BG, 0.3f));
@@ -2485,8 +2495,11 @@ void handleLine(const char *line) {
     JsonObject sl = doc["slot"];
     if (!sl.isNull()) {
       int pts = sl["pts"] | 0, bet = sl["bet"] | 5, rec = sl["rec"] | 0, prg = sl["prg"] | 0;
-      if (pts != slotPts || bet != slotBet || rec != slotRec) slotDirty = true;
-      slotPts = pts; slotBet = bet; slotRec = rec; slotPrg = prg;
+      int eta = sl["eta"] | -1;
+      // eta в diff намеренно: надпись меняется редко, но если её не считать
+      // изменением, она застрянет до ближайшей перерисовки по другой причине.
+      if (pts != slotPts || bet != slotBet || rec != slotRec || eta != slotEta) slotDirty = true;
+      slotPts = pts; slotBet = bet; slotRec = rec; slotPrg = prg; slotEta = eta;
       int sp = sl["sp"] | 0, win = sl["win"] | 0;
       if (sp != slotSp) {                  // новый ответ на нашу раскрутку
         slotSp = sp;

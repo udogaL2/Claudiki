@@ -281,6 +281,20 @@ def test_cyrillic_font_covers_place_names(sketch, tmp_path):
         assert not bad, f"в «{name}» нет начертаний для: {sorted(bad)}"
 
 
+def test_cyrillic_font_covers_sketch_literals(sketch):
+    """Каждая русская надпись в скетче должна быть рисуемой.
+
+    Начертания есть только для ПРОПИСНЫХ: строчные буквы декодер молча меняет на «?»,
+    и надпись превращается в частокол вопросов. Компилятор про это ничего не скажет,
+    а на экран смотрят не после каждой правки — поэтому проверяем текстом.
+    """
+    allowed = set("АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯЁ")
+    for lit in re.findall(r'"((?:[^"\\\n]|\\.)*)"', sketch):
+        cyr = [c for c in lit if "Ѐ" <= c <= "ӿ"]
+        bad = sorted({c for c in cyr if c not in allowed})
+        assert not bad, f"в надписи «{lit}» нет начертаний для: {bad} (строчные не рисуются)"
+
+
 def test_slot_fields_match(sketch, tmp_path):
     """Поля блока slot сверяются в обе стороны — иначе автомат молча пуст."""
     read = keys_read_from(sketch, "sl")

@@ -1124,7 +1124,7 @@
   const BRASS = rgb(168, 120, 52), BRASS_HI = rgb(228, 188, 110), PEARL = rgb(232, 240, 246);
   const WEED = rgb(38, 120, 78);
 
-  let sPts = 37, sBet = 5, sRec = 64, sPrg = 62;   // так это выглядит с моста
+  let sPts = 37, sBet = 5, sRec = 64, sPrg = 62, sEta = 8;   // так это выглядит с моста
   let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
   let sLanding = [false,false,false], sLanded = [false,false,false];
   let sLandA = [0,0,0], sLandEnd = [0,0,0], sLandT0 = [0,0,0];
@@ -1339,7 +1339,10 @@
 
     // прогресс до балла — внутри корпуса, это его же показатель
     const pbx = S_CAB_X + 16, pbw = S_CAB_W - 32;
-    txPx("ДО БАЛЛА", pbx, S_CAB_Y + S_CAB_H - 22, 1, lerp(CREAM,BG,0.6));
+    // надпись живая: балл капает за работу КАЖДОЙ сессии, поэтому мост шлёт eta —
+    // минуты реального времени при нынешнем числе работающих (−1 = никто не работает)
+    const etaTx = sEta < 0 ? "ПАУЗА" : sEta <= 1 ? "СКОРО" : "ЧЕРЕЗ " + sEta + "М";
+    txPx(etaTx, pbx, S_CAB_Y + S_CAB_H - 22, 1, lerp(CREAM, BG, sEta < 0 ? 0.75 : 0.6));
     g.drawRect(pbx + 56, S_CAB_Y + S_CAB_H - 23, pbw - 56, 9, lerp(BRASS_HI,BG,0.7));
     g.fillRect(pbx + 58, S_CAB_Y + S_CAB_H - 21, Math.max(0, (((pbw-60)*sPrg/100)|0)), 5, lerp(BRASS_HI,BG,0.3));
 
@@ -1394,7 +1397,8 @@
     g.drawCircle(hx, hy2, 8, lerp(ball,BG,0.45));
     g.drawCircle(hx, hy2, 5, lerp(ball,0xFFFF,0.25));
     g.fillCircle(hx-3, hy2-3, 2, lerp(0xFFFF,ball,0.15));
-    g.fillRect(hx-3, hy2+6, 7, 3, lerp(BRASS_HI,BG,0.3));
+    // хомута под шаром нет: прямоугольник жил в экранных координатах и при наклоне
+    // штанги отклеивался от рычага (см. ту же правку в прошивке)
     if(jackpot) g.drawCircle(hx, hy2, 11, C_WORK);
     arm(ox+13, hy+1, hx-4, hy2+3, 6-spin*5, tt, 1.4+spin*5);
   }

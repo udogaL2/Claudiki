@@ -1428,11 +1428,18 @@ class Bridge:
         if not self._points_loaded:
             self.load_points()
         self._touch_peak()
+        with self.lock:
+            working = sum(1 for s in self.sessions.values() if s.state == WORKING)
+        need = max(1.0, self.cfg.point_min * 60)
+        # eta — минуты РЕАЛЬНОГО времени до балла при нынешнем числе работающих сессий,
+        # −1 = никто не работает и счётчик стоит. Без деления надпись врала бы: полоса
+        # ползёт впятеро быстрее на пяти сессиях, а «до балла» выглядело бы одинаково.
+        eta = -1 if not working else max(0, int((need - self._work_sec) / 60 / working + 0.999))
         return {"pts": self.points, "bet": max(1, self.cfg.slot_bet),
                 "r": list(self.slot_reels), "win": self.slot_win, "sp": self.slot_sp,
-                "rec": self.pts_peak,
+                "rec": self.pts_peak, "eta": eta,
                 # сколько осталось до следующего балла, в процентах — видно, что копится
-                "prg": int(min(99, self._work_sec / max(1.0, self.cfg.point_min * 60) * 100))}
+                "prg": int(min(99, self._work_sec / need * 100))}
 
     # -- экран рулетки ---------------------------------------------------------
     def places_path(self) -> str:
