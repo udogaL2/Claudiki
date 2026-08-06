@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   44  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   48  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -108,8 +108,16 @@ class OffsetCanvas : public GFXcanvas16 {
   // выходят за окно, анимация их больше никогда не трогает — и они остаются
   // мусором у имени карточки.
   int16_t clipL = -32768, clipT = -32768, clipR = 32767, clipB = 32767;
+  // База — прямоугольник, который сейчас перерисовывается. clipOff возвращает к ней,
+  // а не «в бесконечность»: иначе рисование за пределами прямоугольника снова стоило
+  // бы полную ширину полосы.
+  int16_t baseL = -32768, baseT = -32768, baseR = 32767, baseB = 32767;
   void clipTo(int l, int t, int r, int b) { clipL = l; clipT = t; clipR = r; clipB = b; }
-  void clipOff() { clipTo(-32768, -32768, 32767, 32767); }
+  void clipBase(int l, int t, int r, int b) {
+    baseL = l; baseT = t; baseR = r; baseB = b;
+    clipTo(l, t, r, b);
+  }
+  void clipOff() { clipTo(baseL, baseT, baseR, baseB); }
   // Сдвиг начала координат. Бариста и реквизит кофейни нарисованы в ЛОКАЛЬНЫХ
   // координатах своего окна — так их рисует кадр анимации в буфер. Чтобы теми же
   // функциями собирать их в полосу целого экрана, цель сама переносит координаты:
@@ -137,9 +145,13 @@ class OffsetCanvas : public GFXcanvas16 {
     int y0 = max(max(ay, (int)clipT), (int)offY);
     int x1 = min(min(ax + w - 1, (int)clipR), offX + width() - 1);
     int y1 = min(min(ay + h - 1, (int)clipB), offY + height() - 1);
-    for (int yy = y0; yy <= y1; yy++)
-      for (int xx = x0 + ((yy - ay) & 1); xx <= x1; xx += 2)
-        GFXcanvas16::drawPixel(xx - offX, yy - offY, BG);
+    if (x1 < x0 || y1 < y0) return;
+    uint16_t *buf = getBuffer();
+    const int stride = width();
+    for (int yy = y0; yy <= y1; yy++) {
+      uint16_t *row = buf + (yy - offY) * stride - offX;
+      for (int xx = x0 + ((yy - ay) & 1); xx <= x1; xx += 2) row[xx] = BG;
+    }
   }
   void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c) override {
     int ax = x + trX, ay = y + trY;                   // экранные координаты
@@ -147,8 +159,16 @@ class OffsetCanvas : public GFXcanvas16 {
     int y0 = max(max(ay, (int)clipT), (int)offY);
     int x1 = min(min(ax + w - 1, (int)clipR), offX + width() - 1);
     int y1 = min(min(ay + h - 1, (int)clipB), offY + height() - 1);
-    for (int yy = y0; yy <= y1; yy++)
-      for (int xx = x0; xx <= x1; xx++) GFXcanvas16::drawPixel(xx - offX, yy - offY, c);
+    if (x1 < x0 || y1 < y0) return;
+    // Пишем в буфер строками, а не через drawPixel: тот на каждый пиксель проверяет
+    // границы заново, и заливки корпуса автомата стоили 21мс из 37мс кадра. Границы
+    // уже посчитаны выше и зажаты по холсту, так что проверять нечего.
+    uint16_t *buf = getBuffer();
+    const int stride = width();
+    for (int yy = y0; yy <= y1; yy++) {
+      uint16_t *row = buf + (yy - offY) * stride + (x0 - offX);
+      for (int i = 0, n = x1 - x0; i <= n; i++) row[i] = c;
+    }
   }
   // Текст особый случай: drawChar НЕ виртуальный, а отсекает по размеру холста.
   // Экранная координата имени (y≈108) для холста 68x76 всегда «за краем», поэтому
@@ -1333,39 +1353,48 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
 // =============================================================================
 // Экран автомата на баллы
 // =============================================================================
-// Баллы капают за отработанные минуты, исход спина считает МОСТ: счёт и случайность
-// это состояние, оно обязано переживать перезагрузку платы. Прошивке приходят
-// готовые индексы, она доводит барабаны и показывает результат.
+// Баллы капают за отработанные минуты (мост считает только время, когда хотя бы одна
+// сессия РАБОТАЕТ) и тратятся здесь. Исход спина считает МОСТ: счёт и случайность —
+// состояние, оно обязано переживать перезагрузку платы.
 //
-// Физика та же, что у рулетки (числа проверены калибровкой), но барабанов три и
-// тормозят они с разным трением: остановка слева направо — половина удовольствия.
-#define S_ROW      56         // шаг символа на барабане
-#define S_WIN_Y    92         // верх окна барабана
-#define S_WX       112        // левый край первого барабана
+// Оформление подводное, а не «абстрактный автомат»: латунный корпус с заклёпками,
+// щупальца-завитки по углам, жемчужины-огни, водоросли по дну и пузыри. Корпус —
+// статика, живут только пузыри, водоросли и огни: две-три точки на кадр.
+#define S_ROW      56
+#define S_CAB_X    84
+#define S_CAB_Y    22
+#define S_CAB_W    230
+#define S_CAB_H    166
+#define S_WIN_Y    74                 // верх окон барабанов
+#define S_BW       56
 #define S_GAP      8
-#define S_BW       56         // ширина барабана
-#define S_TOP      24         // видимая часть барабанов
-#define S_BOT      148
+#define S_WX       (S_CAB_X + 3 + (((S_CAB_W - 6) - (3*S_BW + 2*S_GAP)) / 2))
+#define S_STATUS_Y 196                // строка состояния под корпусом, над дном
+#define S_BED_Y    206                // дно: водоросли
 #define S_SPIN_MIN      2.8f
 #define S_FRICTION      2.0f
 #define S_SPIN_FRICTION 4.2f
 #define S_LAUNCH_V     13.0f
 #define S_KICK          0.6f
+#define BRASS     0xABC6
+#define BRASS_HI  0xE5ED
+#define PEARL     0xEF9E
+#define WEED      0x23C9
+#define S_BUB_N   7
 
-enum SlotState { S_IDLE, S_CHARGE, S_SPINNING, S_LANDING, S_SHOWN };
+enum SlotState { S_IDLE, S_CHARGE, S_SPINNING, S_LANDING, S_SHOWN, S_REFUSED };
 
 int   slotPts = 0, slotBet = 5, slotRec = 0, slotPrg = 0;
 int   slotTarget[3] = {-1, -1, -1};
-int   slotWin = 0;            // -1 = не хватило баллов
+int   slotWin = 0;
 int   slotSp = 0, slotSeenSp = 0;
 float slotPos[3] = {0, 0, 0}, slotVel[3] = {0, 0, 0};
+float slotBubPh[S_BUB_N];
 SlotState slotState = S_IDLE;
-unsigned long slotShownAt = 0, slotLastPhys = 0;
+unsigned long slotShownAt = 0, slotRefusedAt = 0, slotLastPhys = 0;
 bool slotDirty = true;
 int slotStatusShown = -1;
 
-// Вошёл ли барабан в выигрышную комбинацию: подсвечивать лишний нельзя — зелёная
-// рамка у третьего читалась бы как тройка при выплате за пару.
 bool slotHot(int i) {
   int a = slotTarget[0], b = slotTarget[1], c = slotTarget[2];
   if (a < 0) return false;
@@ -1377,12 +1406,21 @@ bool slotHot(int i) {
 }
 
 void slotKick() {
+  // Автомат не берёт спин, который не может оплатить. Раньше барабаны крутились
+  // впустую, а мост уже потом отвечал «не хватает» — холостая анимация и обман.
+  if (slotPts < slotBet) {
+    if (slotState != S_REFUSED) slotDirty = true;
+    slotState = S_REFUSED;
+    slotRefusedAt = millis();
+    slotVel[0] = slotVel[1] = slotVel[2] = 0;
+    return;
+  }
   if (slotState == S_LANDING) return;
-  if (slotState == S_SHOWN) {
+  if (slotState == S_SHOWN || slotState == S_REFUSED) {
     slotState = S_IDLE;
     slotTarget[0] = slotTarget[1] = slotTarget[2] = -1;
     slotWin = 0;
-    slotDirty = true;                    // счёт и рамки надо перерисовать целиком
+    slotDirty = true;
   }
   slotVel[0] += S_KICK;
   if (slotVel[0] >= S_SPIN_MIN && slotState != S_SPINNING) {
@@ -1398,7 +1436,19 @@ void slotPhysics(unsigned long now) {
   float dt = slotLastPhys ? (now - slotLastPhys) / 1000.0f : 0.016f;
   if (dt > 0.05f) dt = 0.05f;
   slotLastPhys = now;
-  if (slotState == S_IDLE || slotState == S_SHOWN) {
+
+  // Пузыри живут всегда, даже когда барабаны стоят: иначе экран мёртвый. Фаза
+  // НАКАПЛИВАЕТСЯ, а не считается от абсолютного времени — иначе при смене скорости
+  // пузырь телепортируется (наступали в рулетке).
+  float spin = slotVel[0] / 6.0f;
+  if (spin > 1) spin = 1;
+  for (int i = 0; i < S_BUB_N; i++) {
+    slotBubPh[i] += (0.10f + (i % 3) * 0.04f + spin * 0.24f) * dt;
+    if (slotBubPh[i] > 1) slotBubPh[i] -= 1;
+  }
+
+  if (slotState == S_REFUSED && now - slotRefusedAt > 1600) { slotState = S_IDLE; slotDirty = true; }
+  if (slotState == S_IDLE || slotState == S_SHOWN || slotState == S_REFUSED) {
     slotVel[0] = slotVel[1] = slotVel[2] = 0;
     return;
   }
@@ -1406,18 +1456,15 @@ void slotPhysics(unsigned long now) {
   float fr = (slotState == S_CHARGE) ? S_FRICTION : S_SPIN_FRICTION;
   bool allStopped = true;
   for (int i = 0; i < 3; i++) {
-    float myFr = fr * (1 - i * 0.16f);   // следующий барабан тормозит позже
+    float myFr = fr * (1 - i * 0.16f);        // следующий барабан тормозит позже
     slotVel[i] -= myFr * dt;
     if (slotVel[i] < 0) slotVel[i] = 0;
     slotPos[i] += slotVel[i] * dt;
-
     if (slotState != S_CHARGE && slotTarget[i] >= 0 && slotVel[i] < S_SPIN_MIN * 1.6f) {
       float d = fmodf(fmodf((float)slotTarget[i] - slotPos[i], (float)SLOT_SYMS) + SLOT_SYMS,
                       (float)SLOT_SYMS);
       if (d < 0.04f && slotVel[i] < 0.25f) { slotPos[i] = slotTarget[i]; slotVel[i] = 0; }
       else {
-        // доводка только вперёд, пол скорости НИЖЕ порога остановки — иначе барабан
-        // не встанет никогда (в рулетке уже наступали)
         float cap = d * 2.4f;
         slotVel[i] = slotVel[i] < cap ? slotVel[i] : cap;
         if (slotVel[i] < 0.12f) slotVel[i] = 0.12f;
@@ -1428,18 +1475,18 @@ void slotPhysics(unsigned long now) {
     slotPos[i] = fmodf(fmodf(slotPos[i], (float)SLOT_SYMS) + SLOT_SYMS, (float)SLOT_SYMS);
   }
   if (slotState == S_CHARGE && allStopped) slotState = S_IDLE;
-  if (slotState == S_SPINNING && slotSp != slotSeenSp && (slotTarget[0] >= 0 || slotWin == -1)) {
+  if (slotState == S_SPINNING && slotSp != slotSeenSp && slotTarget[0] >= 0) {
     slotSeenSp = slotSp;
     slotState = S_LANDING;
   }
   if (slotState == S_LANDING && allStopped) {
     slotState = S_SHOWN;
     slotShownAt = now;
-    slotDirty = true;                    // результат меняет шапку и рамки
+    slotDirty = true;                          // результат меняет шапку и рамки
   }
 }
 
-// Один символ 8x8 в увеличении, обрезанный по окну барабана: соседний символ должен
+// Символ 8x8 в увеличении, обрезанный по окну барабана: соседний символ должен
 // ВЪЕЗЖАТЬ в окно, а не вылезать за рамку.
 void slotSprite(Adafruit_GFX &g, int idx, int x, int y, int scale, int clipT, int clipB) {
   int k = ((idx % SLOT_SYMS) + SLOT_SYMS) % SLOT_SYMS;
@@ -1458,9 +1505,69 @@ void slotSprite(Adafruit_GFX &g, int idx, int x, int y, int scale, int clipT, in
   }
 }
 
+void slotCabinet(Adafruit_GFX &g, int top, int bot, float tt, unsigned long now, bool jackpot) {
+  if (S_CAB_Y + S_CAB_H < top || S_CAB_Y > bot) return;
+  g.fillRect(S_CAB_X, S_CAB_Y, S_CAB_W, S_CAB_H, lerp565(BRASS, BG, 0.78f));
+  g.drawRect(S_CAB_X, S_CAB_Y, S_CAB_W, S_CAB_H, BRASS);
+  g.drawRect(S_CAB_X + 1, S_CAB_Y + 1, S_CAB_W - 2, S_CAB_H - 2, lerp565(BRASS_HI, BG, 0.45f));
+  g.fillRect(S_CAB_X + 4, S_CAB_Y + 4, S_CAB_W - 8, S_CAB_H - 8, BG);
+
+  for (int x = S_CAB_X + 8; x < S_CAB_X + S_CAB_W - 6; x += 26) {   // заклёпки
+    g.fillRect(x, S_CAB_Y + 2, 2, 2, BRASS_HI);
+    g.fillRect(x, S_CAB_Y + S_CAB_H - 4, 2, 2, BRASS_HI);
+  }
+  for (int y = S_CAB_Y + 10; y < S_CAB_Y + S_CAB_H - 8; y += 24) {
+    g.fillRect(S_CAB_X + 2, y, 2, 2, BRASS_HI);
+    g.fillRect(S_CAB_X + S_CAB_W - 4, y, 2, 2, BRASS_HI);
+  }
+
+  // жемчужины-огни: бегут по кругу в покое, мигают все на тройке
+  int run = (int)((now / 110) % 12);
+  for (int i = 0; i < 12; i++) {
+    int px = (i < 6) ? S_CAB_X + 16 + i * 38 : S_CAB_X + S_CAB_W - 16 - (i - 6) * 38;
+    int py = (i < 6) ? S_CAB_Y + 8 : S_CAB_Y + S_CAB_H - 10;
+    bool on = jackpot ? ((((now / 90) + i) & 1) == 0) : (i == run);
+    g.fillCircle(px, py, 2, on ? PEARL : lerp565(PEARL, BG, 0.78f));
+  }
+
+  const char *name = "ОСЬМИ-СЛОТ";
+  drawTextRu(g, S_CAB_X + ((S_CAB_W - textWidthRu(name, 1)) >> 1), S_CAB_Y + 12, name,
+             lerp565(BRASS_HI, 0xFFFF, 0.35f), 1);
+}
+
+void slotWeeds(Adafruit_GFX &g, int top, int bot, float tt) {
+  if (S_BED_Y > bot || H < top) return;
+  for (int i = 0; i < 22; i++) {
+    int bx = 6 + i * 14;
+    int h = 10 + (i % 4) * 7;
+    for (int k = 0; k < h; k++) {
+      int y = H - 2 - k;
+      if (y < top || y > bot) continue;
+      int sway = (int)(fastSin(tt * 0.9f + i * 1.3f + k * 0.18f) * ((float)k / h) * 3);
+      g.drawPixel(bx + sway, y, lerp565(WEED, BG, 0.15f + (float)k / h * 0.5f));
+    }
+  }
+}
+
+void slotBubbles(Adafruit_GFX &g, int top, int bot) {
+  for (int i = 0; i < S_BUB_N; i++) {
+    float ph = slotBubPh[i];
+    int y = (H - 46) - (int)(ph * (H - 92));
+    int r = 1 + (i % 3);
+    if (y + r < top || y - r > bot) continue;
+    int x = 10 + (i * 11) % 60 + (int)(fastSin(ph * 6.2f + i) * 3);
+    uint16_t col = lerp565(ACCENT, BG, 0.3f + ph * 0.5f);
+    if (r <= 1) g.drawPixel(x, y, col);
+    else {
+      g.drawCircle(x, y, r, col);
+      g.drawPixel(x - r + 1, y - r + 1, lerp565(col, 0xFFFF, 0.5f));
+    }
+  }
+}
+
 void slotOcto(Adafruit_GFX &g, int top, int bot, float tt, bool shown, bool jackpot) {
-  const int ox = 52, oy = S_WIN_Y + 22;
-  if (oy + 44 < top || oy - 30 > bot) return;      // крупье не в этой полосе
+  const int ox = 40, oy = 128;
+  if (oy + 46 < top || oy - 32 > bot) return;
   float spin = slotVel[0] / 6.0f;
   if (spin > 1) spin = 1;
   float wob = fastSin(tt * (1.6f + spin * 9)) * (1 + spin * 2.5f);
@@ -1468,27 +1575,39 @@ void slotOcto(Adafruit_GFX &g, int top, int bot, float tt, bool shown, bool jack
   tentacles(g, ox, hy, 1, tt, 1.2f + spin * 4, 1 + spin * 2.5f);
   sphereBody(g, ox, hy);
   int eyY = hy - 5;
-  if (shown && slotWin > 0) {
+  if (slotState == S_REFUSED) {                 // «пусто»: круглые глаза, рот линией
+    g.drawCircle(ox - 6, eyY, 2, EYE_LIGHT);
+    g.drawCircle(ox + 6, eyY, 2, EYE_LIGHT);
+    g.drawFastHLine(ox - 3, eyY + 8, 7, EYE_DARK);
+  } else if (shown && slotWin > 0) {
     g.drawFastHLine(ox - 7, eyY, 5, EYE_DARK);
     g.drawFastHLine(ox + 3, eyY, 5, EYE_DARK);
     g.drawFastHLine(ox - 3, eyY + 7, 7, EYE_DARK);
   } else if (shown) {
     g.drawFastHLine(ox - 7, eyY, 5, EYE_DARK);
     g.drawFastHLine(ox + 3, eyY, 5, EYE_DARK);
-    g.drawFastHLine(ox - 3, eyY + 8, 7, EYE_DARK);   // губы вниз: мимо
+    g.drawFastHLine(ox - 3, eyY + 8, 7, EYE_DARK);
     g.drawPixel(ox - 4, eyY + 7, EYE_DARK);
     g.drawPixel(ox + 4, eyY + 7, EYE_DARK);
   } else {
     drawEyes(g, ox, eyY, slotState == S_SPINNING || slotState == S_LANDING ? WORKING : IDLE,
              tt, spin > 0.4f, 3.9f);
   }
-  // рычаг: тянется вниз, пока барабаны крутятся
-  int pull = (slotState == S_SPINNING || slotState == S_LANDING) ? 12
-             : (slotState == S_CHARGE ? (int)(6 * spin) : 0);
-  int lx = ox + 26;
-  g.drawFastVLine(lx, hy - 18, 22, lerp565(CREAMC, BG, 0.6f));
-  g.fillCircle(lx, hy - 18 + pull, 4, jackpot ? C_WORKING : lerp565(C_ERROR, BG, 0.25f));
-  arm(g, ox + 13, hy + 2, lx, hy - 16 + pull, 5 - spin * 4, tt, 1.4f + spin * 5);
+
+  // Большая красная кнопка вместо рычага: рукоять на пять пикселей в этом масштабе
+  // не читалась — «непонятно, что осьминог держит». Кнопка вдавливается на спине,
+  // поэтому причина вращения видна.
+  const int bx = S_CAB_X - 18, by = 120;
+  bool pressed = (slotState == S_SPINNING || slotState == S_LANDING ||
+                  (slotState == S_CHARGE && spin > 0.15f));
+  int cap = by + (pressed ? 3 : 0);
+  g.fillRect(bx - 11, by + 9, 22, 5, lerp565(BRASS, BG, 0.35f));        // основание
+  g.drawRect(bx - 11, by + 9, 22, 5, lerp565(BRASS_HI, BG, 0.4f));
+  g.fillCircle(bx, cap, 9, pressed ? lerp565(C_ERROR, BG, 0.45f) : C_ERROR);
+  g.drawCircle(bx, cap, 9, lerp565(BRASS_HI, BG, 0.25f));
+  if (!pressed) g.fillCircle(bx - 3, cap - 3, 2, lerp565(0xFFFF, C_ERROR, 0.35f));  // блик
+  if (jackpot) g.drawCircle(bx, cap, 11, C_WORKING);
+  arm(g, ox + 14, hy + 2, bx, cap - 7, 6 - spin * 5, tt, 1.4f + spin * 5);
 }
 
 void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
@@ -1498,13 +1617,24 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
   g.fillScreen(BG);
 
   if (top <= 18) {
-    g.fillRect(0, 0, W, 18, lerp565(C_WAITING, BG, 0.82f));
-    g.drawFastHLine(0, 18, W, lerp565(C_WAITING, BG, 0.45f));
+    g.fillRect(0, 0, W, 18, lerp565(BRASS, BG, 0.7f));
+    g.drawFastHLine(0, 18, W, lerp565(BRASS_HI, BG, 0.4f));
     drawTextRu(g, 8, 5, "АВТОМАТ", lerp565(CREAMC, BG, 0.05f), 1);
     char head[48];
     snprintf(head, sizeof(head), "%d Б  СТАВКА %d  РЕКОРД %d", slotPts, slotBet, slotRec);
-    drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, lerp565(CREAMC, BG, 0.3f), 1);
+    // Не хватает на спин — счёт мигает красным: отказ должен быть виден до того,
+    // как человек начнёт крутить.
+    bool low = slotPts < slotBet;
+    uint16_t hc = low ? (((now / 300) & 1) ? C_ERROR : lerp565(C_ERROR, BG, 0.45f))
+                      : lerp565(CREAMC, BG, 0.25f);
+    drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, hc, 1);
   }
+
+  unsigned long tc = micros();
+  slotWeeds(g, top, bot, tt);
+  if (left < S_CAB_X - 12) slotBubbles(g, top, bot);
+  if (right >= S_CAB_X) slotCabinet(g, top, bot, tt, now, jackpot);
+  usSmog += micros() - tc;
 
   if (right >= S_WX - 8) {
     const int winT = S_WIN_Y - 1, winB = S_WIN_Y + S_ROW - 6;
@@ -1514,53 +1644,66 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
       float frac = slotPos[i] - base;
       for (int k = -1; k <= 1; k++) {
         int y = S_WIN_Y + k * S_ROW - (int)(frac * S_ROW + 0.5f);
-        if (y + 8 * 5 < top || y > bot) continue;
+        if (y + 40 < top || y > bot) continue;
+        unsigned long ts2 = micros();
         slotSprite(g, base + k, x + 8, y + 4, 5, winT, winB);
+        usOcto += micros() - ts2;
+        nOcto++;
       }
       bool hot = shown && slotWin > 0 && slotHot(i);
-      uint16_t col = hot ? (jackpot ? C_WORKING : lerp565(C_WORKING, BG, 0.35f))
-                         : lerp565(C_WAITING, BG, 0.5f);
+      uint16_t col = hot ? (jackpot ? C_WORKING : lerp565(C_WORKING, BG, 0.3f))
+                         : lerp565(BRASS_HI, BG, 0.55f);
       g.drawRect(x, S_WIN_Y - 2, S_BW, S_ROW - 4, col);
-      g.drawRect(x - 1, S_WIN_Y - 3, S_BW + 2, S_ROW - 2, lerp565(col, BG, 0.65f));
-      g.dimRect(x + 1, S_TOP, S_BW - 2, S_WIN_Y - S_TOP - 3);
-      g.dimRect(x + 1, S_WIN_Y + S_ROW - 7, S_BW - 2, S_BOT - (S_WIN_Y + S_ROW - 7));
+      g.dimRect(x + 1, S_WIN_Y - 1, S_BW - 2, 8);          // цилиндр: тень сверху
+      g.dimRect(x + 1, S_WIN_Y + S_ROW - 14, S_BW - 2, 8); //           и снизу
     }
 
-    // Что за что платят — прямо под барабанами: иначе правила знает только автор.
-    const char *pay = "ТРОЙКА x8   ПАРА x1.4";
-    int payW = textWidthRu(pay, 1);
-    drawTextRu(g, S_WX + ((3 * S_BW + 2 * S_GAP - payW) >> 1), S_WIN_Y + S_ROW + 4, pay,
-               lerp565(CREAMC, BG, 0.55f), 1);
+    // линия выплаты со стрелками — сразу видно, что считается
+    int plY = S_WIN_Y + ((S_ROW - 4) / 2) - 2;
+    uint16_t plCol = (shown && slotWin > 0) ? C_WORKING : lerp565(BRASS_HI, BG, 0.65f);
+    g.drawFastHLine(S_WX - 8, plY, 8, plCol);
+    g.drawFastHLine(S_WX + 3 * S_BW + 2 * S_GAP, plY, 8, plCol);
+    for (int t = 0; t < 3; t++) {
+      g.drawFastVLine(S_WX - 6 + t, plY - t, 2 * t + 1, plCol);
+      g.drawFastVLine(S_WX + 3 * S_BW + 2 * S_GAP + 5 - t, plY - t, 2 * t + 1, plCol);
+    }
 
-    // Прогресс до следующего балла: видно, что работа капает, даже когда баллов нет.
-    const int pw = 3 * S_BW + 2 * S_GAP;
-    drawTextRu(g, S_WX, H - 30, "ДО БАЛЛА", lerp565(CREAMC, BG, 0.6f), 1);
-    g.drawRect(S_WX + 56, H - 31, pw - 56, 9, lerp565(CREAMC, BG, 0.72f));
-    g.fillRect(S_WX + 58, H - 29, (pw - 60) * slotPrg / 100, 5, lerp565(C_WAITING, BG, 0.35f));
+    const char *pay = "ТРОЙКА x8   ПАРА x1.4";
+    drawTextRu(g, S_CAB_X + ((S_CAB_W - textWidthRu(pay, 1)) >> 1), S_WIN_Y + S_ROW + 6, pay,
+               lerp565(BRASS_HI, BG, 0.5f), 1);
+
+    // прогресс до балла — внутри корпуса, это его же показатель
+    const int pbx = S_CAB_X + 16, pbw = S_CAB_W - 32;
+    drawTextRu(g, pbx, S_CAB_Y + S_CAB_H - 22, "ДО БАЛЛА", lerp565(CREAMC, BG, 0.6f), 1);
+    g.drawRect(pbx + 56, S_CAB_Y + S_CAB_H - 23, pbw - 56, 9, lerp565(BRASS_HI, BG, 0.7f));
+    g.fillRect(pbx + 58, S_CAB_Y + S_CAB_H - 21, (pbw - 60) * slotPrg / 100, 5,
+               lerp565(BRASS_HI, BG, 0.3f));
   }
 
-  if (left < S_WX - 8) slotOcto(g, top, bot, tt, shown, jackpot);
+  if (left < S_CAB_X) slotOcto(g, top, bot, tt, shown, jackpot);
 
-  if (top <= H - 4 && bot >= H - 14) {
-    if (slotWin == -1) {
-      drawTextRu(g, 8, H - 13, "НЕ ХВАТАЕТ БАЛЛОВ, ИДИ РАБОТАЙ", lerp565(C_ERROR, BG, 0.15f), 1);
+  if (top <= S_STATUS_Y + 8 && bot >= S_STATUS_Y) {
+    if (slotState == S_REFUSED) {
+      bool flash = (((now - slotRefusedAt) / 140) & 1) == 0;
+      drawTextRu(g, 8, S_STATUS_Y, "БАЛЛОВ НЕ ХВАТАЕТ, ИДИ РАБОТАЙ",
+                 flash ? C_ERROR : lerp565(C_ERROR, BG, 0.4f), 1);
     } else if (shown) {
       bool flash = (now - slotShownAt) < 1200 && (((now - slotShownAt) / 130) & 1) == 0;
       char line[48];
       if (slotWin > 0) {
         if (jackpot) snprintf(line, sizeof(line), "ТРОЙКА! +%d БАЛЛОВ", slotWin);
         else         snprintf(line, sizeof(line), "ПАРА, +%d", slotWin);
-        drawTextRu(g, 8, H - 13, line, flash ? 0xFFFF : C_WORKING, 1);
+        drawTextRu(g, 8, S_STATUS_Y, line, flash ? 0xFFFF : C_WORKING, 1);
       } else {
         snprintf(line, sizeof(line), "МИМО, -%d", slotBet);
-        drawTextRu(g, 8, H - 13, line, lerp565(CREAMC, BG, 0.35f), 1);
+        drawTextRu(g, 8, S_STATUS_Y, line, lerp565(CREAMC, BG, 0.35f), 1);
       }
       const char *again = "КРУТНИ ЕЩЁ";
-      drawTextRu(g, W - 8 - textWidthRu(again, 1), H - 13, again, lerp565(CREAMC, BG, 0.62f), 1);
+      drawTextRu(g, W - 8 - textWidthRu(again, 1), S_STATUS_Y, again, lerp565(CREAMC, BG, 0.62f), 1);
     } else if (slotState == S_SPINNING || slotState == S_LANDING) {
-      drawTextRu(g, 8, H - 13, "КРУТИТСЯ...", lerp565(CREAMC, BG, 0.3f), 1);
+      drawTextRu(g, 8, S_STATUS_Y, "КРУТИТСЯ...", lerp565(CREAMC, BG, 0.3f), 1);
     } else {
-      drawTextRu(g, 8, H - 13, "КРУТИ РУЧКУ ПОБОДРЕЕ", lerp565(CREAMC, BG, 0.45f), 1);
+      drawTextRu(g, 8, S_STATUS_Y, "КРУТИ РУЧКУ ПОБОДРЕЕ", lerp565(CREAMC, BG, 0.45f), 1);
     }
   }
 }
@@ -1579,7 +1722,9 @@ void redrawRect(int rx, int ry, int rw, int rh) {
     int h = min(STRIP_H, y1 - y0);
     stripBuf.moveTo(0, y0);
     stripBuf.fillScreen(BG);
+    stripBuf.clipBase(rx, y0, rx + rw - 1, y0 + h - 1);
     composeCurrentScreen(stripBuf, y0, y0 + h - 1, rx, rx + rw - 1, tt);
+    stripBuf.clipBase(-32768, -32768, 32767, 32767);
 
     uint16_t *b = stripBuf.getBuffer();
     unsigned long tb = micros();
@@ -2443,13 +2588,15 @@ void loop() {
         slotStatusShown = kind;
         redrawRect(0, H - 16, W, 16);
       }
-      if (slotState != S_IDLE || (now - slotShownAt) < 2000)
-        redrawRect(S_WX - 8, S_TOP, W - (S_WX - 8), S_BOT - S_TOP);
-      int bandH = (S_BOT - S_TOP + 2) / 3;
+      // Барабаны — каждый кадр, они несут движение. Остальное живое (пузыри,
+      // водоросли, огни корпуса) обновляется срезами по одному за кадр: цена кадра
+      // от этого постоянная, а не прыгает.
+      if (slotState == S_SPINNING || slotState == S_LANDING || (now - slotShownAt) < 2000)
+        redrawRect(S_WX - 10, S_WIN_Y - 8, 3 * S_BW + 2 * S_GAP + 20, S_ROW + 12);
       int slice = (int)(frame % 3);
-      int y0 = S_TOP + slice * bandH;
-      int h = min(bandH, S_BOT - y0);
-      if (h > 0) redrawRect(0, y0, S_WX - 8, h);
+      if (slice == 0)      redrawRect(0, 40, S_CAB_X - 12, 80);        // пузыри, верх
+      else if (slice == 1) redrawRect(0, 120, S_CAB_X - 12, 74);       // крупье и рычаг
+      else                 redrawRect(0, S_BED_Y, W, H - S_BED_Y);     // дно
     }
     return;
   }
@@ -2505,13 +2652,15 @@ void loop() {
         slotStatusShown = kind;
         redrawRect(0, H - 16, W, 16);
       }
-      if (slotState != S_IDLE || (now - slotShownAt) < 2000)
-        redrawRect(S_WX - 8, S_TOP, W - (S_WX - 8), S_BOT - S_TOP);
-      int bandH = (S_BOT - S_TOP + 2) / 3;
+      // Барабаны — каждый кадр, они несут движение. Остальное живое (пузыри,
+      // водоросли, огни корпуса) обновляется срезами по одному за кадр: цена кадра
+      // от этого постоянная, а не прыгает.
+      if (slotState == S_SPINNING || slotState == S_LANDING || (now - slotShownAt) < 2000)
+        redrawRect(S_WX - 10, S_WIN_Y - 8, 3 * S_BW + 2 * S_GAP + 20, S_ROW + 12);
       int slice = (int)(frame % 3);
-      int y0 = S_TOP + slice * bandH;
-      int h = min(bandH, S_BOT - y0);
-      if (h > 0) redrawRect(0, y0, S_WX - 8, h);
+      if (slice == 0)      redrawRect(0, 40, S_CAB_X - 12, 80);        // пузыри, верх
+      else if (slice == 1) redrawRect(0, 120, S_CAB_X - 12, 74);       // крупье и рычаг
+      else                 redrawRect(0, S_BED_Y, W, H - S_BED_Y);     // дно
     }
     return;
   }
