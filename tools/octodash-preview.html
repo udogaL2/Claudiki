@@ -1127,7 +1127,7 @@
   let sPts = 37, sBet = 5, sRec = 64, sPrg = 62;   // так это выглядит с моста
   let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
   let sState = "idle";                    // idle | charging | spinning | landing | shown | refused
-  let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0, sRefusedAt = 0;
+  let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0, sRefusedAt = 0, sLev = 0;
 
   const sN = () => SLOT_SPRITES.length;
 
@@ -1325,7 +1325,7 @@
   // до него реально доставало, а причина вращения читалась.
   function slotOcto(tt, now, shown, jackpot){
     const spin = Math.min(1, sVel[0]/6);
-    const ox = 40, oy = 128;
+    const ox = 30, oy = 138;
     const wob = Math.sin(tt*(1.6+spin*9)) * (1 + spin*2.5);
     const hy = oy + wob*0.5 - (jackpot ? 4 : 0);
     tentacles(ox, hy, 17, 1, tt, 1.2+spin*4, 1+spin*2.5, 6, 9);
@@ -1346,20 +1346,29 @@
       drawEyes(ox, eyY, sState==="spinning"||sState==="landing" ? 0 : 2, tt, spin>0.4, {blink:3.9});
     }
 
-    // Рычаг: толстая штанга и КРУПНАЯ рукоять. Первая версия была на пять пикселей и
-    // не читалась вовсе, поэтому здесь всё нарочито большое.
-    const lx = S_CAB_X - 20, lTop = 96, lBottom = 150;
-    const pulled = (sState==="spinning"||sState==="landing");
-    const ky = lTop + (pulled ? 20 : (sState==="charging" ? (10*spin)|0 : 0));
-    g.fillRect(lx-6, lBottom, 13, 6, lerp(BRASS,BG,0.3));
-    g.drawRect(lx-6, lBottom, 13, 6, lerp(BRASS_HI,BG,0.35));
-    g.fillRect(lx-1, ky, 3, lBottom-ky, lerp(BRASS_HI,BG,0.45));
-    g.drawFastVLine(lx-1, ky, lBottom-ky, lerp(BRASS,BG,0.2));
-    g.fillCircle(lx, ky, 7, jackpot ? C_WORK : C_ERR);
-    g.drawCircle(lx, ky, 7, lerp(BRASS_HI,BG,0.2));
-    g.fillCircle(lx-2, ky-3, 2, lerp(0xFFFF,C_ERR,0.3));
-    if(jackpot) g.drawCircle(lx, ky, 9, C_WORK);
-    arm(ox+14, hy+2, lx-3, ky+2, 6-spin*5, tt, 1.4+spin*5);
+    // Рычаг НА ОСИ, а не телескоп: рукоять ходит большой дугой вверх → в сторону →
+    // вниз, как у однорукого бандита. При оси снизу ход читался как движение в
+    // сторону, а не как «дёрнул вниз».
+    const px = S_CAB_X - 6, py = 128, lenArm = 40;
+    const aim = (sState==="spinning"||sState==="landing") ? 1 : (sState==="charging" ? spin : 0);
+    sLev += (aim - sLev) * 0.28;
+    const ang = 0.17 + sLev*2.27;
+    const hx = px - (lenArm*Math.sin(ang))|0, hy2 = py - (lenArm*Math.cos(ang))|0;
+    g.fillRect(px-4, py-4, 9, 9, lerp(BRASS,BG,0.25));
+    g.drawRect(px-4, py-4, 9, 9, lerp(BRASS_HI,BG,0.35));
+    g.drawPixel(px, py, lerp(BG,BRASS_HI,0.3));
+    for(let o=-1;o<=1;o++){
+      const c = o<0 ? lerp(0xFFFF,BRASS_HI,0.45) : o>0 ? lerp(BRASS,BG,0.25) : BRASS_HI;
+      g.drawLine(px+o, py, hx+o, hy2, c);
+    }
+    const ball = jackpot ? C_WORK : C_ERR;
+    g.fillCircle(hx, hy2, 8, ball);
+    g.drawCircle(hx, hy2, 8, lerp(ball,BG,0.45));
+    g.drawCircle(hx, hy2, 5, lerp(ball,0xFFFF,0.25));
+    g.fillCircle(hx-3, hy2-3, 2, lerp(0xFFFF,ball,0.15));
+    g.fillRect(hx-3, hy2+6, 7, 3, lerp(BRASS_HI,BG,0.3));
+    if(jackpot) g.drawCircle(hx, hy2, 11, C_WORK);
+    arm(ox+13, hy+1, hx-4, hy2+3, 6-spin*5, tt, 1.4+spin*5);
   }
 
   function slotStatus(now, shown, jackpot){
@@ -1645,11 +1654,20 @@
     const len=Math.abs(dx)+Math.abs(dy)||1;             // манхэттен вместо sqrt: дешевле,
     const b=(bend + fsin(tt*speed)*2.0)/len;            // на глаз изгиб не отличается
     const ccx=Math.round((x0+x1)/2 - dy*b), ccy=Math.round((y0+y1)/2 + dx*b);
+    // Сегменты СОЕДИНЯЮТСЯ линией: двенадцати квадратиков хватало на короткую руку,
+    // но на длинном вылете (щупальце до рукояти автомата) между ними были разрывы, и
+    // щупальце читалось пунктиром.
+    let prevX=0, prevY=0;
     for(let k=0;k<ARM_SEG;k++){
       const W=BEZ[k];
       const x=(W[0]*x0 + W[1]*ccx + W[2]*x1)>>8, y=(W[0]*y0 + W[1]*ccy + W[2]*y1)>>8;
       const w=ARM_W[k];
+      if(k){
+        g.drawLine(prevX, prevY, x, y, ARM_COL[k]);
+        if(w > 2) g.drawLine(prevX, prevY+1, x, y+1, ARM_COL[k]);
+      }
       g.fillRect(x-(w>>1), y-(w>>1), w, w, ARM_COL[k]);
+      prevX=x; prevY=y;
     }
   }
 

@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   55  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   59  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -719,11 +719,20 @@ void arm(Adafruit_GFX &g, int x0, int y0, int x1, int y1, float bend, float tt, 
   if (len < 1) len = 1;
   float b = (bend + fastSin(tt * speed) * 2.0f) / len;
   int ccx = iround((x0 + x1) / 2.0f - dy * b), ccy = iround((y0 + y1) / 2.0f + dx * b);
+  // Сегменты СОЕДИНЯЮТСЯ линией. Двенадцать отдельных квадратиков хватало на
+  // короткую руку, но на длинном вылете (щупальце до рукояти автомата) между ними
+  // появлялись разрывы, и щупальце читалось как пунктир.
+  int prevX = 0, prevY = 0;
   for (int k = 0; k < ARM_SEG; k++) {
     int x = (armW0[k] * x0 + armW1[k] * ccx + armW2[k] * x1) >> 8;
     int y = (armW0[k] * y0 + armW1[k] * ccy + armW2[k] * y1) >> 8;
     int w = armWidth[k];
+    if (k) {
+      g.drawLine(prevX, prevY, x, y, armCol[k]);
+      if (w > 2) g.drawLine(prevX, prevY + 1, x, y + 1, armCol[k]);
+    }
     g.fillRect(x - (w >> 1), y - (w >> 1), w, w, armCol[k]);
+    prevX = x; prevY = y;
   }
 }
 
@@ -1403,6 +1412,7 @@ int   slotSp = 0, slotSeenSp = 0;
 float slotPos[3] = {0, 0, 0}, slotVel[3] = {0, 0, 0};
 SlotState slotState = S_IDLE;
 unsigned long slotShownAt = 0, slotRefusedAt = 0, slotLastPhys = 0;
+float slotLev = 0;          // угол рычага 0..1, ходит плавно
 bool slotDirty = true;
 int slotStatusShown = -1;
 
@@ -1561,8 +1571,8 @@ void slotWeeds(Adafruit_GFX &g, int top, int bot, float tt) {
 
 
 void slotOcto(Adafruit_GFX &g, int top, int bot, float tt, bool shown, bool jackpot) {
-  const int ox = 40, oy = 128;
-  if (oy + 46 < top || oy - 32 > bot) return;
+  const int ox = 30, oy = 138;
+  if (oy + 46 < top || oy - 56 > bot) return;
   float spin = slotVel[0] / 6.0f;
   if (spin > 1) spin = 1;
   float wob = fastSin(tt * (1.6f + spin * 9)) * (1 + spin * 2.5f);
@@ -1589,22 +1599,37 @@ void slotOcto(Adafruit_GFX &g, int top, int bot, float tt, bool shown, bool jack
              tt, spin > 0.4f, 3.9f);
   }
 
-  // Рычаг: толстая штанга и КРУПНАЯ рукоять. Первая версия была на пять пикселей и
-  // не читалась вовсе («непонятно, что осьминог держит»), поэтому здесь всё нарочито
-  // большое: штанга в три пикселя, шар радиусом семь, ход двадцать.
-  const int lx = S_CAB_X - 20;
-  const int lTop = 96, lBottom = 150;
-  bool pulled = (slotState == S_SPINNING || slotState == S_LANDING);
-  int ky = lTop + (pulled ? 20 : (slotState == S_CHARGE ? (int)(10 * spin) : 0));
-  g.fillRect(lx - 6, lBottom, 13, 6, lerp565(BRASS, BG, 0.3f));          // основание
-  g.drawRect(lx - 6, lBottom, 13, 6, lerp565(BRASS_HI, BG, 0.35f));
-  g.fillRect(lx - 1, ky, 3, lBottom - ky, lerp565(BRASS_HI, BG, 0.45f)); // штанга
-  g.drawFastVLine(lx - 1, ky, lBottom - ky, lerp565(BRASS, BG, 0.2f));
-  g.fillCircle(lx, ky, 7, jackpot ? C_WORKING : C_ERROR);                // рукоять
-  g.drawCircle(lx, ky, 7, lerp565(BRASS_HI, BG, 0.2f));
-  g.fillCircle(lx - 2, ky - 3, 2, lerp565(0xFFFF, C_ERROR, 0.3f));       // блик
-  if (jackpot) g.drawCircle(lx, ky, 9, C_WORKING);
-  arm(g, ox + 14, hy + 2, lx - 3, ky + 2, 6 - spin * 5, tt, 1.4f + spin * 5);
+  // Рычаг НА ОСИ, а не телескоп: рукоять ходит по дуге вокруг кронштейна на корпусе —
+  // именно так читается «однорукий бандит». Штанга в два тона (светлая грань слева,
+  // тёмная справа) даёт вид хрома, рукоять со блик-пятном и обводкой — вид стекла.
+  // Ось на СЕРЕДИНЕ высоты: при оси снизу рукоять уходила в сторону, и это читалось
+  // не как «дёрнул вниз». Теперь ход идёт большой дугой вверх → в сторону → вниз,
+  // ровно как у однорукого бандита.
+  const int px = S_CAB_X - 6, py = 128;        // ось вращения
+  const float lenArm = 40;
+  float aim = (slotState == S_SPINNING || slotState == S_LANDING) ? 1.0f
+              : (slotState == S_CHARGE ? spin : 0.0f);
+  slotLev += (aim - slotLev) * 0.28f;          // возврат с замедлением, без рывка
+  float ang = 0.17f + slotLev * 2.27f;         // от вертикали вверх до наклона вниз
+  int hx = px - (int)(lenArm * fastSin(ang));
+  int hy2 = py - (int)(lenArm * fastCos(ang));
+
+  g.fillRect(px - 4, py - 4, 9, 9, lerp565(BRASS, BG, 0.25f));      // кронштейн
+  g.drawRect(px - 4, py - 4, 9, 9, lerp565(BRASS_HI, BG, 0.35f));
+  g.drawPixel(px, py, lerp565(BG, BRASS_HI, 0.3f));                 // ось
+  for (int o = -1; o <= 1; o++) {                                   // штанга в два тона
+    uint16_t c = (o < 0) ? lerp565(0xFFFF, BRASS_HI, 0.45f)
+               : (o > 0) ? lerp565(BRASS, BG, 0.25f) : BRASS_HI;
+    g.drawLine(px + o, py, hx + o, hy2, c);
+  }
+  uint16_t ball = jackpot ? C_WORKING : C_ERROR;
+  g.fillCircle(hx, hy2, 8, ball);
+  g.drawCircle(hx, hy2, 8, lerp565(ball, BG, 0.45f));               // обводка-тень
+  g.drawCircle(hx, hy2, 5, lerp565(ball, 0xFFFF, 0.25f));           // внутренний блеск
+  g.fillCircle(hx - 3, hy2 - 3, 2, lerp565(0xFFFF, ball, 0.15f));   // блик
+  g.fillRect(hx - 3, hy2 + 6, 7, 3, lerp565(BRASS_HI, BG, 0.3f));   // хомут под шаром
+  if (jackpot) g.drawCircle(hx, hy2, 11, C_WORKING);
+  arm(g, ox + 13, hy + 1, hx - 4, hy2 + 3, 6 - spin * 5, tt, 1.4f + spin * 5);
 }
 
 void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
@@ -2595,7 +2620,7 @@ void loop() {
         redrawRect(S_WX - 10, S_WIN_Y - 8, 3 * S_BW + 2 * S_GAP + 20, S_ROW + 12);
       // Крупье с рычагом — каждый кадр: заливки стали дешёвыми, и полоса влезает.
       // Дно (водоросли) качается медленно, ему хватает каждого третьего кадра.
-      redrawRect(0, 84, S_CAB_X - 8, 112);
+      redrawRect(0, 78, S_CAB_X, 120);   // вся механика рычага внутри полосы
       // Дно — половинками через кадр: целиком оно стоило 16мс и выбивало каждый
       // третий кадр за бюджет. Водоросли качаются медленно, деление незаметно.
       if ((frame & 1) == 0) redrawRect(0, S_BED_Y, W / 2, H - S_BED_Y);
@@ -2656,7 +2681,7 @@ void loop() {
         redrawRect(S_WX - 10, S_WIN_Y - 8, 3 * S_BW + 2 * S_GAP + 20, S_ROW + 12);
       // Крупье с рычагом — каждый кадр: заливки стали дешёвыми, и полоса влезает.
       // Дно (водоросли) качается медленно, ему хватает каждого третьего кадра.
-      redrawRect(0, 84, S_CAB_X - 8, 112);
+      redrawRect(0, 78, S_CAB_X, 120);   // вся механика рычага внутри полосы
       // Дно — половинками через кадр: целиком оно стоило 16мс и выбивало каждый
       // третий кадр за бюджет. Водоросли качаются медленно, деление незаметно.
       if ((frame & 1) == 0) redrawRect(0, S_BED_Y, W / 2, H - S_BED_Y);
