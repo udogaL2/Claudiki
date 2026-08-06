@@ -117,6 +117,11 @@ class Config:
     sleep_min: float = field(default_factory=lambda: float(_env("OCTO_SLEEP_MIN", "20")))
     # Куда ходим обедать (экран рулетки). Пусто → lunch-places.json рядом с мостом.
     places_file: str = field(default_factory=lambda: _env("OCTO_PLACES_FILE", ""))
+    # Баллы за работу и автомат (экран слотов). Балл капает за столько минут, пока
+    # хотя бы одна сессия РАБОТАЕТ: иначе гаджет, забытый включённым, копил бы их сам.
+    point_min: float = field(default_factory=lambda: float(_env("OCTO_POINT_MIN", "30")))
+    slot_bet: int = field(default_factory=lambda: int(_env("OCTO_SLOT_BET", "5")))
+    points_file: str = field(default_factory=lambda: _env("OCTO_POINTS_FILE", ""))
 
 
 def default_log_path() -> str:
@@ -134,6 +139,12 @@ def default_log_path() -> str:
         base = (os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")) if os.name == "nt" \
             else os.path.expanduser("~/.local/state")
     return os.path.join(base, "octodash", "bridge.log")
+
+
+def default_state_path(name: str) -> str:
+    """Файл состояния рядом с логом. Состояние, а не настройка: правится игрой,
+    а не человеком, поэтому в репозитории ему места нет."""
+    return os.path.join(os.path.dirname(default_log_path()), name)
 
 
 # --- Модель сессии ------------------------------------------------------------
@@ -258,6 +269,17 @@ def load_places(path: str) -> list[str] | None:
         if name:
             out.append(name)
     return out
+
+
+# --- автомат на баллы ---------------------------------------------------------
+# Четвёртый экран. Баллы капают за реально отработанное время и тратятся здесь;
+# исход спина считает МОСТ, потому что и счёт, и случайность — это состояние,
+# которое обязано переживать перезагрузку платы.
+SLOT_SYMS = 6                 # столько символов на барабане (спрайты в прошивке)
+SLOT_PAY_TRIPLE = 8.0         # три одинаковых
+SLOT_PAY_PAIR = 1.4           # два одинаковых — ставка почти возвращается
+# Отдача при шести символах: 6/216 тройки и 90/216 пары дают ≈81% от ставки.
+# Меньше единицы намеренно: баллы должны кончаться, иначе автомат не нужен.
 
 
 # --- расписание кофейни -------------------------------------------------------
@@ -863,6 +885,19 @@ class Bridge:
         self.roul_spin = 0                    # номер запуска: по нему прошивка видит новый ответ
         self.roul_last = -1                   # прошлый победитель — его не повторяем
 
+        # Автомат на баллы. Баллы капают за отработанные минуты и переживают
+        # перезапуск: файл рядом с логом, пишется только когда счёт изменился.
+        self.points = 0
+        self.pts_earned = 0                   # всего заработано — для рекордов
+        self.pts_spins = 0
+        self.pts_best = 0                     # лучший выигрыш
+        self._work_sec = 0.0                  # накопленные секунды работы до балла
+        self._work_mark = self._clock()
+        self.slot_reels = [0, 0, 0]           # что должно выпасть на текущем спине
+        self.slot_win = 0                     # выигрыш этого спина, баллов
+        self.slot_sp = 0                      # номер спина: прошивка видит новый ответ
+        self._points_loaded = False
+
     # -- обработка события от хука; возвращает True, если снэпшот стал грязным --
     def handle_event(self, data: dict) -> bool:
         event = str(data.get("event", "")).lower()
@@ -1186,7 +1221,7 @@ class Bridge:
         return chosen, hidden + stale
 
     # -- энкодер и сон ---------------------------------------------------------
-    SCREENS = 3                                   # 0 — аквариум, 1 — кофейня, 2 — рулетка
+    SCREENS = 4       # 0 — аквариум, 1 — кофейня, 2 — рулетка, 3 — автомат
 
     def touch_activity(self, wake: bool = False) -> None:
         """Признак жизни: сдвигает точку отсчёта автосна, при wake — будит экран."""
@@ -1237,6 +1272,11 @@ class Bridge:
                 return False                      # вне аквариума листать нечего
         elif event == "key":
             self.screen = (self.screen + 1) % self.SCREENS
+        elif event == "slot":
+            # Прошивка раскрутила барабаны и просит исход. Как и в рулетке, экран не
+            # проверяем: событие приходит только с этого экрана.
+            self.spin_slot()
+            return True
         elif event == "spin":
             # Прошивка накопила скорость барабана и просит результат. Экран не
             # проверяем: событие приходит только с экрана рулетки, а мост мог
@@ -1256,6 +1296,121 @@ class Bridge:
         """День недели и минуты от полуночи по часам моста."""
         tm = time.localtime(self._wall())
         return tm.tm_wday, tm.tm_hour * 60 + tm.tm_min
+
+    # -- баллы и автомат -------------------------------------------------------
+    def points_path(self) -> str:
+        return self.cfg.points_file or default_state_path("points.json")
+
+    def load_points(self) -> None:
+        """Читает счёт. Битый или отсутствующий файл — начинаем с нуля, без падения:
+        это игровой счётчик, а не данные, за которые стоит держаться."""
+        self._points_loaded = True
+        try:
+            with open(self.points_path(), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        self.points = max(0, int(data.get("points", 0) or 0))
+        self.pts_earned = max(0, int(data.get("earned", 0) or 0))
+        self.pts_spins = max(0, int(data.get("spins", 0) or 0))
+        self.pts_best = max(0, int(data.get("best", 0) or 0))
+        self._work_sec = max(0.0, float(data.get("work_sec", 0) or 0))
+        self.log.info("баллы загружены: %d (заработано %d, спинов %d, рекорд %d)",
+                      self.points, self.pts_earned, self.pts_spins, self.pts_best)
+
+    def save_points(self) -> bool:
+        """Пишет счёт через временный файл: обрыв питания на записи не должен
+        оставить обрезанный json, из которого счёт потом не прочитается."""
+        path = self.points_path()
+        data = {"points": self.points, "earned": self.pts_earned, "spins": self.pts_spins,
+                "best": self.pts_best, "work_sec": round(self._work_sec, 1)}
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+            return True
+        except OSError as exc:
+            self.log.warning("не удалось сохранить баллы: %s", exc)
+            return False
+
+    def accrue_points(self) -> bool:
+        """Начисляет баллы за отработанное время. Дёргается из reaper-цикла.
+
+        Считаются только минуты, когда хотя бы одна сессия в WORKING: иначе гаджет,
+        забытый включённым, копил бы баллы сам, и они бы ничего не значили.
+        """
+        if not self._points_loaded:
+            self.load_points()
+        now = self._clock()
+        dt = now - self._work_mark
+        self._work_mark = now
+        if dt <= 0 or dt > 300:               # часы прыгнули или мост стоял — не считаем
+            return False
+        with self.lock:
+            working = any(s.state == WORKING for s in self.sessions.values())
+        if not working:
+            return False
+        self._work_sec += dt
+        need = max(1.0, self.cfg.point_min * 60)
+        if self._work_sec < need:
+            return False
+        gained = int(self._work_sec // need)
+        self._work_sec -= gained * need
+        self.points += gained
+        self.pts_earned += gained
+        self.log.info("+%d балл(ов) за работу, всего %d", gained, self.points)
+        self.save_points()
+        self.mark_dirty()
+        return True
+
+    def spin_slot(self) -> bool:
+        """Крутит автомат: списывает ставку, бросает три барабана, считает выплату.
+
+        Исход считает мост, а не прошивка: счёт — состояние, и он обязан переживать
+        перезагрузку платы. Прошивка получает готовые индексы и доводит барабаны.
+        """
+        if not self._points_loaded:
+            self.load_points()
+        bet = max(1, self.cfg.slot_bet)
+        if self.points < bet:
+            self.slot_win = -1                # -1 = не хватило баллов, барабаны стоят
+            self.slot_sp += 1
+            self.log.info("автомат: не хватает баллов (%d из %d)", self.points, bet)
+            self.mark_dirty()
+            return False
+        self.points -= bet
+        self.slot_reels = [self._rng.randrange(SLOT_SYMS) for _ in range(3)]
+        a, b, c = self.slot_reels
+        if a == b == c:
+            win = int(round(bet * SLOT_PAY_TRIPLE))
+        elif a == b or b == c or a == c:
+            win = int(round(bet * SLOT_PAY_PAIR))
+        else:
+            win = 0
+        self.points += win
+        self.slot_win = win
+        self.slot_sp += 1
+        self.pts_spins += 1
+        if win > self.pts_best:
+            self.pts_best = win
+        self.log.info("автомат #%d: %s → %+d, баллов %d",
+                      self.slot_sp, self.slot_reels, win - bet, self.points)
+        self.save_points()
+        self.mark_dirty()
+        return True
+
+    def build_slot(self) -> dict:
+        if not self._points_loaded:
+            self.load_points()
+        return {"pts": self.points, "bet": max(1, self.cfg.slot_bet),
+                "r": list(self.slot_reels), "win": self.slot_win, "sp": self.slot_sp,
+                "rec": self.pts_best,
+                # сколько осталось до следующего балла, в процентах — видно, что копится
+                "prg": int(min(99, self._work_sec / max(1.0, self.cfg.point_min * 60) * 100))}
 
     # -- экран рулетки ---------------------------------------------------------
     def places_path(self) -> str:
@@ -1375,6 +1530,8 @@ class Bridge:
             return {"v": 1, "scr": 1, "cafe": self.build_cafe()}
         if self.screen == 2:
             return {"v": 1, "scr": 2, "roul": self.build_roulette()}
+        if self.screen == 3:
+            return {"v": 1, "scr": 3, "slot": self.build_slot()}
         visible, hidden = self.select_visible()
         # heartbeat строит снэпшот раз в 5с — логируем только смену состава скрытых,
         # иначе лог заплывёт одинаковыми строками
@@ -1537,6 +1694,11 @@ class Bridge:
                 "roulette_spins": self.roul_spin,
                 "roulette_win": (self.places[self.roul_win]
                                  if 0 <= self.roul_win < len(self.places) else None),
+                "points": self.points,
+                "points_earned": self.pts_earned,
+                "points_to_next": round(max(0.0, self.cfg.point_min * 60 - self._work_sec)),
+                "slot_spins": self.pts_spins,
+                "slot_best": self.pts_best,
             },
             "config": {
                 "max_sessions": self.cfg.max_sessions,
@@ -1612,6 +1774,7 @@ class Bridge:
             # Вес считаем в такт reaper'у, а не сверки: он нужен и когда реестр
             # выключен (OCTO_REGISTRY_SEC=0), а стоит один os.stat на сессию.
             self.refresh_sizes()
+            self.accrue_points()      # баллы за отработанные минуты
             if self.cfg.registry_sec > 0 and self._clock() >= next_reconcile:
                 next_reconcile = self._clock() + self.cfg.registry_sec
                 try:

@@ -312,7 +312,7 @@
   const COLS = 3, ROWS = 2, DW = 320, DH = 240;
   const PER_PAGE = COLS * ROWS;
   const cw = (DW/COLS)|0, ch = (DH/ROWS)|0;
-  const SCREENS = ["AQUARIUM", "COFFEE", "ROULETTE"];
+  const SCREENS = ["AQUARIUM", "COFFEE", "ROULETTE", "SLOTS"];
 
   // ---- RGB565 helpers ----
   const rgb = (r,g,b) => (((r>>3)<<11)|((g>>2)<<5)|(b>>3)) & 0xffff;
@@ -1083,6 +1083,240 @@
   }
   const txPxW = (str, scale) => str.length * 6 * (scale||1);
 
+  // Символы слот-машины 8x8: строка на ряд, цифра — индекс в палитре символа.
+  // Один источник на эмулятор и прошивку (scratchpad/slot-sprites.py).
+  const SLOT_SPRITES = [
+    ["..2222..",".222222.","22322322","22222222",".222222.",".2.22.2.","2..2.2..",".2..2..2"],
+    ["...111..","........","22222222","22222223","22222.23",".222222.","..2222..",".111111."],
+    ["........","..2222.2",".2222322","22222222","22222222",".2222322","..2222.2","........"],
+    ["......1.",".....1..","......3.",".....33.","...222..","..222...",".22.....","22......"],
+    ["..2222..",".22..22.","22.3..22","2......2","2......2","22....22",".22..22.","..2222.."],
+    ["22222222","22222222",".....22.","....22..","...22...","..22....","..22....","..22...."]
+  ];
+  const SLOT_PALS = [
+    [23188,38012,65535],
+    [31431,54770,65535],
+    [11281,24219,65535],
+    [42261,61277,64450],
+    [11119,28413,65535],
+    [37827,65160,65535]
+  ];
+  const SLOT_NAMES = ["ОСЬМИНОГ","КОФЕ","РЫБКА","СИГАРЕТА","ПУЗЫРЬ","СЕМЁРКА"];
+
+  // ==========================================================================
+  // Экран 4: автомат на баллы
+  // ==========================================================================
+  // Баллы капают за отработанные минуты (мост считает только время, когда хотя бы
+  // одна сессия РАБОТАЕТ) и тратятся здесь. Исход спина считает МОСТ: счёт и
+  // случайность — состояние, оно обязано переживать перезагрузку платы.
+  //
+  // Физика та же, что у рулетки, только барабанов три и встают они по очереди:
+  // остановка «слева направо» — половина удовольствия от автомата.
+  const S_ROW = 56;                       // шаг символа на барабане
+  const S_WIN_Y = 92;                     // верх окна выбора
+  const S_WX = 112, S_GAP = 8;            // левый край первого барабана и зазор
+  const S_SPIN_MIN = 2.8, S_FRICTION = 2.0, S_SPIN_FRICTION = 4.2;
+  const S_LAUNCH_V = 13, S_KICK = 0.6;
+  const S_STAGGER = 0.55;                 // задержка остановки каждого следующего
+
+  let sPts = 37, sBet = 5, sRec = 40, sPrg = 62;   // так это выглядит с моста
+  let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
+  let sState = "idle";                    // idle | charging | spinning | landing | shown
+  let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0;
+
+  const sN = () => SLOT_SPRITES.length;
+
+  // Вошёл ли барабан в выигрышную комбинацию.
+  function slotHot(i){
+    const [a,b,c] = sTarget;
+    if(a < 0) return false;
+    if(a === b && b === c) return true;
+    if(a === b) return i < 2;
+    if(b === c) return i > 0;
+    if(a === c) return i !== 1;
+    return false;
+  }
+
+  // Один символ: 8x8 в увеличении, три слоя палитры. Тот же спрайт, что на плате.
+  // clipT/clipB — границы окна барабана. Без них соседний символ вылезал за рамку,
+  // и барабан читался как «символы прыгают», а не как вращение за окном.
+  function slotSprite(idx, x, y, scale, clipT, clipB){
+    const k = ((idx % sN()) + sN()) % sN();
+    const rows = SLOT_SPRITES[k], pal = SLOT_PALS[k];
+    for(let ry=0; ry<8; ry++){
+      const py = y + ry*scale;
+      if(py + scale <= clipT || py >= clipB) continue;
+      const top = Math.max(py, clipT), bot = Math.min(py + scale, clipB);
+      const row = rows[ry];
+      for(let rx=0; rx<8; rx++){
+        const ch = row[rx];
+        if(ch === ".") continue;
+        g.fillRect(x + rx*scale, top, scale, bot - top, pal[+ch - 1]);
+      }
+    }
+  }
+
+  function slotKick(){
+    if(sState === "landing") return;
+    if(sState === "shown"){ sState = "idle"; sTarget = [-1,-1,-1]; sWin = 0; }
+    sVel[0] += S_KICK;
+    if(sVel[0] >= S_SPIN_MIN && sState !== "spinning"){
+      sState = "spinning";
+      for(let i=0;i<3;i++) sVel[i] = S_LAUNCH_V + i*0.8;    // разгон чуть разный
+      wire("in", {enc:"slot"});
+      // так ответит мост: списывает ставку, бросает барабаны, считает выплату
+      setTimeout(()=>{
+        if(sState !== "spinning") return;
+        if(sPts < sBet){ sWin = -1; sTarget = [-1,-1,-1]; wire("out",{scr:3,win:-1}); return; }
+        sPts -= sBet;
+        const r = [0,1,2].map(()=> (Math.random()*sN())|0);
+        const [a,b,c] = r;
+        sWin = (a===b && b===c) ? Math.round(sBet*8) : (a===b||b===c||a===c) ? Math.round(sBet*1.4) : 0;
+        sPts += sWin; sSpins++;
+        if(sWin > sRec) sRec = sWin;
+        sTarget = r;
+        wire("out", {scr:3, r, win:sWin, pts:sPts});
+      }, 140);
+    } else if(sState !== "spinning"){
+      sState = "charging";
+    }
+  }
+
+  function slotPhysics(now){
+    const dt = Math.min(0.05, sLastTick ? (now - sLastTick)/1000 : 0.016);
+    sLastTick = now;
+    if(sState === "idle" || sState === "shown"){ sVel = [0,0,0]; return; }
+
+    const fr = (sState === "charging") ? S_FRICTION : S_SPIN_FRICTION;
+    let allStopped = true;
+    for(let i=0;i<3;i++){
+      // Каждый следующий барабан тормозит позже: остановка слева направо и есть
+      // то, из-за чего автомат смотрят до конца.
+      const myFr = fr * (1 - i*0.16);
+      sVel[i] = Math.max(0, sVel[i] - myFr*dt);
+      sPos[i] += sVel[i]*dt;
+
+      if(sState !== "charging" && sTarget[i] >= 0 && sVel[i] < S_SPIN_MIN*1.6){
+        const n = sN();
+        const d = ((sTarget[i] - sPos[i]) % n + n) % n;
+        if(d < 0.04 && sVel[i] < 0.25){ sPos[i] = sTarget[i]; sVel[i] = 0; }
+        else {
+          // доводка только вперёд; пол скорости НИЖЕ порога остановки, иначе
+          // барабан не встанет никогда (на этом уже наступали в рулетке)
+          sVel[i] = Math.max(0.12, Math.min(sVel[i], d*2.4));
+          sPos[i] += sVel[i]*dt;
+        }
+      }
+      if(sVel[i] > 0) allStopped = false;
+      sPos[i] = ((sPos[i] % sN()) + sN()) % sN();
+    }
+    if(sState === "charging" && allStopped) sState = "idle";
+    if(sState === "spinning" && (sTarget[0] >= 0 || sWin === -1)) sState = "landing";
+    if(sState === "landing" && allStopped){ sState = "shown"; sShownAt = now; }
+  }
+
+  function renderSlots(tt){
+    const now = performance.now();
+    slotPhysics(now);
+    const shown = sState === "shown";
+    const jackpot = shown && sWin >= Math.round(sBet*8);
+    g.fillScreen(BG);
+
+    // шапка: сколько баллов, ставка и рекорд — всё, что нужно знать до спина
+    g.fillRect(0,0,DW,18, lerp(C_WAIT,BG,0.82));
+    g.drawFastHLine(0,18,DW,lerp(C_WAIT,BG,0.45));
+    txPx("АВТОМАТ", 8, 5, 1, lerp(CREAM,BG,0.05));
+    const head = `${sPts} Б  СТАВКА ${sBet}  РЕКОРД ${sRec}`;
+    txPx(head, DW-8-txPxW(head), 5, 1, lerp(CREAM,BG,0.3));
+
+    // три барабана
+    const bw = 56;
+    for(let i=0;i<3;i++){
+      const x = S_WX + i*(bw + S_GAP);
+      const base = Math.round(sPos[i]), frac = sPos[i] - base;
+      // символы вокруг текущего: сверху и снизу видно, что барабан крутится
+      const winT = S_WIN_Y - 1, winB = S_WIN_Y + S_ROW - 6;
+      for(let k=-1;k<=1;k++){
+        const y = S_WIN_Y + k*S_ROW - Math.round(frac*S_ROW);
+        slotSprite(base + k, x + 8, y + 4, 5, winT, winB);
+      }
+      // Подсвечиваем ТОЛЬКО барабаны, вошедшие в комбинацию: зелёная рамка у третьего,
+      // лишнего, читалась бы как «тройка», хотя выплата за пару.
+      const hot = shown && sWin > 0 && slotHot(i);
+      const col = hot ? (jackpot ? C_WORK : lerp(C_WORK,BG,0.35)) : lerp(C_WAIT,BG,0.5);
+      g.drawRect(x, S_WIN_Y-2, bw, S_ROW-4, col);
+      g.drawRect(x-1, S_WIN_Y-3, bw+2, S_ROW-2, lerp(col,BG,0.65));
+      dimRect(x+1, 24, bw-2, S_WIN_Y-27, 0.55);
+      dimRect(x+1, S_WIN_Y+S_ROW-7, bw-2, DH-46-(S_WIN_Y+S_ROW-7), 0.55);
+    }
+
+    // Что за что платят — прямо под барабанами: иначе правила знает только автор.
+    const pay = "ТРОЙКА x8   ПАРА x1.4";
+    txPx(pay, S_WX + ((3*bw + 2*S_GAP - txPxW(pay))>>1), S_WIN_Y + S_ROW + 4, 1,
+         lerp(CREAM,BG,0.55));
+
+    // Прогресс до следующего балла: видно, что работа капает, даже когда баллов нет.
+    const px0 = S_WX, pw = 3*bw + 2*S_GAP;
+    txPx("ДО БАЛЛА", px0, DH-30, 1, lerp(CREAM,BG,0.6));
+    g.drawRect(px0 + 56, DH-31, pw - 56, 9, lerp(CREAM,BG,0.72));
+    g.fillRect(px0 + 58, DH-29, Math.max(0, (((pw-60)*sPrg/100)|0)), 5, lerp(C_WAIT,BG,0.35));
+
+    slotOcto(tt, now, shown, jackpot);
+    slotStatus(now, shown, jackpot);
+    blit();
+    spi(DW*DH);
+  }
+
+  // Осьминог у автомата: тянет рычаг, пока барабаны крутятся, и радуется выигрышу.
+  function slotOcto(tt, now, shown, jackpot){
+    const spin = Math.min(1, sVel[0]/6);
+    const ox = 52, oy = S_WIN_Y + 22;
+    const wob = Math.sin(tt*(1.6+spin*9)) * (1 + spin*2.5);
+    const hy = oy + wob*0.5 - (jackpot ? 4 : 0);
+    tentacles(ox, hy, 17, 1, tt, 1.2+spin*4, 1+spin*2.5, 6, 9);
+    sphereBody(ox, hy, 17);
+    const eyY = hy - 5;
+    if(shown && sWin > 0){
+      g.drawFastHLine(ox-7, eyY, 5, PUPIL); g.drawFastHLine(ox+3, eyY, 5, PUPIL);
+      g.drawFastHLine(ox-3, eyY+7, 7, PUPIL);
+    } else if(shown){
+      g.drawFastHLine(ox-7, eyY, 5, PUPIL); g.drawFastHLine(ox+3, eyY, 5, PUPIL);
+      g.drawFastHLine(ox-3, eyY+8, 7, PUPIL);          // губы вниз: мимо
+      g.drawPixel(ox-4, eyY+7, PUPIL); g.drawPixel(ox+4, eyY+7, PUPIL);
+    } else {
+      drawEyes(ox, eyY, sState==="spinning"||sState==="landing" ? 0 : 2, tt, spin>0.4, {blink:3.9});
+    }
+    // рычаг справа от осьминога: тянется вниз, пока барабаны крутятся
+    const pull = (sState==="spinning"||sState==="landing") ? 12 : (sState==="charging" ? 6*spin : 0);
+    const lx = ox + 26;
+    g.drawFastVLine(lx, hy - 18, 22, lerp(CREAM,BG,0.6));
+    g.fillCircle(lx, hy - 18 + pull, 4, jackpot ? C_WORK : lerp(C_ERR,BG,0.25));
+    arm(ox+13, hy+2, lx, hy - 16 + pull, 5-spin*4, tt, 1.4+spin*5);
+  }
+
+  function slotStatus(now, shown, jackpot){
+    if(sWin === -1){
+      txPx("НЕ ХВАТАЕТ БАЛЛОВ — ИДИ РАБОТАЙ", 8, DH-12, 1, lerp(C_ERR,BG,0.15));
+      return;
+    }
+    if(shown){
+      const flash = (now - sShownAt) < 1200 && (((now - sShownAt)/130)|0)%2===0;
+      if(sWin > 0){
+        const t = jackpot ? `ТРОЙКА! +${sWin} БАЛЛОВ` : `ПАРА, +${sWin}`;
+        txPx(t, 8, DH-12, 1, flash ? 0xFFFF : C_WORK);
+      } else {
+        txPx(`МИМО, -${sBet}`, 8, DH-12, 1, lerp(CREAM,BG,0.35));
+      }
+      txPx("КРУТНИ ЕЩЁ", DW-8-txPxW("КРУТНИ ЕЩЁ"), DH-12, 1, lerp(CREAM,BG,0.62));
+      return;
+    }
+    if(sState === "spinning" || sState === "landing"){
+      txPx("КРУТИТСЯ...", 8, DH-12, 1, lerp(CREAM,BG,0.3));
+      return;
+    }
+    txPx("КРУТИ РУЧКУ ПОБОДРЕЕ", 8, DH-12, 1, lerp(CREAM,BG,0.45));
+  }
+
   // ==========================================================================
   // Экран 3: рулетка обеда
   // ==========================================================================
@@ -1833,6 +2067,7 @@
     markActivity(false);
     if(withKey){ setScreen(screenIdx+dir); return; }      // зажата кнопка — листаем экраны
     if(screenIdx===2){ roulKick(dir); return; }            // рулетка: подкрутить барабан
+    if(screenIdx===3){ slotKick(); return; }               // автомат: раскрутить барабаны
     if(screenIdx!==0) return;                             // вне аквариума листать нечего
     const pn=pageCount();
     page = (Math.min(page,pn-1) + dir + pn) % pn;
@@ -1926,7 +2161,8 @@
     if(sleeping) renderSleep(now);
     else if(screenIdx===0) renderAquarium(tt);
     else if(screenIdx===1) renderCoffee(tt);
-    else renderRoulette(tt);
+    else if(screenIdx===2) renderRoulette(tt);
+    else renderSlots(tt);
     meterTick(now, spiPx, screenBuf.px+octoBuf.px, spiWins);
     requestAnimationFrame(loop);
   }

@@ -1455,10 +1455,12 @@ def test_encoder_page_survives_shrinking_page_count(clock, liveness, sink):
 
 
 def test_encoder_key_switches_screen(bridge):
-    # экранов три: аквариум → кофейня → рулетка → аквариум
+    # экранов четыре: аквариум → кофейня → рулетка → автомат → аквариум
     assert bridge.handle_encoder("key") and bridge.screen == 1
     bridge.handle_encoder("key")
     assert bridge.screen == 2
+    bridge.handle_encoder("key")
+    assert bridge.screen == 3
     bridge.handle_encoder("key")
     assert bridge.screen == 0
 
@@ -2001,6 +2003,7 @@ def test_http_enc_endpoint_drives_screens_and_pages():
                                         "cwd": f"/w/p{i}"})
         assert enc("key")["screen"] == 1
         assert enc("key")["screen"] == 2
+        assert enc("key")["screen"] == 3
         r = enc("key")
         assert r["screen"] == 0 and r["pages"] == 2
         assert enc("cw")["page"] == 1
@@ -2158,16 +2161,6 @@ def test_roulette_spin_via_encoder_marks_dirty(tmp_path):
     assert 0 <= br.roul_win < 3
 
 
-def test_three_screens_cycle_through_roulette(tmp_path):
-    br = roulette_bridge(tmp_path)
-    assert b.Bridge.SCREENS == 3
-    seen = []
-    for _ in range(4):
-        br.handle_encoder("key")
-        seen.append(br.screen)
-    assert seen == [1, 2, 0, 1]
-
-
 def test_debug_exposes_roulette(tmp_path):
     br = roulette_bridge(tmp_path)
     br.spin_roulette()
@@ -2175,3 +2168,165 @@ def test_debug_exposes_roulette(tmp_path):
     assert dbg["places"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
     assert dbg["roulette_spins"] == 1
     assert dbg["roulette_win"] in dbg["places"]
+
+
+# ------------------------------------------------------ баллы и автомат на баллы
+# Баллы капают за минуты в WORKING и тратятся в автомате. Исход считает мост:
+# счёт — состояние, оно обязано переживать перезагрузку платы.
+
+def slot_bridge(tmp_path, clock=None, point_min=30, bet=5, seed=7):
+    clock = clock or FakeClock()
+    cfg = b.Config(max_sessions=6, point_min=point_min, slot_bet=bet,
+                   points_file=str(tmp_path / "points.json"))
+    return b.Bridge(cfg, sink=CollectingSink(), clock=clock, is_alive=FakeLiveness(),
+                    wall_clock=clock.wall, registry_probe=lambda: None,
+                    rng=random.Random(seed)), clock
+
+
+def test_points_accrue_only_while_working(tmp_path):
+    br, clock = slot_bridge(tmp_path, point_min=1)     # балл за минуту — быстрее в тесте
+    br.handle_event({"event": "start", "session_id": "s", "cwd": "/w/p"})
+    br.handle_event({"event": "idle", "session_id": "s"})
+    br._work_mark = clock()
+    clock.advance(120)
+    assert br.accrue_points() is False, "в IDLE баллы капать не должны"
+    assert br.points == 0
+
+    br.handle_event({"event": "working", "session_id": "s"})
+    br._work_mark = clock()
+    clock.advance(60)
+    assert br.accrue_points() is True
+    assert br.points == 1 and br.pts_earned == 1
+
+
+def test_points_ignore_long_gaps(tmp_path):
+    """Мост стоял или часы прыгнули — время не начисляем, иначе балл за простой."""
+    br, clock = slot_bridge(tmp_path, point_min=1)
+    br.handle_event({"event": "start", "session_id": "s", "cwd": "/w/p"})
+    br.handle_event({"event": "working", "session_id": "s"})
+    br._work_mark = clock()
+    clock.advance(3600)
+    assert br.accrue_points() is False
+    assert br.points == 0
+
+
+def test_points_survive_restart(tmp_path):
+    br, clock = slot_bridge(tmp_path, point_min=1)
+    br.handle_event({"event": "start", "session_id": "s", "cwd": "/w/p"})
+    br.handle_event({"event": "working", "session_id": "s"})
+    br._work_mark = clock()
+    clock.advance(180)
+    br.accrue_points()
+    assert br.points == 3
+
+    again, _ = slot_bridge(tmp_path)                   # «перезапуск» моста
+    again.load_points()
+    assert again.points == 3 and again.pts_earned == 3
+
+
+def test_points_file_broken_starts_from_zero(tmp_path):
+    (tmp_path / "points.json").write_text("{обрезано", encoding="utf-8")
+    br, _ = slot_bridge(tmp_path)
+    br.load_points()
+    assert br.points == 0, "битый файл счёта не должен валить мост"
+
+
+def test_slot_spin_deducts_bet_and_pays(tmp_path):
+    br, _ = slot_bridge(tmp_path, bet=5)
+    br.points = 100
+    br._points_loaded = True
+    assert br.spin_slot() is True
+    a, b_, c = br.slot_reels
+    if a == b_ == c:
+        expected = 100 - 5 + round(5 * b.SLOT_PAY_TRIPLE)
+    elif a == b_ or b_ == c or a == c:
+        expected = 100 - 5 + round(5 * b.SLOT_PAY_PAIR)
+    else:
+        expected = 95
+    assert br.points == expected
+    assert br.slot_sp == 1 and br.pts_spins == 1
+
+
+def test_slot_refuses_without_points(tmp_path):
+    br, _ = slot_bridge(tmp_path, bet=5)
+    br.points = 4
+    br._points_loaded = True
+    assert br.spin_slot() is False
+    assert br.points == 4, "ставка не должна списываться, если её не хватило"
+    assert br.slot_win == -1, "прошивке нужен признак «не хватило», а не тихий отказ"
+    assert br.slot_sp == 1, "номер спина всё равно меняется, иначе экран не обновится"
+
+
+def test_slot_payouts_cover_all_three_cases(tmp_path):
+    """Все три исхода должны встречаться и считаться по таблице."""
+    br, _ = slot_bridge(tmp_path, bet=5)
+    br._points_loaded = True
+    seen = set()
+    for _ in range(400):
+        br.points = 100
+        br.spin_slot()
+        a, b_, c = br.slot_reels
+        kind = "3" if a == b_ == c else ("2" if a == b_ or b_ == c or a == c else "0")
+        seen.add(kind)
+        if kind == "3":
+            assert br.slot_win == round(5 * b.SLOT_PAY_TRIPLE)
+        elif kind == "2":
+            assert br.slot_win == round(5 * b.SLOT_PAY_PAIR)
+        else:
+            assert br.slot_win == 0
+    assert seen == {"0", "2", "3"}, f"встретились не все исходы: {seen}"
+
+
+def test_slot_return_is_below_bet(tmp_path):
+    """Отдача должна быть меньше ставки: иначе баллы не кончаются и автомат не нужен."""
+    br, _ = slot_bridge(tmp_path, bet=5, seed=1)
+    br._points_loaded = True
+    spins, won = 3000, 0
+    for _ in range(spins):
+        br.points = 100
+        br.spin_slot()
+        won += br.slot_win
+    rtp = won / (spins * 5)
+    assert 0.7 < rtp < 0.95, f"отдача {rtp:.2f} вне разумного (ждали ~0.81)"
+
+
+def test_slot_best_win_is_a_record(tmp_path):
+    br, _ = slot_bridge(tmp_path, bet=5)
+    br._points_loaded = True
+    for _ in range(200):
+        br.points = 100
+        br.spin_slot()
+    assert br.pts_best == round(5 * b.SLOT_PAY_TRIPLE), "рекорд должен дойти до тройки"
+
+
+def test_slot_snapshot_shape(tmp_path):
+    br, _ = slot_bridge(tmp_path, bet=5)
+    br.points = 42
+    br._points_loaded = True
+    br.screen = 3
+    snap = br.build_snapshot()
+    assert snap["scr"] == 3
+    slot = snap["slot"]
+    assert slot["pts"] == 42 and slot["bet"] == 5
+    assert len(slot["r"]) == 3 and all(0 <= i < b.SLOT_SYMS for i in slot["r"])
+    assert 0 <= slot["prg"] <= 99
+    assert len(br.snapshot_line().encode("utf-8")) < 1024
+
+
+def test_four_screens_cycle(tmp_path):
+    br, _ = slot_bridge(tmp_path)
+    assert b.Bridge.SCREENS == 4
+    seen = []
+    for _ in range(5):
+        br.handle_encoder("key")
+        seen.append(br.screen)
+    assert seen == [1, 2, 3, 0, 1]
+
+
+def test_slot_event_from_firmware_spins(tmp_path):
+    br, _ = slot_bridge(tmp_path, bet=5)
+    br.points = 50
+    br._points_loaded = True
+    br.screen = 3
+    assert br.handle_encoder("slot") is True
+    assert br.slot_sp == 1 and br.points != 50
