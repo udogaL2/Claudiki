@@ -1127,7 +1127,7 @@
   let sPts = 37, sBet = 5, sRec = 64, sPrg = 62;   // так это выглядит с моста
   let sPos = [0, 0, 0], sVel = [0, 0, 0], sTarget = [-1, -1, -1];
   let sLanding = [false,false,false], sLanded = [false,false,false];
-  let sLandFrom = [0,0,0], sLandDist = [0,0,0], sLandT0 = [0,0,0], sLandDur = [0,0,0];
+  let sLandA = [0,0,0], sLandEnd = [0,0,0];
   let sState = "idle";                    // idle | charging | spinning | landing | shown | refused
   let sWin = 0, sShownAt = 0, sLastTick = 0, sSpins = 0, sRefusedAt = 0, sLev = 0;
 
@@ -1187,22 +1187,31 @@
     const fr = (sState === "charging") ? S_FRICTION : S_SPIN_FRICTION;
     let allStopped = true;
     for(let i=0;i<3;i++){
-      const myFr = fr * (1 - i*0.16);     // следующий барабан тормозит позже
-      sVel[i] = Math.max(0, sVel[i] - myFr*dt);
-      sPos[i] += sVel[i]*dt;
+      if(!sLanding[i]){                   // на доводке трение своё, подогнанное
+        const myFr = fr * (1 - i*0.16);   // следующий барабан тормозит позже
+        sVel[i] = Math.max(0, sVel[i] - myFr*dt);
+        sPos[i] += sVel[i]*dt;
+      }
       // Доводка по ВРЕМЕНИ. Признак «уже приехал» обязателен: без него условие
       // начала доводки срабатывало сразу после её конца, и барабан бесконечно
       // уезжал ещё на символ каждые полсекунды.
-      if(sState !== "charging" && sTarget[i] >= 0 && !sLanding[i] && !sLanded[i] && sVel[i] < 3){
-        sLanding[i] = true; sLandFrom[i] = sPos[i]; sLandT0[i] = now;
+      if(sState !== "charging" && sTarget[i] >= 0 && !sLanding[i] && !sLanded[i] && sVel[i] < 6){
         const n = sN();
-        sLandDist[i] = ((sTarget[i] - sPos[i]) % n + n) % n + 1;
-        sLandDur[i] = 420 + i*140;                    // остановка слева направо
+        const d = ((sTarget[i] - sPos[i]) % n + n) % n;
+        const aBase = S_SPIN_FRICTION * (1 - i*0.16);
+        const natural = sVel[i]*sVel[i] / (2*aBase);
+        const k = Math.max(i, Math.round((natural - d) / n));   // каждому следующему +оборот
+        const D = d + k*n;
+        const vNeed = Math.sqrt(2*aBase*D);
+        if(sVel[i] < vNeed) sVel[i] = vNeed;
+        sLandA[i] = sVel[i]*sVel[i] / (2*D);
+        sLandEnd[i] = sPos[i] + D;
+        sLanding[i] = true;
       }
       if(sLanding[i]){
-        const t = (now - sLandT0[i]) / sLandDur[i];
-        if(t >= 1){ sPos[i] = sTarget[i]; sVel[i] = 0; sLanding[i] = false; sLanded[i] = true; }
-        else { sPos[i] = sLandFrom[i] + sLandDist[i] * (1 - Math.pow(1-t, 3)); sVel[i] = 0.01; }
+        sVel[i] -= sLandA[i]*dt;
+        if(sVel[i] <= 0){ sPos[i] = sTarget[i]; sVel[i] = 0; sLanding[i] = false; sLanded[i] = true; }
+        else sPos[i] = sLandEnd[i] - sVel[i]*sVel[i] / (2*sLandA[i]);
       }
       if(sVel[i] > 0 || sLanding[i]) allStopped = false;
       sPos[i] = ((sPos[i] % sN()) + sN()) % sN();
@@ -1440,7 +1449,7 @@
   let rPlaces = ["КАЙЗЕРВЮРСТ", "ФЬЮЖН ЭКСПРЕСС", "ПЕЛЬМЕННАЯ",
                  "НАПОЛИ", "СКАЗКА", "РОСТИКС"];
   let rPos = 0, rVel = 0, rWin = -1, rWonAt = 0, rLastTick = 0;
-  let rLanding = false, rLandFrom = 0, rLandDist = 0, rLandT0 = 0;
+  let rLanding = false, rLandA = 0, rLandEnd = 0;
   let rState = "idle";                    // idle | charging | spinning | landing | won
 
   const rN = () => Math.max(1, rPlaces.length);
@@ -1478,8 +1487,10 @@
     rLastTick = now;
     if(rState==="idle" || rState==="won"){ rVel = 0; return; }
 
-    rVel = Math.max(0, rVel - (rState==="charging" ? R_FRICTION : R_SPIN_FRICTION)*dt);
-    rPos += rVel * dt;
+    if(!rLanding){                          // на доводке трение своё, подогнанное
+      rVel = Math.max(0, rVel - (rState==="charging" ? R_FRICTION : R_SPIN_FRICTION)*dt);
+      rPos += rVel * dt;
+    }
     if(rState==="charging" && rVel===0) rState = "idle";
     if(rState==="spinning" && rWin>=0 && rVel < R_SPIN_MIN*1.6) rState = "landing";
     if(rState==="landing"){

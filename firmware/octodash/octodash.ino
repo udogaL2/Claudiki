@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   61  // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   62  // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1120,8 +1120,7 @@ float roulPos = 0, roulVel = 0;
 // Доводка ограничена по времени — та же причина, что в автомате: скорость,
 // пропорциональная остатку, с полом 0.12 строки/с превращала хвост в ползание.
 bool  roulLanding = false;
-float roulLandFrom = 0, roulLandDist = 0;
-unsigned long roulLandT0 = 0;
+float roulLandA = 0, roulLandEnd = 0;   // трение и конец пути на доводке
 RoulState roulState = R_IDLE;
 unsigned long roulWonAt = 0, roulLastPhys = 0;
 bool roulDirty = true;      // состав сменился — нужна полная перерисовка экрана
@@ -1158,13 +1157,15 @@ void roulPhysics(unsigned long now) {
     return;
   }
 
-  roulVel -= (roulState == R_CHARGE ? R_FRICTION : R_SPIN_FRICTION) * dt;
-  if (roulVel < 0) roulVel = 0;
-  roulPos += roulVel * dt;
+  if (!roulLanding) {                       // на доводке трение своё, подогнанное
+    roulVel -= (roulState == R_CHARGE ? R_FRICTION : R_SPIN_FRICTION) * dt;
+    if (roulVel < 0) roulVel = 0;
+    roulPos += roulVel * dt;
+  }
 
   if (roulState == R_CHARGE && roulVel == 0) roulState = R_IDLE;
   // ответ моста пришёл — переходим к доводке
-  if (roulState == R_SPIN && roulWin >= 0 && roulSp != roulSeenSp && roulVel < R_SPIN_MIN * 1.6f) {
+  if (roulState == R_SPIN && roulWin >= 0 && roulSp != roulSeenSp && roulVel < 6.0f) {
     roulSeenSp = roulSp;
     roulState = R_LAND;
   }
@@ -1174,20 +1175,27 @@ void roulPhysics(unsigned long now) {
     // остатку, давала ползание на секунду с лишним в самом конце.
     int n = roulCount();
     if (!roulLanding) {
-      roulLanding = true;
-      roulLandFrom = roulPos;
+      // Путь = остаток до цели плюс столько кругов, чтобы он совпал с естественным
+      // тормозным путём. Тогда подогнанное трение почти равно обычному и переход
+      // не виден: ни скачка скорости, ни обрыва в конце.
       float d = fmodf(fmodf((float)roulWin - roulPos, (float)n) + n, (float)n);
-      roulLandDist = d + 1.0f;              // ещё одно место, чтобы не встать резко
-      roulLandT0 = now;
+      float natural = roulVel * roulVel / (2 * R_SPIN_FRICTION);
+      int k = (int)((natural - d) / n + 0.5f);
+      if (k < 0) k = 0;
+      float D = d + k * (float)n;
+      float vNeed = sqrtf(2 * R_SPIN_FRICTION * D);
+      if (roulVel < vNeed) roulVel = vNeed;
+      roulLandA = roulVel * roulVel / (2 * D);
+      roulLandEnd = roulPos + D;
+      roulLanding = true;
     }
-    float t = (float)(now - roulLandT0) / 520.0f;
-    if (t >= 1) {
+    roulVel -= roulLandA * dt;
+    if (roulVel <= 0) {
       roulPos = roulWin; roulVel = 0; roulLanding = false;
       roulState = R_WON; roulWonAt = now;
     } else {
-      float e = 1 - (1 - t) * (1 - t) * (1 - t);
-      roulPos = roulLandFrom + roulLandDist * e;
-      roulVel = 0.01f;                       // «ещё крутится» для крупье и штрихов
+      // положение из остатка скорости: приезд точен, доснапа нет
+      roulPos = roulLandEnd - roulVel * roulVel / (2 * roulLandA);
     }
   }
   int n = roulCount();
@@ -1422,18 +1430,24 @@ int   slotTarget[3] = {-1, -1, -1};
 int   slotWin = 0;
 int   slotSp = 0, slotSeenSp = 0;
 float slotPos[3] = {0, 0, 0}, slotVel[3] = {0, 0, 0};
-// Доводка ОГРАНИЧЕНА ПО ВРЕМЕНИ. Раньше скорость задавалась пропорционально остатку
-// с полом 0.12 строки/с, и хвост превращался в ползание на секунду с лишним — особенно
-// у третьего барабана, у которого трение меньше. Теперь: остаток проходится за
-// фиксированный срок с кубическим замедлением, поэтому «прилёт» всегда одинаково
-// короткий и мягкий.
+// Доводка — ПОДОГНАННОЕ ТРЕНИЕ, а не отдельная кривая. Две попытки до этого были
+// неверны: скорость пропорционально остатку с полом давала ползание на секунду, а
+// сглаживание по времени начиналось со скачка скорости (барабан шёл 3 строки/с, а
+// кривая стартовала с 9) — это и читалось как телепорт и резкий обрыв.
+// Теперь: зная скорость и остаток, считаем трение, при котором барабан встанет РОВНО
+// на цель. Дальше он просто едет по физике: замедление постоянное, скорость приходит
+// в ноль точно на символе, передачи управления нет вообще.
 bool  slotLanding[3] = {false, false, false};
 // Отдельный признак «уже приехал»: без него условие начала доводки срабатывало
 // снова сразу после её конца, и барабан бесконечно уезжал ещё на символ каждые
 // полсекунды — на экране это выглядело как «крутится и не встаёт».
 bool  slotLanded[3] = {false, false, false};
-float slotLandFrom[3], slotLandDist[3];
-unsigned long slotLandT0[3], slotLandDur[3];
+float slotLandA[3];            // подогнанное трение на доводке
+// Конец пути в НЕПРЕРЫВНЫХ координатах: положение на доводке считается из остатка
+// скорости (pos = end - v²/2a), а не накапливается шагами. Так барабан приезжает
+// математически точно, и финального «доснапа» на символ не существует — именно он
+// читался как смена без анимации.
+float slotLandEnd[3];
 SlotState slotState = S_IDLE;
 unsigned long slotShownAt = 0, slotRefusedAt = 0, slotLastPhys = 0;
 float slotLev = 0;          // угол рычага 0..1, ходит плавно
@@ -1496,29 +1510,38 @@ void slotPhysics(unsigned long now) {
   float fr = (slotState == S_CHARGE) ? S_FRICTION : S_SPIN_FRICTION;
   bool allStopped = true;
   for (int i = 0; i < 3; i++) {
-    float myFr = fr * (1 - i * 0.16f);        // следующий барабан тормозит позже
-    slotVel[i] -= myFr * dt;
-    if (slotVel[i] < 0) slotVel[i] = 0;
-    slotPos[i] += slotVel[i] * dt;
+    if (!slotLanding[i]) {                    // на доводке трение своё, подогнанное
+      float myFr = fr * (1 - i * 0.16f);      // следующий барабан тормозит позже
+      slotVel[i] -= myFr * dt;
+      if (slotVel[i] < 0) slotVel[i] = 0;
+      slotPos[i] += slotVel[i] * dt;
+    }
     if (slotState != S_CHARGE && slotTarget[i] >= 0 && !slotLanding[i] && !slotLanded[i]
-        && slotVel[i] < 3.0f) {
-      slotLanding[i] = true;                     // начинаем доводку по времени
-      slotLandFrom[i] = slotPos[i];
+        && slotVel[i] < 6.0f) {
+      // Остаток до цели плюс столько оборотов, чтобы путь совпал с естественным
+      // тормозным путём: тогда подогнанное трение почти не отличается от обычного,
+      // и переход незаметен. Каждому следующему барабану — на оборот больше, отсюда
+      // остановка слева направо.
       float d = fmodf(fmodf((float)slotTarget[i] - slotPos[i], (float)SLOT_SYMS) + SLOT_SYMS,
                       (float)SLOT_SYMS);
-      slotLandDist[i] = d + 1.0f;                // ещё один символ, чтобы не встать резко
-      slotLandT0[i] = now;
-      slotLandDur[i] = 420 + i * 140;            // разное время — остановка слева направо
+      float aBase = S_SPIN_FRICTION * (1 - i * 0.16f);
+      float natural = slotVel[i] * slotVel[i] / (2 * aBase);
+      int k = (int)((natural - d) / SLOT_SYMS + 0.5f);
+      if (k < i) k = i;
+      float D = d + k * (float)SLOT_SYMS;
+      float vNeed = sqrtf(2 * aBase * D);
+      if (slotVel[i] < vNeed) slotVel[i] = vNeed;     // ответ пришёл поздно — подтолкнуть
+      slotLandA[i] = slotVel[i] * slotVel[i] / (2 * D);
+      slotLandEnd[i] = slotPos[i] + D;
+      slotLanding[i] = true;
     }
     if (slotLanding[i]) {
-      float t = (float)(now - slotLandT0[i]) / slotLandDur[i];
-      if (t >= 1) {
+      slotVel[i] -= slotLandA[i] * dt;                // едем по физике до нуля
+      if (slotVel[i] <= 0) {
         slotPos[i] = slotTarget[i]; slotVel[i] = 0;
         slotLanding[i] = false; slotLanded[i] = true;
       } else {
-        float e = 1 - (1 - t) * (1 - t) * (1 - t);         // кубическое замедление
-        slotPos[i] = slotLandFrom[i] + slotLandDist[i] * e;
-        slotVel[i] = 0.01f;                                // «ещё крутится» для рычага
+        slotPos[i] = slotLandEnd[i] - slotVel[i] * slotVel[i] / (2 * slotLandA[i]);
       }
     }
     if (slotVel[i] > 0 || slotLanding[i]) allStopped = false;
