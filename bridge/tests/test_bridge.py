@@ -2297,7 +2297,23 @@ def test_slot_return_matches_payout_table(tmp_path):
         won += br.slot_win
     rtp = won / (spins * 5)
     assert abs(rtp - want) < 0.12, f"отдача {rtp:.2f}, а таблица обещает {want:.2f}"
-    assert want > 1.0, "выплаты снова ниже ставки — игрок будет только терять"
+    assert 0.95 <= want <= 1.02, f"отдача {want:.3f} — целимся в матожидание около нуля"
+
+    # Матожидание считаем ТОЧНО, перебором всех исходов и с целочисленным округлением
+    # выплат: аналитика выше округления не видит, а игрок получает целые баллы.
+    bet, n = 5, b.SLOT_SYMS
+    ev = 0
+    for a in range(n):
+        for c in range(n):
+            for d in range(n):
+                if a == c == d:
+                    ev += int(round(bet * b.SLOT_PAY_TRIPLE)) - bet
+                elif a == c or c == d or a == d:
+                    ev += int(round(bet * b.SLOT_PAY_PAIR)) - bet
+                else:
+                    ev -= bet
+    ev /= n ** 3
+    assert -0.2 <= ev <= 0.05, f"матожидание {ev:+.3f} балла за спин при ставке {bet}"
 
 
 def test_slot_best_win_is_a_record(tmp_path):

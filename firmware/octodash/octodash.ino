@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   70 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   74 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -578,6 +578,10 @@ volatile uint8_t encPrev  = 0;
 void IRAM_ATTR encISR() {
   static const int8_t TBL[16] = {0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0};
   encPrev = ((encPrev << 2) | (digitalRead(ENC_A) << 1) | digitalRead(ENC_B)) & 0x0f;
+  // Просто копим. Сбрасывать накопитель прямо здесь при смене знака нельзя: на
+  // быстром вращении отдельные переходы приходят с «неправильным» знаком (дребезг,
+  // пропущенная фаза), и такой сброс съедал уже накопленное — щелчки терялись тем
+  // чаще, чем резче крутишь. Залежавшийся хвост снимается по паузе, см. pollEncoder.
   encDelta += TBL[encPrev];
 }
 
@@ -618,6 +622,22 @@ void pollEncoder() {
   d = encDelta;
   if (d >= 4 || d <= -4) encDelta = d % 4; else d = 0;
   interrupts();
+
+  // Залежавшийся хвост выбрасываем по паузе. Между жестами в накопителе остаётся
+  // 1-3 перехода (недокрученный щелчок, дребезг, вал между фиксациями). Пока крутят,
+  // он безобиден — досчитается в следующий щелчок. А при развороте его приходилось
+  // «выкручивать» обратно, и первый щелчок в новую сторону пропадал. Порог 300мс:
+  // длиннее любого промежутка внутри живого вращения и короче осознанной паузы перед
+  // сменой направления. Чистим только остаток (<4), накопленный щелчок не трогаем.
+  static int8_t encSeen = 0;
+  static unsigned long encSeenAt = 0;
+  int8_t rest;
+  noInterrupts(); rest = encDelta; interrupts();
+  if (rest != encSeen) { encSeen = rest; encSeenAt = millis(); }
+  else if (rest != 0 && millis() - encSeenAt > 300) {
+    noInterrupts(); encDelta -= rest; interrupts();   // вычитаем ровно то, что видели
+    encSeen = 0;
+  }
   if (d >= 4 || d <= -4) {
     // Знак ЗАВИСИТ ОТ ПАЙКИ: какой канал энкодера попал на D1, а какой на D2. У нашей
     // сборки вышло наоборот — вращение вправо давало «ccw», и экраны листались назад.
@@ -1445,6 +1465,11 @@ enum SlotState { S_IDLE, S_CHARGE, S_SPINNING, S_LANDING, S_SHOWN, S_REFUSED };
 
 int   slotPts = 0, slotBet = 5, slotRec = 0, slotPrg = 0;
 int   slotEta = -1;                   // минут реального времени до балла, −1 = никто не работает
+// Что ПОКАЗАНО в шапке. Отдельно от slotPts/slotRec намеренно: мост считает исход
+// сразу и присылает новый счёт, пока барабаны ещё крутятся, — и результат читался в
+// шапке раньше, чем на барабанах. Во время вращения показ заморожен на «ставка снята»,
+// настоящее значение проявляется в момент остановки.
+int   slotPtsView = 0, slotRecView = 0;
 int   slotTarget[3] = {-1, -1, -1};
 int   slotWin = 0;
 int   slotSp = 0, slotSeenSp = 0;
@@ -1506,6 +1531,11 @@ void slotKick() {
   slotVel[0] += S_KICK;
   if (slotVel[0] >= S_SPIN_MIN && slotState != S_SPINNING) {
     slotState = S_SPINNING;
+    // Ставку списываем в показе сразу — она и правда уплачена, — а выигрыш ждёт
+    // остановки барабанов. Иначе шапка объявляет исход раньше барабанов.
+    slotPtsView = slotPts - slotBet;
+    if (slotPtsView < 0) slotPtsView = 0;
+    slotDirty = true;
     for (int i = 0; i < 3; i++) slotVel[i] = S_LAUNCH_V + i * 0.8f;
     Serial.println(F("{\"enc\":\"slot\"}"));
   } else if (slotState != S_SPINNING) {
@@ -1588,6 +1618,8 @@ void slotPhysics(unsigned long now) {
   if (slotState == S_LANDING && allStopped) {
     slotState = S_SHOWN;
     slotShownAt = now;
+    slotPtsView = slotPts;                     // вот теперь исход можно объявлять
+    slotRecView = slotRec;
     slotDirty = true;                          // результат меняет шапку и рамки
   }
 }
@@ -1736,11 +1768,11 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
     g.drawFastHLine(0, 18, W, lerp565(BRASS_HI, BG, 0.4f));
     drawTextRu(g, 8, 5, "АВТОМАТ", lerp565(CREAMC, BG, 0.05f), 1);
     char head[48];
-    snprintf(head, sizeof(head), "%d Б  СТАВКА %d  РЕКОРД %d", slotPts, slotBet, slotRec);
+    snprintf(head, sizeof(head), "%d Б  СТАВКА %d  РЕКОРД %d", slotPtsView, slotBet, slotRecView);
     // Не хватает на спин — счёт горит красным РОВНО, без мигания: шапку не обновляет
     // ни одна покадровая полоса, и «мигание» тут застывало бы в случайной фазе —
     // то ярким, то тусклым до следующей полной перерисовки. Цвета достаточно.
-    bool low = slotPts < slotBet;
+    bool low = slotPtsView < slotBet;      // краснеет то, что показано, а не то, что уже насчитал мост
     uint16_t hc = low ? C_ERROR : lerp565(CREAMC, BG, 0.25f);
     drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, hc, 1);
   }
@@ -1782,7 +1814,7 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
       g.drawFastVLine(S_WX + 3 * S_BW + 2 * S_GAP + 5 - t, plY - t, 2 * t + 1, plCol);
     }
 
-    const char *pay = "ТРОЙКА x15   ПАРА x1.6";
+    const char *pay = "ТРОЙКА x15   ПАРА x1.4";
     drawTextRu(g, S_CAB_X + ((S_CAB_W - textWidthRu(pay, 1)) >> 1), S_WIN_Y + S_ROW + 6, pay,
                lerp565(BRASS_HI, BG, 0.5f), 1);
 
@@ -2507,8 +2539,14 @@ void handleLine(const char *line) {
       int eta = sl["eta"] | -1;
       // eta в diff намеренно: надпись меняется редко, но если её не считать
       // изменением, она застрянет до ближайшей перерисовки по другой причине.
-      if (pts != slotPts || bet != slotBet || rec != slotRec || eta != slotEta) slotDirty = true;
+      if (bet != slotBet || eta != slotEta) slotDirty = true;
       slotPts = pts; slotBet = bet; slotRec = rec; slotPrg = prg; slotEta = eta;
+      // Счёт и рекорд обновляем в показе только когда барабаны стоят: иначе ответ
+      // моста (он приходит через доли секунды после раскрутки) выдаёт исход заранее.
+      if (slotState != S_SPINNING && slotState != S_LANDING) {
+        if (pts != slotPtsView || rec != slotRecView) slotDirty = true;
+        slotPtsView = pts; slotRecView = rec;
+      }
       int sp = sl["sp"] | 0, win = sl["win"] | 0;
       if (sp != slotSp) {                  // новый ответ на нашу раскрутку
         slotSp = sp;
