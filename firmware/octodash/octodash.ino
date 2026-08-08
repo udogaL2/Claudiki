@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   82 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   84 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -75,6 +75,11 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 #define FISH_D    0xB9A3
 #define CRAB_B    0xE28B
 #define CRAB_D    0x9146
+#define JELLY_B   0xF71F   // медуза: розовато-белый купол
+#define JELLY_D   0xB416   //         и сиреневые щупальца
+#define FRY_C     0xEF40   // мальки: золотистые точки
+#define STAR_B    0xFB60   // морская звезда
+#define STAR_D    0xC260
 #define BUBBLE    0x7DFB
 #define CREAMC    0xE73C
 #define COFFEEC   0x9B26
@@ -386,6 +391,8 @@ bool popupDrawn = false;
 // они ничего не сообщают и никаких решений не принимают, гонять их через мост
 // было бы шумом ради шума.
 unsigned long evFishUntil = 0, evBubUntil = 0, evCrabUntil = 0, evNext = 0;
+unsigned long evJellyUntil = 0, evFryUntil = 0, evStarUntil = 0;
+int evJellyCell = -1, evFryCell = -1, evStarCell = -1;
 int evFishCell = -1, evCrabCell = -1;
 
 // --- serial ------------------------------------------------------------------
@@ -876,6 +883,49 @@ void drawBubbles(Adafruit_GFX &g, int cx, int hy, float p, uint32_t seed) {
   }
 }
 
+// Гости карточки. Все рисуются по прогрессу p (0..1) и времени now — своего состояния
+// не держат: карточка перерисовывается полосами, и любая память здесь размножилась бы
+// на число полос (см. tools/check-draw-purity.js).
+
+// Медуза: всплывает со дна, купол пульсирует, щупальца тянутся следом.
+void drawJelly(Adafruit_GFX &g, int cx, int hy, float p, unsigned long now) {
+  int x = cx - 16 + iround(fastSin(p * 6.2832f) * 5);   // сносит течением
+  int y = hy + 38 - iround(p * 74);                     // снизу вверх
+  int pulse = ((now / 260) & 1);                        // сжался/раскрылся
+  int w = 5 + pulse;
+  g.fillRect(x - w, y - 1, 2 * w + 1, 3, JELLY_B);
+  g.drawFastHLine(x - w + 1, y - 2, 2 * w - 1, JELLY_B);
+  g.drawPixel(x - 2, y - 1, 0xFFFF);                    // блик на куполе
+  for (int i = -2; i <= 2; i++) {                       // щупальца разной длины
+    int len = 4 + ((now / 180 + i) & 1) + (pulse ? 0 : 1);
+    g.drawFastVLine(x + i * 2, y + 2, len, JELLY_D);
+  }
+}
+
+// Косяк мальков: проносится через карточку плотной стайкой.
+void drawFry(Adafruit_GFX &g, int cx, int hy, float p, unsigned long now) {
+  for (int i = 0; i < 7; i++) {
+    int lag = (i % 4) * 5 + (i / 4) * 3;                // хвост стайки отстаёт
+    int x = cx - 40 + iround(p * 88) - lag;
+    int y = hy - 12 + (i / 4) * 8 + iround(fastSin(p * 12.6f + i) * 3);
+    g.drawFastHLine(x - 1, y, 2, FRY_C);
+    if ((now / 150 + i) & 1) g.drawPixel(x - 2, y, FRY_C);   // хвостик мелькает
+  }
+}
+
+// Морская звезда: медленно ползёт по дну, лучи чуть шевелятся.
+void drawStar(Adafruit_GFX &g, int cx, int hy, float p, unsigned long now) {
+  int x = cx + 34 - iround(p * 70), y = hy + 34;
+  int wig = ((now / 300) & 1);
+  g.fillRect(x - 1, y - 1, 3, 3, STAR_B);               // тело
+  g.drawFastVLine(x, y - 4 + wig, 3, STAR_B);           // верхний луч
+  g.drawFastHLine(x - 4, y - 1 + wig, 3, STAR_B);       // левый верхний
+  g.drawFastHLine(x + 2, y - 1 - wig, 3, STAR_B);       // правый верхний
+  g.drawPixel(x - 3 + wig, y + 2, STAR_D);              // нижние — тенью, они на дне
+  g.drawPixel(x + 3 - wig, y + 2, STAR_D);
+  g.drawPixel(x, y, 0xFFFF);
+}
+
 void drawCrab(Adafruit_GFX &g, int cx, int hy, float p, unsigned long now) {
   int x = cx - 38 + iround(p * 76), base = hy + 36;
   g.fillRect(x - 3, base - 4, 7, 4, CRAB_B);
@@ -886,6 +936,27 @@ void drawCrab(Adafruit_GFX &g, int cx, int hy, float p, unsigned long now) {
   int step = ((now / 120) & 1);
   g.drawPixel(x - 3, base + step, CRAB_D);
   g.drawPixel(x + 3, base + 1 - step, CRAB_D);
+}
+
+// Единственное место, где гости попадают на карточку. Раньше этот блок жил только в
+// живой анимации, и при полной перерисовке (а её вызывает любой заметный снэпшот)
+// гость пропадал на полуслове; в снимок экрана он не попадал вовсе, то есть проверить
+// его было нечем. Два пути отрисовки в этом проекте уже стоили дня работы — здесь
+// путь один, и зовут его обе стороны.
+void drawGuests(Adafruit_GFX &g, int cx, int cy, int idx, uint32_t seed) {
+  unsigned long now = millis();
+  if (evFishUntil > now && evFishCell == idx)
+    drawFish(g, cx, cy, 1 - (evFishUntil - now) / 6500.0f, now);
+  if (evCrabUntil > now && evCrabCell == idx)
+    drawCrab(g, cx, cy, 1 - (evCrabUntil - now) / 9000.0f, now);
+  if (evJellyUntil > now && evJellyCell == idx)
+    drawJelly(g, cx, cy, 1 - (evJellyUntil - now) / 11000.0f, now);
+  if (evFryUntil > now && evFryCell == idx)
+    drawFry(g, cx, cy, 1 - (evFryUntil - now) / 4500.0f, now);
+  if (evStarUntil > now && evStarCell == idx)
+    drawStar(g, cx, cy, 1 - (evStarUntil - now) / 14000.0f, now);
+  if (evBubUntil > now)
+    drawBubbles(g, cx, cy, 1 - (evBubUntil - now) / 4000.0f, seed);
 }
 
 // =============================================================================
@@ -1090,14 +1161,7 @@ void updateOctopusArea(int col, int row, Session &s, float tt) {
   octoBuf.fillScreen(BG);
   drawOctopus(octoBuf, LCX, LCY, s, tt);
 
-  int idx = row * COLS + col;
-  unsigned long now = millis();
-  if (evFishUntil > now && evFishCell == idx)
-    drawFish(octoBuf, LCX, LCY, 1 - (evFishUntil - now) / 6500.0f, now);
-  if (evCrabUntil > now && evCrabCell == idx)
-    drawCrab(octoBuf, LCX, LCY, 1 - (evCrabUntil - now) / 9000.0f, now);
-  if (evBubUntil > now)
-    drawBubbles(octoBuf, LCX, LCY, 1 - (evBubUntil - now) / 4000.0f, s.seed);
+  drawGuests(octoBuf, LCX, LCY, row * COLS + col, s.seed);
 
 #if ESP_DIAG
   unsigned long d1 = micros();
@@ -2488,6 +2552,7 @@ void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right
       // оставалось мусором у имени карточки
       g.clipTo(wx, wy, wx + BUF_W - 1, wy + OCTO_H - 1);
       drawOctopus(g, cx, cy, sessions[i], tt + i * 0.4f);
+      drawGuests(g, cx, cy, i, sessions[i].seed);
       g.clipOff();
       usOcto += micros() - to;
       nOcto++;
@@ -2603,6 +2668,9 @@ void handleLine(const char *line) {
     if (strcmp(cmd, "teloff") == 0) telOn = false;
     if (strcmp(cmd, "encon") == 0)  kickLog = true;
     if (strcmp(cmd, "encoff") == 0) kickLog = false;
+    // Вызвать гостя немедленно: сами по себе они приходят раз в 2-5 минут, и
+    // проверять их появление вслепую было бы дороже, чем сама правка.
+    if (strcmp(cmd, "evt") == 0) evNext = 0;
     // Щелчок ручки «руками моста»: единственный способ проверить физику барабана
     // без человека у энкодера.
     if (strcmp(cmd, "kick") == 0) {
@@ -2966,10 +3034,16 @@ void loop() {
       int pick = random(live), cell = -1;
       for (int i = 0, k = 0; i < MAX_SESSIONS; i++)
         if (sessions[i].active && k++ == pick) { cell = i; break; }
-      switch (random(3)) {
-        case 0: evFishCell = cell; evFishUntil = now + 6500; break;
-        case 1: evBubUntil = now + 4000; break;
-        default: evCrabCell = cell; evCrabUntil = now + 9000; break;
+      // Длительность у каждого своя и заметно разная: медуза всплывает долго,
+      // мальки проносятся, звезда ползёт. Одинаковый тайминг делал гостей похожими
+      // друг на друга, хотя рисуются они по-разному.
+      switch (random(6)) {
+        case 0: evFishCell  = cell; evFishUntil  = now + 6500;  break;
+        case 1: evBubUntil  = now + 4000;                       break;
+        case 2: evJellyCell = cell; evJellyUntil = now + 11000; break;
+        case 3: evFryCell   = cell; evFryUntil   = now + 4500;  break;
+        case 4: evStarCell  = cell; evStarUntil  = now + 14000; break;
+        default: evCrabCell = cell; evCrabUntil  = now + 9000;  break;
       }
     }
   }
