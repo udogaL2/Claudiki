@@ -1288,6 +1288,11 @@ class Bridge:
         except (ValueError, TypeError):
             return False
         kind = d.get("esp")
+        if kind in ("enc", "kick"):
+            # Диагностика ручки: включается командой (encon) и потому логируется
+            # всегда — иначе включил и не увидел. Это и есть весь смысл канала.
+            self.log.info("ручка: %s", json.dumps(d, ensure_ascii=False))
+            return True
         if kind not in ("boot", "life"):
             return False
         now_ms = int(self._wall() * 1000)

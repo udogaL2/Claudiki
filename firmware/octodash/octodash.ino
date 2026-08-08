@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   78 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   81 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -402,6 +402,10 @@ uint16_t diagSnaps = 0, diagBadJson = 0, diagCells = 0;
 // замера. В проде она стоила три строки на кадр (~60 строк в секунду) и печаталась
 // прямо внутри кадра — за сутки это лишняя нагрузка на порт без единого читателя.
 bool telOn = false;
+// Лог ручки: по щелчку и по каждому подталкиванию барабана. Нужен, чтобы понять, где
+// теряется плавность разгона — в приходе щелчков или в физике. Тоже по команде моста
+// (`encon`), потому что на резкой крутке это десятки строк в секунду.
+bool kickLog = false;
 
 // --- прототипы (Arduino их генерит сам, но с явными надёжнее) ----------------
 void buildSphere(int night);
@@ -649,6 +653,19 @@ void pollEncoder() {
     // Инвертируем здесь, у источника, чтобы «вправо = вперёд» было верно везде:
     // и для экранов с зажатой кнопкой, и для страниц аквариума.
     int steps = -d / 4;
+    if (kickLog) {
+      // Сколько щелчков пришло ЗА ОДИН опрос и когда: если их прилетает пачкой раз в
+      // кадр, разгон рваный не из-за физики, а из-за того, что ручка опрашивается
+      // с частотой кадра.
+      static unsigned long encPrevMs = 0;
+      unsigned long ms = millis();
+      Serial.print(F("{\"esp\":\"enc\",\"ms\":"));   Serial.print(ms);
+      Serial.print(F(",\"dt\":"));                   Serial.print(encPrevMs ? ms - encPrevMs : 0);
+      Serial.print(F(",\"steps\":"));                Serial.print(steps);
+      Serial.print(F(",\"scr\":"));                  Serial.print(curScreen);
+      Serial.println(F("}"));
+      encPrevMs = ms;
+    }
     for (int i = 0; i < abs(steps); i++) {
       // На экране рулетки вращение НЕ уходит мостом как «листание»: барабан
       // обязан отзываться на щелчок мгновенно, а круг через мост это ~50мс.
@@ -1136,11 +1153,14 @@ void redrawCell(int i) {
 #define R_BOT      146
 #define R_WX       92         // барабан правее: слева живёт крупье
 #define R_WW       216
-#define R_SPIN_MIN      2.8f  // порог пуска, строк/с
+// Разгон непрерывный — как на автомате: накопленная скорость и уходит в полёт.
+// Прежние 0.6 за щелчок при пороге 2.8 и пуске 12.0 давали скачок в четыре раза:
+// барабан еле полз, потом взрывался. Экраны обязаны ощущаться одинаково.
+#define R_SPIN_MIN      8.0f  // столько надо накрутить, чтобы полетело, строк/с
 #define R_FRICTION      2.0f  // трение при накрутке
 #define R_SPIN_FRICTION 4.0f  // трение после пуска — оно задаёт длину полёта
-#define R_LAUNCH_V     12.0f  // скорость пуска
-#define R_KICK          0.6f  // прибавка скорости за щелчок
+#define R_KICK          2.7f  // прибавка скорости за щелчок
+#define R_VEL_MAX      14.0f  // потолок: выше доводка перестаёт быть похожей на торможение
 #define R_PLACES_MAX   12
 // 20 символов кириллицы в UTF-8 — это 40 байт, плюс завершающий ноль. Было 24:
 // имена резались бы посреди буквы, и поймал это только контракт-тест, сверяющий
@@ -1173,11 +1193,11 @@ void roulKick() {
   if (roulState == R_LAND) return;                  // доезжает — не мешаем
   if (roulState == R_WON) { roulState = R_IDLE; roulWin = -1; roulLanding = false; }
   roulVel += R_KICK * (roulState == R_SPIN ? 0.6f : 1.0f);
+  if (roulVel > R_VEL_MAX) roulVel = R_VEL_MAX;
   if (roulVel >= R_SPIN_MIN && roulState != R_SPIN) {
     roulState = R_SPIN;
-    // чем сильнее раскрутил сверх порога, тем дольше полёт
-    float extra = (roulVel - R_SPIN_MIN) * 1.5f;
-    roulVel = R_LAUNCH_V + (extra > 3.0f ? 3.0f : extra);
+    // Скорость НЕ подменяем: чем сильнее раскрутил, тем дольше полёт — это и так
+    // выходит само, потому что в полёт уходит ровно накрученное.
     Serial.print(F("{\"enc\":\"spin\",\"v\":"));
     Serial.print(roulVel, 1);
     Serial.println(F("}"));
@@ -1456,11 +1476,18 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
 #define S_WX       (S_CAB_X + 3 + (((S_CAB_W - 6) - (3*S_BW + 2*S_GAP)) / 2))
 #define S_STATUS_Y 196                // строка состояния под корпусом, над дном
 #define S_BED_Y    206                // дно: водоросли
-#define S_SPIN_MIN      2.8f
+// Разгон НЕПРЕРЫВНЫЙ: щелчок добавляет скорость, и накопленная скорость же уходит в
+// спин. Раньше щелчок давал 0.6 при пороге 2.8, а на запуске скорость ставилась в
+// 13.0 — скачок в 5.6 раза. В логе ручки это выглядело как «230 → 1300»: барабан
+// сначала еле полз, потом взрывался. Порог теперь считается в тех же единицах, что
+// и прибавка, поэтому четвёртый щелчок переводит в спин без разрыва.
+#define S_SPIN_MIN      9.0f    // столько скорости надо накрутить, чтобы полетело
 #define S_FRICTION      2.0f
 #define S_SPIN_FRICTION 4.2f
-#define S_LAUNCH_V     13.0f
-#define S_KICK          0.6f
+#define S_KICK          3.0f    // прибавка за щелчок
+// Потолок скорости: выше доводка перестаёт быть похожей на естественное торможение
+// (подогнанное трение уходит втрое дальше обычного) и барабан замирает рывком.
+#define S_VEL_MAX      15.0f
 #define BRASS     0xABC6
 #define BRASS_HI  0xE5ED
 #define PEARL     0xEF9E
@@ -1500,7 +1527,7 @@ float slotLandEnd[3];
 unsigned long slotLandT0[3];
 SlotState slotState = S_IDLE;
 unsigned long slotShownAt = 0, slotRefusedAt = 0, slotLastPhys = 0;
-float slotLev = 0;          // угол рычага 0..1, ходит плавно
+float slotLev = 0;          // @phase угол рычага 0..1, двигает физика (см. check-draw-purity)
 bool slotDirty = true;
 int slotStatusShown = -1;
 
@@ -1515,7 +1542,22 @@ bool slotHot(int i) {
 }
 
 void slotKick() {
-  // Автомат не берёт спин, который не может оплатить. Раньше барабаны крутились
+  // Уже летим — щелчок только подгоняет барабаны, и проверять баллы здесь НЕЛЬЗЯ.
+  // Крутка приходит пачкой (5-6 щелчков за опрос): первый переводит в спин, мост
+  // тут же списывает ставку и присылает новый счёт, и на остаток уже не хватает на
+  // СЛЕДУЮЩИЙ спин. Оставшиеся щелчки той же пачки видели «не хватает», обрывали
+  // текущий спин в ноль и показывали отказ — ставка списана, барабаны не крутились,
+  // исход не показан. Со стороны это выглядит как «съело баллы ни за что».
+  if (slotState == S_SPINNING || slotState == S_LANDING) {
+    if (slotState == S_SPINNING) {
+      for (int i = 0; i < 3; i++) {
+        slotVel[i] += S_KICK;
+        if (slotVel[i] > S_VEL_MAX + i) slotVel[i] = S_VEL_MAX + i;
+      }
+    }
+    return;
+  }
+  // Автомат не берёт НОВЫЙ спин, который не может оплатить. Раньше барабаны крутились
   // впустую, а мост уже потом отвечал «не хватает» — холостая анимация и обман.
   if (slotPts < slotBet) {
     if (slotState != S_REFUSED) slotDirty = true;
@@ -1524,7 +1566,6 @@ void slotKick() {
     slotVel[0] = slotVel[1] = slotVel[2] = 0;
     return;
   }
-  if (slotState == S_LANDING) return;
   if (slotState == S_SHOWN || slotState == S_REFUSED) {
     slotState = S_IDLE;
     slotTarget[0] = slotTarget[1] = slotTarget[2] = -1;
@@ -1533,7 +1574,8 @@ void slotKick() {
     slotWin = 0;
     slotDirty = true;
   }
-  slotVel[0] += S_KICK;
+  slotVel[0] += S_KICK;                        // разгон до запуска — только первый барабан
+  if (slotVel[0] > S_VEL_MAX) slotVel[0] = S_VEL_MAX;
   if (slotVel[0] >= S_SPIN_MIN && slotState != S_SPINNING) {
     slotState = S_SPINNING;
     // Ставку списываем в показе сразу — она и правда уплачена, — а выигрыш ждёт
@@ -1541,10 +1583,21 @@ void slotKick() {
     slotPtsView = slotPts - slotBet;
     if (slotPtsView < 0) slotPtsView = 0;
     slotDirty = true;
-    for (int i = 0; i < 3; i++) slotVel[i] = S_LAUNCH_V + i * 0.8f;
+    // Скорость НЕ подменяем — летим с той, что накрутили. Соседним барабанам даём
+    // фору, чтобы они останавливались по очереди слева направо.
+    for (int i = 1; i < 3; i++) slotVel[i] = slotVel[0] + i * 0.8f;
     Serial.println(F("{\"enc\":\"slot\"}"));
   } else if (slotState != S_SPINNING) {
     slotState = S_CHARGE;
+  }
+  if (kickLog) {
+    // Скорость целыми сотыми: Serial.print(float) на ESP8266 тянет форматирование
+    // с плавающей точкой, а строка печатается внутри кадра.
+    Serial.print(F("{\"esp\":\"kick\",\"ms\":"));  Serial.print(millis());
+    Serial.print(F(",\"v\":"));                    Serial.print((int)(slotVel[0] * 100));
+    Serial.print(F(",\"min\":"));                  Serial.print((int)(S_SPIN_MIN * 100));
+    Serial.print(F(",\"st\":"));                   Serial.print((int)slotState);
+    Serial.println(F("}"));
   }
 }
 
@@ -1555,6 +1608,15 @@ void slotPhysics(unsigned long now) {
 
   float spin = slotVel[0] / 6.0f;
   if (spin > 1) spin = 1;
+
+  // Рычаг: цель по состоянию, ход — экспоненциальный по ВРЕМЕНИ, а не по кадрам.
+  // Считается ровно один раз за кадр, здесь, в физике: рисование обязано быть чистым,
+  // иначе анимация ускоряется во столько раз, на сколько полос делится область.
+  float aim = (slotState == S_SPINNING || slotState == S_LANDING) ? 1.0f
+              : (slotState == S_CHARGE ? spin : 0.0f);
+  float k = dt * 6.0f;                       // постоянная времени ~1/6 с
+  if (k > 1) k = 1;
+  slotLev += (aim - slotLev) * k;
 
   if (slotState == S_REFUSED && now - slotRefusedAt > 1600) { slotState = S_IDLE; slotDirty = true; }
   if (slotState == S_IDLE || slotState == S_SHOWN || slotState == S_REFUSED) {
@@ -1736,9 +1798,10 @@ void slotOcto(Adafruit_GFX &g, int top, int bot, float tt, bool shown, bool jack
   // ровно как у однорукого бандита.
   const int px = S_CAB_X - 6, py = 128;        // ось вращения
   const float lenArm = 40;
-  float aim = (slotState == S_SPINNING || slotState == S_LANDING) ? 1.0f
-              : (slotState == S_CHARGE ? spin : 0.0f);
-  slotLev += (aim - slotLev) * 0.28f;          // возврат с замедлением, без рывка
+  // Положение рычага здесь только ЧИТАЕТСЯ: двигает его физика, один раз на кадр.
+  // Раньше сдвиг стоял прямо тут, а composeSlots вызывается НА КАЖДУЮ ПОЛОСУ — восемь
+  // раз за кадр в этой области. Рычаг успевал уехать восемь шагов, и каждая полоса
+  // рисовала его в своём положении: экран показывал куски разных кадров сразу.
   float ang = 0.17f + slotLev * 2.27f;         // от вертикали вверх до наклона вниз
   int hx = px - (int)(lenArm * fastSin(ang));
   int hy2 = py - (int)(lenArm * fastCos(ang));
@@ -2538,6 +2601,8 @@ void handleLine(const char *line) {
     // на время замера и выключается обратно. См. redrawRect.
     if (strcmp(cmd, "telon") == 0)  telOn = true;
     if (strcmp(cmd, "teloff") == 0) telOn = false;
+    if (strcmp(cmd, "encon") == 0)  kickLog = true;
+    if (strcmp(cmd, "encoff") == 0) kickLog = false;
     // Щелчок ручки «руками моста»: единственный способ проверить физику барабана
     // без человека у энкодера.
     if (strcmp(cmd, "kick") == 0) {

@@ -1119,8 +1119,10 @@
   const S_WIN_Y = 74;                     // верх окон барабанов
   const S_BW = 56, S_GAP = 8;
   const S_WX = S_CAB_X + 3 + (((S_CAB_W - 6) - (3*S_BW + 2*S_GAP)) >> 1);
-  const S_SPIN_MIN = 2.8, S_FRICTION = 2.0, S_SPIN_FRICTION = 4.2;
-  const S_LAUNCH_V = 13, S_KICK = 0.6;
+  // разгон непрерывный: накопленная скорость и уходит в спин, без подмены —
+  // см. тот же расчёт в прошивке (S_SPIN_MIN/S_KICK/S_VEL_MAX)
+  const S_SPIN_MIN = 9.0, S_FRICTION = 2.0, S_SPIN_FRICTION = 4.2;
+  const S_KICK = 3.0, S_VEL_MAX = 15.0;
   const BRASS = rgb(168, 120, 52), BRASS_HI = rgb(228, 188, 110), PEARL = rgb(232, 240, 246);
   const WEED = rgb(38, 120, 78);
 
@@ -1157,10 +1159,11 @@
       sState = "idle"; sTarget = [-1,-1,-1]; sWin = 0;
       sLanding = [false,false,false]; sLanded = [false,false,false];
     }
-    sVel[0] += S_KICK;
+    const nKick = sState === "spinning" ? 3 : 1;
+    for(let i=0;i<nKick;i++) sVel[i] = Math.min(sVel[i] + S_KICK, S_VEL_MAX + i);
     if(sVel[0] >= S_SPIN_MIN && sState !== "spinning"){
       sState = "spinning";
-      for(let i=0;i<3;i++) sVel[i] = S_LAUNCH_V + i*0.8;
+      for(let i=1;i<3;i++) sVel[i] = sVel[0] + i*0.8;
       wire("in", {enc:"slot"});
       setTimeout(()=>{
         if(sState !== "spinning") return;
@@ -1445,11 +1448,12 @@
   // барабана, то есть никакой рулетки. Проверка: ленивый темп (3 щелчка/с) не
   // раскручивает вовсе, спокойный (6/с) — 10 щелчков (полоборота ручки), бодрый
   // (10/с) — 7 щелчков. Полёт: 3.0с и 3 оборота барабана.
-  const R_SPIN_MIN = 2.8;                 // порог пуска, строк/с
+  // разгон непрерывный: накопленная скорость и уходит в полёт, без подмены
+  const R_SPIN_MIN = 8.0;                 // столько надо накрутить, чтобы полетело
   const R_FRICTION = 2.0;                 // трение при накрутке, строк/с²
   const R_SPIN_FRICTION = 4.0;            // трение после пуска — оно задаёт длину полёта
-  const R_LAUNCH_V = 12;                  // скорость пуска, строк/с
-  const R_KICK = 0.6;                     // прибавка скорости за щелчок
+  const R_KICK = 2.7;                     // прибавка скорости за щелчок
+  const R_VEL_MAX = 14.0;                 // потолок скорости
   const R_WX = 92, R_WW = 216;            // барабан правее: слева живёт осьминог
   // Видимая часть барабана — ±1 строка. Так весь живой ряд (барабан, крупье, пузыри)
   // влезает в ОДИН прямоугольник на кадр: раньше он делился на три среза, и всё в нём
@@ -1475,12 +1479,11 @@
   function roulKick(dir){
     if(rState==="landing") return;                    // доезжает — не мешаем
     if(rState==="won"){ rState="idle"; rWin=-1; rLanding=false; }     // новый заход
-    rVel += R_KICK * (rState==="spinning" ? 0.6 : 1);
+    rVel = Math.min(rVel + R_KICK * (rState==="spinning" ? 0.6 : 1), R_VEL_MAX);
     if(rVel >= R_SPIN_MIN && rState!=="spinning"){
       rState = "spinning";
-      // пуск: барабан подхватывает и летит несколько своих оборотов; чем сильнее
-      // раскрутил сверх порога, тем дольше полёт
-      rVel = R_LAUNCH_V + Math.min(3, (rVel - R_SPIN_MIN) * 1.5);
+      // скорость не подменяем: в полёт уходит ровно накрученное, поэтому «сильнее
+      // раскрутил — дольше летит» выходит само
       wire("in", {enc:"spin", v:+rVel.toFixed(1)});
       // так ответит мост: выбирает победителя и присылает индекс
       const avoid = rWin;
