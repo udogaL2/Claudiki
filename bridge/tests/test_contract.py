@@ -366,6 +366,30 @@ def test_status_line_is_inside_a_rect_that_redraws_it(sketch):
                     f"redrawRect во всю ширину — она застрянет на экране")
 
 
+def test_slot_sprites_come_from_the_generator(sketch):
+    """Спрайты барабанов в прошивке и в эмуляторе обязаны совпадать с генератором.
+
+    Картинки уже расходились: на плате оказывался не тот символ, что в превью, и
+    заметно это было только глазами после заливки. Генератор `tools/slot-sprites.py` —
+    единственный источник, тест сверяет с ним обе копии.
+    """
+    import importlib.util
+    root = pathlib.Path(b.__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("slotgen", root / "tools" / "slot-sprites.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    assert len(gen.SYMBOLS) == b.SLOT_SYMS, "символов в генераторе не столько, сколько у моста"
+    html = (root / "tools" / "octodash-preview.html").read_text(encoding="utf-8")
+    for name, pal, art in gen.SYMBOLS:
+        layers = gen.parse(art)
+        c_row = "{" + ", ".join(f"0x{v:02X}" for v in layers[1]) + "}"
+        assert c_row in sketch, f"основной слой «{name}» не совпал с генератором"
+        assert "{" + ", ".join(f"0x{c:04X}" for c in pal) + "}" in sketch, f"палитра «{name}»"
+        for row in [r for r in art.strip("\n").split("\n") if r.strip()]:
+            assert f'"{row}"' in html, f"строка «{name}» не совпала в эмуляторе"
+
+
 def test_slot_payouts_match_firmware_hint(sketch):
     """Подпись на экране обязана совпадать с реальной таблицей выплат."""
     # Числа берутся из моста, а не дублируются здесь: тест обязан ловить расхождение
