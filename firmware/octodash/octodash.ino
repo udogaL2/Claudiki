@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   81 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   82 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1882,7 +1882,7 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
       g.drawFastVLine(S_WX + 3 * S_BW + 2 * S_GAP + 5 - t, plY - t, 2 * t + 1, plCol);
     }
 
-    const char *pay = "ТРОЙКА x15   ПАРА x1.4";
+    const char *pay = "ТРОЙКА x8   ПАРА x2";
     drawTextRu(g, S_CAB_X + ((S_CAB_W - textWidthRu(pay, 1)) >> 1), S_WIN_Y + S_ROW + 6, pay,
                lerp565(BRASS_HI, BG, 0.5f), 1);
 
