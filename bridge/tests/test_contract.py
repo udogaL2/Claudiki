@@ -86,9 +86,11 @@ def test_firmware_top_level_keys_are_sent(sketch, snap):
 def test_shot_command_matches_firmware(sketch):
     """Команда снимка и рамка ответа — тоже контракт, и он тоже молча ломается."""
     assert '"cmd"' in sketch, "прошивка перестала разбирать команды от моста"
-    m = re.search(r'strcmp\(\s*cmd\s*,\s*"(\w+)"\s*\)', sketch)
-    assert m, "не нашёл, какую команду ждёт прошивка"
-    assert m.group(1) == "shot", f"прошивка ждёт cmd={m.group(1)!r}, мост шлёт 'shot'"
+    # команд у прошивки несколько (снимок, щелчок ручки, телеметрия) — важно, что
+    # снимок среди них есть; проверять «первую попавшуюся» значило ломать тест
+    # каждый раз, когда добавится отладочная команда
+    known = set(re.findall(r'strcmp\(\s*cmd\s*,\s*"(\w+)"\s*\)', sketch))
+    assert "shot" in known, f"прошивка не знает команду снимка, знает: {sorted(known)}"
     src = pathlib.Path(b.__file__).read_text(encoding="utf-8")
     assert '{"cmd":"shot"}' in src, "мост шлёт не ту команду"
     # в скетче кавычки экранированы (Serial.print(F("{\"esp\"..."))) — снимаем слэши
@@ -205,7 +207,10 @@ def test_id_prefix_fits_firmware_buffer(sketch):
 def test_snapshot_line_fits_serial_buffer(sketch, snap):
     """Снэпшот должен влезать в LINE_MAX прошивки, иначе строка отбрасывается."""
     line_max = int(re.search(r"LINE_MAX\s*=\s*(\d+)", sketch).group(1))
-    doc_size = int(re.search(r"StaticJsonDocument<(\d+)>", sketch).group(1))
+    # Память документа теперь берётся из статической арены: в ArduinoJson 7
+    # StaticJsonDocument — обёртка над кучей, а куче на плате свободно ~12 КБ, и
+    # возня в ней каждые пять секунд означала фрагментацию за сутки работы.
+    doc_size = int(re.search(r"CAP\s*=\s*(\d+)", sketch).group(1))
 
     cfg = b.Config(max_sessions=6, name_max=16)
     br = b.Bridge(cfg, sink=None, clock=lambda: 1.0, is_alive=lambda p: True,

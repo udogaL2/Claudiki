@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   75 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   78 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -397,6 +397,11 @@ size_t lineLen = 0;
 unsigned long lastStat = 0, maxFrameUs = 0, maxDrawUs = 0, maxBlitUs = 0;
 uint16_t diagSnaps = 0, diagBadJson = 0, diagCells = 0;
 #endif
+
+// Телеметрия перерисовок: выключена, включается командой моста `telon` на время
+// замера. В проде она стоила три строки на кадр (~60 строк в секунду) и печаталась
+// прямо внутри кадра — за сутки это лишняя нагрузка на порт без единого читателя.
+bool telOn = false;
 
 // --- прототипы (Arduino их генерит сам, но с явными надёжнее) ----------------
 void buildSphere(int night);
@@ -1889,9 +1894,13 @@ void redrawRect(int rx, int ry, int rw, int rh) {
     usBlit += micros() - tb;
     yield();                              // блит длинный, watchdog кормим между полосами
   }
-  // Цена перерисовки — в обратный канал безусловно (а не под ESP_DIAG): полные
-  // перерисовки редкие, зато по этому числу видно, читается ли она как одно
-  // движение или как медленная протяжка. Иначе судить о «плавно» нечем.
+  // Цена перерисовки — в обратный канал, но ТОЛЬКО по просьбе моста (`telon`).
+  // Утверждение «полные перерисовки редкие» верно лишь для аквариума: на автомате и
+  // рулетке это три полосы за кадр, то есть ~60 строк в секунду по 110 байт — больше
+  // половины пропускной способности 115200, и печать блокирует прямо внутри кадра.
+  // Флаг рантаймовый, а не compile-time: мерить надо на той же прошивке, что стоит
+  // в проде, иначе меряешь не то, что работает.
+  if (!telOn) { lastRedrawAt = t0; return; }
   Serial.print(F("{\"esp\":\"redraw\",\"w\":")); Serial.print(rw);
   Serial.print(F(",\"h\":")); Serial.print(rh);
   Serial.print(F(",\"ms\":")); Serial.print((micros() - t0) / 1000);
@@ -2346,10 +2355,39 @@ void readSerial() {
   }
 }
 
-// Документ статический, а не локальный: 2 КБ на стеке (у ESP8266 его ~4 КБ) плюс
-// цепочка handleLine → applySnapshot → redrawCell → redrawRect — верный способ
-// получить исключение по переполнению стека.
-StaticJsonDocument<2048> doc;
+// Документ глобальный, а не локальный: цепочка handleLine → applySnapshot → redrawCell
+// → redrawRect и без него съедает изрядную часть 4-килобайтного стека ESP8266.
+//
+// Память документа берётся из СТАТИЧЕСКОЙ арены, а не из кучи. В ArduinoJson 7
+// StaticJsonDocument — лишь устаревшая обёртка над JsonDocument, который выделяет
+// память через malloc: снэпшот раз в пять секунд означал бы непрерывную возню на
+// куче (свободно ~12 КБ) — а это фрагментация, которая проявляется через сутки
+// работы и никак не ловится за пять минут проверки. С ареной куча не участвует
+// вовсе, а переполнение видно сразу: разбор не удаётся и считается в badjson.
+struct JsonArena : ArduinoJson::Allocator {
+  static const size_t CAP = 2048;
+  uint8_t buf[CAP];
+  size_t used = 0;
+  void reset() { used = 0; }                  // вся память документа мертва разом
+  void *allocate(size_t n) override {
+    n = (n + 3) & ~(size_t)3;                 // выравнивание: на ESP8266 обязательно
+    if (used + n > CAP) return nullptr;
+    uint8_t *p = buf + used;
+    used += n;
+    return p;
+  }
+  void deallocate(void *) override {}         // освобождаем только целиком, перед разбором
+  void *reallocate(void *p, size_t n) override {
+    void *q = allocate(n);
+    if (q && p) {
+      size_t avail = CAP - (size_t)((uint8_t *)p - buf);   // не читаем за пределы арены
+      memcpy(q, p, n < avail ? n : avail);
+    }
+    return q;
+  }
+};
+JsonArena jsonArena;
+JsonDocument doc(&jsonArena);
 
 // --- отладочный снимок экрана -------------------------------------------------
 // Читать панель нельзя (MISO не разведён), но можно отдать то, что прошивка сама
@@ -2480,7 +2518,10 @@ void sendShot() {
 #endif
 
 void handleLine(const char *line) {
+  // Арена сбрасывается ПЕРЕД разбором, а не после: до этой строки прошлый снэпшот
+  // ещё мог читаться, а с этого момента вся его память заведомо мертва.
   doc.clear();
+  jsonArena.reset();
   if (deserializeJson(doc, line)) {
 #if ESP_DIAG
     diagBadJson++;
@@ -2493,6 +2534,10 @@ void handleLine(const char *line) {
 #if ESP_SHOT
     if (strcmp(cmd, "shot") == 0) sendShot();
 #endif
+    // Телеметрия перерисовок: дорогая (три строки на кадр), поэтому включается
+    // на время замера и выключается обратно. См. redrawRect.
+    if (strcmp(cmd, "telon") == 0)  telOn = true;
+    if (strcmp(cmd, "teloff") == 0) telOn = false;
     // Щелчок ручки «руками моста»: единственный способ проверить физику барабана
     // без человека у энкодера.
     if (strcmp(cmd, "kick") == 0) {
@@ -2733,9 +2778,35 @@ void setup() {
   redrawAll();
 }
 
+// Пульс живучести: раз в минуту, ВНЕ ESP_DIAG. Гаджету положено работать сутками, а
+// медленную утечку кучи или подросшую задержку кадра иначе видно только когда плата
+// уже перезагрузилась. Одна строка в минуту стоит меньше, чем один снэпшот.
+unsigned long lifeLast = 0, loopLastUs = 0, loopMaxUs = 0;
+
+void reportLife(unsigned long now) {
+  if (now - lifeLast < 60000) return;
+  lifeLast = now;
+  Serial.print(F("{\"esp\":\"life\",\"ver\":"));   Serial.print(FW_VER);
+  Serial.print(F(",\"up\":"));                     Serial.print(now / 1000);
+  Serial.print(F(",\"heap\":"));                   Serial.print(ESP.getFreeHeap());
+  Serial.print(F(",\"frag\":"));                   Serial.print(ESP.getHeapFragmentation());
+  // Худшая итерация loop() за минуту: сюда попадает и отрисовка, и разбор снэпшота.
+  // Именно она, а не средний кадр, приводит к сбросу по watchdog.
+  Serial.print(F(",\"maxloop_us\":"));             Serial.print(loopMaxUs);
+  Serial.println(F("}"));
+  loopMaxUs = 0;
+}
+
 void loop() {
+  // Длительность итерации: одно micros() на круг. Ядро зовёт loop() без пауз,
+  // поэтому период между входами и есть время работы предыдущей итерации.
+  unsigned long iterUs = micros();
+  if (loopLastUs && iterUs - loopLastUs > loopMaxUs) loopMaxUs = iterUs - loopLastUs;
+  loopLastUs = iterUs;
+
   readSerial();
   pollEncoder();
+  reportLife(millis());              // и во сне тоже: там свои поводы умереть
   if (sleeping) return;              // спим: ни кадров, ни SPI
 
   unsigned long now = millis();

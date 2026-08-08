@@ -882,6 +882,12 @@ class Bridge:
         self._last_activity = self._clock()
         self._enc_n = 0                       # диагностика: сколько событий пришло с ручки
         self.shot = ShotCollector()           # отладочные снимки с платы
+        # Здоровье платы: последний пульс и счётчик её перезагрузок. Мост живёт дольше
+        # платы и переживает её сброс незаметно — без этого счётчика «гаджет работал
+        # сутки» и «плата перезагружалась двадцать раз» выглядят одинаково.
+        self._fails: dict = {}                # сбои шагов рабочих циклов, см. guard()
+        self.esp: dict = {"boots": 0, "reason": None, "up": None, "heap": None,
+                          "frag": None, "maxloop_us": None, "ver": None, "seen_ms": None}
 
         # Рулетка обеда: список мест и победитель. Перечитывается по mtime, поэтому
         # файл можно править на живом мосту.
@@ -1256,6 +1262,52 @@ class Bridge:
         if self._clock() - self._last_activity < self.cfg.sleep_min * 60:
             return False
         return self.set_sleep(True)
+
+    def _rss_mb(self) -> float | None:
+        """Память самого моста. Утечка на стороне Python так же убивает сутки работы,
+        как и утечка кучи на плате, а по одному только `uptime` её не видно."""
+        if psutil is None:
+            return None
+        try:
+            return round(psutil.Process().memory_info().rss / 1048576, 1)
+        except Exception:
+            return None
+
+    def note_esp_health(self, line: str) -> bool:
+        """Учитывает строку здоровья платы (`boot`/`life`). True — строка съедена.
+
+        Логируется ВСЕГДА, а не под OCTO_DIAG: это одна строка в минуту, и ровно она
+        отвечает на вопрос «сутки работало или сутки перезагружалось». Причина сброса
+        (`reason`) отличает watchdog и исключение от обычного дёрганья DTR при заливке.
+        """
+        line = (line or "").strip()
+        if not line.startswith("{") or '"esp"' not in line:
+            return False
+        try:
+            d = json.loads(line)
+        except (ValueError, TypeError):
+            return False
+        kind = d.get("esp")
+        if kind not in ("boot", "life"):
+            return False
+        now_ms = int(self._wall() * 1000)
+        if kind == "boot":
+            self.esp["boots"] += 1
+            self.esp["reason"] = str(d.get("reason") or "")
+            self.esp["up"] = 0
+            self.log.warning("плата загрузилась: версия %s, причина %r, куча %s "
+                             "(перезагрузок с запуска моста: %d)",
+                             d.get("ver"), self.esp["reason"], d.get("heap"),
+                             self.esp["boots"])
+        else:
+            for k in ("up", "heap", "frag", "maxloop_us", "ver"):
+                if k in d:
+                    self.esp[k] = d[k]
+            self.log.info("плата жива: %sс, куча %s (фрагментация %s%%), "
+                          "худшая итерация %sмкс",
+                          d.get("up"), d.get("heap"), d.get("frag"), d.get("maxloop_us"))
+        self.esp["seen_ms"] = now_ms
+        return True
 
     def handle_encoder(self, event: str, held: bool = False) -> bool:
         """Событие с ручки. Вращение — страницы, нажатие — экран, удержание — сон.
@@ -1733,6 +1785,10 @@ class Bridge:
                 "slot_spins": self.pts_spins,
                 "slot_best": self.pts_best,
                 "points_peak": self.pts_peak,
+                # Здоровье платы и самого моста — то, по чему судят о сутках работы.
+                "esp": dict(self.esp),
+                "rss_mb": self._rss_mb(),
+                "fails": dict(self._fails),
             },
             "config": {
                 "max_sessions": self.cfg.max_sessions,
@@ -1787,6 +1843,23 @@ class Bridge:
         )
 
     # -- фоновые циклы (тонкая обёртка над ядром; проверяются интеграционно) --
+    def guard(self, what: str, fn, *args):
+        """Выполняет шаг рабочего цикла, не давая исключению убить поток.
+
+        Гаджету положено работать сутками. Непойманное исключение в потоке молча его
+        завершает: мост остаётся живым, порт открытым, HTTP отвечает — а картинка
+        просто перестаёт обновляться. Такой отказ выглядит как «зависло железо» и
+        ищется дольше всего. Сбои считаем и показываем в /debug, чтобы «работает» и
+        «работает, но каждые пять секунд ругается» не выглядели одинаково.
+        """
+        try:
+            return fn(*args)
+        except Exception:
+            self._fails[what] = self._fails.get(what, 0) + 1
+            self.log.exception("шаг %s упал (%d-й раз) — поток продолжает работу",
+                               what, self._fails[what])
+            return None
+
     def sender_loop(self) -> None:  # pragma: no cover
         debounce = self.cfg.debounce_ms / 1000.0
         while not self._stop.is_set():
@@ -1798,25 +1871,22 @@ class Bridge:
                 self._dirty.clear()
                 time.sleep(debounce)
                 self._dirty.clear()
-            self.push("event" if triggered else "heartbeat")
+            self.guard("push", self.push, "event" if triggered else "heartbeat")
 
     def reaper_loop(self) -> None:  # pragma: no cover
         next_reconcile = 0.0
         while not self._stop.wait(self.cfg.reaper_sec):
-            self.reap()
-            self.maybe_sleep()
+            self.guard("reap", self.reap)
+            self.guard("sleep", self.maybe_sleep)
             # Вес считаем в такт reaper'у, а не сверки: он нужен и когда реестр
             # выключен (OCTO_REGISTRY_SEC=0), а стоит один os.stat на сессию.
-            self.refresh_sizes()
-            self.accrue_points()      # баллы за отработанные минуты
+            self.guard("sizes", self.refresh_sizes)
+            self.guard("points", self.accrue_points)   # баллы за отработанные минуты
             if self.cfg.registry_sec > 0 and self._clock() >= next_reconcile:
                 next_reconcile = self._clock() + self.cfg.registry_sec
-                try:
-                    self.reconcile()
-                except Exception:
-                    # реестр — чужой недокументированный формат; его поломка не
-                    # должна валить поток, мост продолжает жить на хуках
-                    self.log.exception("сверка с реестром упала — работаем по хукам")
+                # реестр — чужой недокументированный формат; его поломка не должна
+                # валить поток, мост продолжает жить на хуках
+                self.guard("reconcile", self.reconcile)
 
     def mock_loop(self) -> None:  # pragma: no cover
         """Генерит 6 фейковых сессий и крутит их состояния — для проверки моста→ESP."""
@@ -2336,6 +2406,8 @@ def esp_reader_loop(sink: SerialSink, stop: threading.Event, bridge: "Bridge | N
         for line in sink.read_lines():
             if bridge is not None and not bridge.shot.done.is_set():
                 bridge.shot.feed(line)          # идёт сбор снимка — строки его
+            if bridge is not None and bridge.note_esp_health(line):
+                continue                        # пульс/загрузка — учтены и залогированы
             cmd = parse_esp_line(line)
             if cmd is None:
                 if diag:

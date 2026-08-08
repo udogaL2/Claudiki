@@ -1520,6 +1520,58 @@ def test_parse_esp_line(line, expected):
     assert b.parse_esp_line(line) == expected
 
 
+def test_guard_keeps_thread_alive_and_counts(clock, liveness, sink):
+    """Упавший шаг цикла не должен убивать поток — иначе картинка молча замирает.
+
+    Это худший из отказов на длинной дистанции: мост жив, порт открыт, HTTP отвечает,
+    а экран не обновляется. Выглядит как «зависло железо» и ищется дольше всего.
+    """
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    calls = []
+
+    def boom():
+        calls.append(1)
+        raise RuntimeError("реестр внезапно оказался каталогом")
+
+    assert br.guard("reconcile", boom) is None, "исключение обязано быть проглочено"
+    assert br.guard("reconcile", boom) is None
+    assert br.guard("push", lambda: 42) == 42, "успешный шаг возвращает своё значение"
+    assert len(calls) == 2
+
+    fails = br.build_debug()["bridge"]["fails"]
+    assert fails == {"reconcile": 2}, f"сбои не сосчитаны: {fails}"
+
+
+def test_esp_health_lines_are_counted(clock, liveness, sink):
+    """Пульс и загрузка платы учитываются, а не проскакивают как мусор.
+
+    Без счётчика перезагрузок «гаджет работал сутки» и «плата за сутки
+    перезагрузилась двадцать раз» выглядят на мосту одинаково.
+    """
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    assert br.note_esp_health('{"esp":"boot","ver":75,"reason":"Power on","heap":31000}')
+    assert br.note_esp_health('{"esp":"life","ver":75,"up":60,"heap":30800,'
+                              '"frag":6,"maxloop_us":51000}')
+    esp = br.build_debug()["bridge"]["esp"]
+    assert esp["boots"] == 1 and esp["reason"] == "Power on"
+    assert (esp["up"], esp["heap"], esp["frag"], esp["maxloop_us"]) == (60, 30800, 6, 51000)
+
+    assert br.note_esp_health('{"esp":"boot","ver":75,"reason":"Software Watchdog"}')
+    assert br.build_debug()["bridge"]["esp"]["boots"] == 2, "вторая загрузка не сосчиталась"
+
+
+@pytest.mark.parametrize("line", [
+    '{"enc":"cw"}',                    # событие ручки — не наше дело
+    '{"esp":"shot"}',                  # рамка снимка
+    'мусор',
+    '',
+])
+def test_esp_health_ignores_foreign_lines(clock, liveness, sink, line):
+    """Чужие строки обязаны проходить дальше: иначе съедим щелчок ручки или снимок."""
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    assert br.note_esp_health(line) is False
+
+
 def test_debug_reports_screen_state(clock, liveness, sink):
     br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
     fill(br, 8)
