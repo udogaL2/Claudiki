@@ -245,7 +245,7 @@ OCTO_LOG_FILE      =     # пусто → ~/.local/state/octodash/bridge.log (%L
 
 Скетч построен на рабочей базе с проверенной анимацией; менять стиль отрисовки и
 палитру без нужды не стоит. Специфика:
-- Дисплей: `tft.setRotation(3)`; пины `TFT_CS=D8, TFT_DC=D4, TFT_RST=D3`.
+- Дисплей: `tft.setRotation(3)`; пины `TFT_CS=D8, TFT_DC=D3, TFT_RST=D4`.
 - Плавность — через off-screen `GFXcanvas16 octoBuf(60,72)` на одного осьминога:
   кадр собирается в RAM, затем один `drawRGBBitmap` (без чёрной вспышки).
 - `enum State { WORKING, WAITING, IDLE, ERR }` = 0,1,2,3 — совпадает с кодами моста.
