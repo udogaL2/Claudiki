@@ -1506,6 +1506,23 @@ def test_auto_sleep_disabled_by_zero(clock, liveness, sink):
     assert br.maybe_sleep() is False and not br.sleeping
 
 
+def test_auto_sleep_is_off_by_default_but_hold_still_works(clock, liveness, sink):
+    """Автосон выключен по умолчанию, а ручной — работает.
+
+    Подсветка пока не управляется с пина, поэтому «сон» оставляет подсвеченный чёрный
+    экран: ночью это хуже живого аквариума. А удержание кнопки — осознанное действие,
+    и оно обязано гасить экран независимо от настройки, иначе кнопка выглядит сломанной.
+    """
+    assert b.Config().sleep_min == 0, "автосон снова включён по умолчанию"
+
+    br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
+    clock.advance(10 * 3600)
+    assert br.maybe_sleep() is False and not br.sleeping, "уснул сам, хотя не должен"
+
+    assert br.handle_encoder("hold") is True and br.sleeping, "удержание не гасит экран"
+    assert br.handle_encoder("cw") is True and not br.sleeping, "щелчок не разбудил"
+
+
 @pytest.mark.parametrize("line,expected", [
     ('{"enc":"cw"}', {"enc": "cw", "held": False}),
     ('{"enc":"ccw","k":1}', {"enc": "ccw", "held": True}),
