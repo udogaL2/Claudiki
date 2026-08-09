@@ -25,6 +25,14 @@ import sys
 import time
 import urllib.request
 
+# Консоль Windows по умолчанию в cp1251, и первая же стрелка в отчёте роняла его
+# UnicodeEncodeError'ом. Инструмент диагностики, падающий при выводе диагностики, —
+# это отсутствующий инструмент.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 URL = os.environ.get("OCTO_URL", "http://127.0.0.1:8787")
 FIELDS = ["ts", "uptime_sec", "rss_mb", "sessions", "visible", "push_n", "serial_opens",
           "serial_ok", "esp_boots", "esp_up", "esp_heap", "esp_frag", "esp_maxloop_us",
@@ -137,17 +145,21 @@ def main() -> int:
         w = csv.DictWriter(f, fieldnames=FIELDS)
         if fresh:
             w.writeheader()
-        print(f"пишу {args.csv}, опрос раз в {args.every}с — Ctrl+C чтобы прекратить")
+        print(f"пишу {args.csv}, опрос раз в {args.every}с — Ctrl+C чтобы прекратить",
+              flush=True)
         while True:
             try:
                 row = probe()
             except Exception as e:                      # мост может быть перезапущен
-                print(f"{time.strftime('%H:%M:%S')} мост не ответил: {e}")
+                print(f"{time.strftime('%H:%M:%S')} мост не ответил: {e}", flush=True)
                 time.sleep(args.every)
                 continue
             first = first or row
             for msg in check(prev, row, first):
-                print(f"{time.strftime('%H:%M:%S')} !! {msg}")
+                # flush обязателен: при перенаправлении в файл вывод буферизуется
+                # блоками, и за шесть часов прогона файл тревог остался ПУСТЫМ, хотя
+                # аномалии были. Молчащая сигнализация хуже отсутствующей.
+                print(f"{time.strftime('%H:%M:%S')} !! {msg}", flush=True)
             w.writerow(row)
             f.flush()
             prev = row
