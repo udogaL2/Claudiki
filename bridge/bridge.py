@@ -904,7 +904,11 @@ class Bridge:
         self.places: list[str] = []
         self._places_mtime: float | None = None
         self.roul_win = -1                    # индекс победителя текущего запуска
-        self.roul_spin = 0                    # номер запуска: по нему прошивка видит новый ответ
+        # Номер запуска: по нему прошивка видит НОВЫЙ ответ. Обязан пережить перезапуск
+        # моста. Обнулившийся счётчик однажды совпал с тем, что плата уже видела, — она
+        # сочла ответ повторным, не взяла цели, и барабаны замерли на полпути с вечным
+        # «крутится». Поэтому счётчики лежат в файле состояния рядом с баллами.
+        self.roul_spin = 0
         self.roul_last = -1                   # прошлый победитель — его не повторяем
 
         # Автомат на баллы. Баллы капают за отработанные минуты и переживают
@@ -921,7 +925,7 @@ class Bridge:
         self._work_mark = self._clock()
         self.slot_reels = [0, 0, 0]           # что должно выпасть на текущем спине
         self.slot_win = 0                     # выигрыш этого спина, баллов
-        self.slot_sp = 0                      # номер спина: прошивка видит новый ответ
+        self.slot_sp = 0                      # номер спина, тоже переживает рестарт
         self._points_loaded = False
 
     # -- обработка события от хука; возвращает True, если снэпшот стал грязным --
@@ -1395,6 +1399,8 @@ class Bridge:
         self.pts_best = max(0, int(data.get("best", 0) or 0))
         self.pts_peak = max(0, int(data.get("peak", 0) or 0), self.points)
         self._work_sec = max(0.0, float(data.get("work_sec", 0) or 0))
+        self.slot_sp = max(self.slot_sp, int(data.get("slot_sp", 0) or 0))
+        self.roul_spin = max(self.roul_spin, int(data.get("roul_sp", 0) or 0))
         self.log.info("баллы загружены: %d (заработано %d, спинов %d, рекорд %d)",
                       self.points, self.pts_earned, self.pts_spins, self.pts_best)
 
@@ -1404,7 +1410,9 @@ class Bridge:
         path = self.points_path()
         data = {"points": self.points, "earned": self.pts_earned, "spins": self.pts_spins,
                 "best": self.pts_best, "peak": self.pts_peak,
-                "work_sec": round(self._work_sec, 1)}
+                "work_sec": round(self._work_sec, 1),
+                # счётчики ответов — состояние протокола, а не статистика
+                "slot_sp": self.slot_sp, "roul_sp": self.roul_spin}
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".tmp"
@@ -1570,10 +1578,13 @@ class Bridge:
         self.roul_last = pick
         self.roul_spin += 1
         self.log.info("рулетка #%d: %s", self.roul_spin, self.places[pick])
+        self.save_points()          # счётчик ответа — состояние, он обязан пережить рестарт
         self.mark_dirty()
         return True
 
     def build_roulette(self) -> dict:
+        if not self._points_loaded:
+            self.load_points()      # там же лежит счётчик ответов рулетки
         self.refresh_places()
         # nm — текущее время: шапка экрана его показывает, а без блока кофейни
         # прошивке взять его негде (стояло 00:00)

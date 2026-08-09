@@ -2145,7 +2145,10 @@ def test_load_places_returns_none_on_broken_file(tmp_path):
 
 
 def roulette_bridge(tmp_path, names=("Наполи", "Сказка", "Ростикс"), seed=1):
-    cfg = b.Config(max_sessions=6, places_file=write_places(tmp_path, list(names)))
+    # points_file обязателен: рулетка берёт оттуда номер своего ответа, и без явного
+    # пути тест полез бы в боевой файл состояния пользователя.
+    cfg = b.Config(max_sessions=6, places_file=write_places(tmp_path, list(names)),
+                   points_file=str(tmp_path / "points.json"))
     return b.Bridge(cfg, sink=CollectingSink(), clock=FakeClock(), is_alive=FakeLiveness(),
                     wall_clock=lambda: 1_700_000_000.0, registry_probe=lambda: None,
                     rng=random.Random(seed))
@@ -2479,6 +2482,33 @@ def test_points_scale_with_parallel_sessions(tmp_path):
     clock.advance(60)
     assert br.accrue_points() is True
     assert br.points == 5, "пять работающих сессий за минуту должны дать пять баллов"
+
+
+def test_answer_counters_survive_restart(tmp_path):
+    """Номер ответа не должен обнуляться при перезапуске моста.
+
+    По нему прошивка отличает НОВЫЙ ответ от уже показанного. Обнулившийся счётчик
+    однажды совпал с тем, что плата уже видела: она сочла ответ повторным, целей не
+    взяла, барабаны докатились до нуля и повисли с вечным «крутится» — при том что
+    баллы мост начислил. Ошибка не воспроизводится, пока мост не перезапустят,
+    поэтому проверять её надо тестом, а не руками.
+    """
+    br, clock = slot_bridge(tmp_path, point_min=1)
+    br._points_loaded = True
+    br.points = 100
+    for _ in range(3):
+        br.spin_slot()
+    br.spin_roulette()
+    assert br.slot_sp == 3 and br.roul_spin == 1
+
+    again, _ = slot_bridge(tmp_path, point_min=1)      # тот же файл состояния
+    again.load_points()
+    assert again.slot_sp == 3, "счётчик спинов автомата обнулился при перезапуске"
+    assert again.roul_spin == 1, "счётчик запусков рулетки обнулился при перезапуске"
+
+    again.points = 100
+    again.spin_slot()
+    assert again.slot_sp == 4, "после перезапуска номер обязан идти дальше, а не с нуля"
 
 
 def test_slot_eta_shrinks_with_parallel_sessions(tmp_path):

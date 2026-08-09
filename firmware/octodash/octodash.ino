@@ -27,7 +27,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   84 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   85 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -1245,7 +1245,7 @@ bool  roulLanding = false;
 float roulLandA = 0, roulLandEnd = 0;   // трение и конец пути на доводке
 unsigned long roulLandT0 = 0;
 RoulState roulState = R_IDLE;
-unsigned long roulWonAt = 0, roulLastPhys = 0;
+unsigned long roulWonAt = 0, roulLastPhys = 0, roulStallSince = 0;
 bool roulDirty = true;      // состав сменился — нужна полная перерисовка экрана
 int roulStatusShown = -1;   // какое состояние уже нарисовано в строке снизу
 
@@ -1291,6 +1291,20 @@ void roulPhysics(unsigned long now) {
   if (roulState == R_SPIN && roulWin >= 0 && roulSp != roulSeenSp && roulVel < 6.0f) {
     roulSeenSp = roulSp;
     roulState = R_LAND;
+  }
+  // Барабан встал, а доводка не началась — ответ потерян (номер совпал с уже виденным
+  // после перезапуска моста). Победитель лежит в снэпшоте: берём его и доводим, иначе
+  // экран навсегда застрянет на «крутится». То же лечение, что у автомата.
+  if (roulState == R_SPIN && roulVel == 0) {
+    if (!roulStallSince) roulStallSince = now;
+    else if (now - roulStallSince > 1500) {
+      roulStallSince = 0;
+      roulSeenSp = roulSp;
+      if (roulWin >= 0) roulState = R_LAND;
+      else              roulState = R_IDLE;
+    }
+  } else {
+    roulStallSince = 0;
   }
   if (roulState == R_LAND) {
     // Доводим ТОЛЬКО вперёд (доводка назад читалась бы как подкрутка результата) и
@@ -1569,6 +1583,12 @@ int   slotPtsView = 0, slotRecView = 0;
 int   slotTarget[3] = {-1, -1, -1};
 int   slotWin = 0;
 int   slotSp = 0, slotSeenSp = 0;
+// Последний присланный исход — независимо от номера ответа. Нужен для восстановления:
+// номер может совпасть с уже виденным (мост перезапустили, счётчик пошёл заново), и
+// тогда ответ молча пропускается, барабаны докатываются до нуля и висят с вечным
+// «крутится». Данные при этом лежат в снэпшоте — надо просто их взять.
+int   slotPendR[3] = {-1, -1, -1}, slotPendWin = 0;
+unsigned long slotStallSince = 0;
 float slotPos[3] = {0, 0, 0}, slotVel[3] = {0, 0, 0};
 // Доводка — ПОДОГНАННОЕ ТРЕНИЕ, а не отдельная кривая. Две попытки до этого были
 // неверны: скорость пропорционально остатку с полом давала ползание на секунду, а
@@ -1745,6 +1765,32 @@ void slotPhysics(unsigned long now) {
   if (slotState == S_SPINNING && slotSp != slotSeenSp && slotTarget[0] >= 0) {
     slotSeenSp = slotSp;
     slotState = S_LANDING;
+  }
+
+  // Барабаны встали, а цели так и не пришли — ответ потерян. Так бывает, когда номер
+  // ответа совпал с уже виденным: мост перезапустили, счётчик пошёл с нуля. Висеть с
+  // вечным «крутится» нельзя — исход-то мост посчитал и баллы начислил, он лежит в
+  // снэпшоте. Берём его и доигрываем. Полторы секунды выжидаем, чтобы не перебить
+  // нормальный ответ, который просто чуть задержался.
+  if (slotState == S_SPINNING && allStopped && slotTarget[0] < 0) {
+    if (!slotStallSince) slotStallSince = now;
+    else if (now - slotStallSince > 1500) {
+      slotStallSince = 0;
+      slotSeenSp = slotSp;
+      if (slotPendWin >= 0 && slotPendR[0] >= 0) {
+        for (int i = 0; i < 3; i++) { slotTarget[i] = slotPendR[i]; slotPos[i] = slotPendR[i]; }
+        slotWin = slotPendWin;
+        slotState = S_SHOWN;
+        slotShownAt = now;
+        slotPtsView = slotPts;
+        slotRecView = slotRec;
+      } else {
+        slotState = S_IDLE;                    // исхода нет вовсе — просто отпускаем
+      }
+      slotDirty = true;
+    }
+  } else {
+    slotStallSince = 0;
   }
   if (slotState == S_LANDING && allStopped) {
     slotState = S_SHOWN;
@@ -2726,6 +2772,12 @@ void handleLine(const char *line) {
         slotPtsView = pts; slotRecView = rec;
       }
       int sp = sl["sp"] | 0, win = sl["win"] | 0;
+      {                                        // исход запоминаем ВСЕГДА, см. slotPendR
+        JsonArray pr = sl["r"].as<JsonArray>();
+        int j = 0;
+        for (JsonVariant v : pr) { if (j < 3) slotPendR[j++] = v | 0; }
+        slotPendWin = win;
+      }
       if (sp != slotSp) {                  // новый ответ на нашу раскрутку
         slotSp = sp;
         slotWin = win;
