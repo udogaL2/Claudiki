@@ -218,8 +218,9 @@ def test_snapshot_line_fits_serial_buffer(sketch, snap):
                   size_probe=lambda p: 199.0)
     for i in range(6):                                  # худший случай: всё заполнено
         sid = f"session-{i}-{'x' * 12}"
+        # имя кириллицей — оно вдвое тяжелее латиницы в UTF-8, это и есть худший случай
         br.handle_event({"event": "start", "session_id": sid,
-                         "cwd": "/work/" + "n" * 30, "pid": 1000 + i,
+                         "cwd": "/work/" + "щ" * 30, "pid": 1000 + i,
                          "transcript": "/t/x.jsonl"})
         for _ in range(5):
             br.handle_event({"event": "subagent", "session_id": sid})

@@ -155,8 +155,31 @@ def test_shorten_middle_keeps_worktrees_distinguishable():
 
 
 # --- display_name (basename → транслит → обрезка) -----------------------------
+def test_card_shows_session_title_not_folder(clock, liveness, sink):
+    """На карточке — название сессии из реестра, каталог лишь запасной вариант.
+
+    Сессий в одном репозитории обычно несколько, и по имени каталога все карточки
+    выглядели одинаково. Название режется с хвоста: это фраза, смысл в её начале.
+    """
+    br = make_bridge(b.Config(max_sessions=6, name_max=16), clock, liveness, sink)
+    br.handle_event({"session_id": "s1", "event": "start", "cwd": "/work/Claudiki"})
+    s = br.sessions["s1"]
+    assert br.card_name(s) == "Claudiki", "без названия остаётся каталог"
+
+    s.reg_name = "тест, что название выводится"
+    assert br.card_name(s) == "тест, что назва~", "длинное название режется с хвоста"
+    assert len(br.card_name(s)) <= 16
+
+    s.reg_name = "Короткое"
+    assert br.card_name(s) == "Короткое", "короткое название не трогаем"
+
+    s.reg_name = "   "
+    assert br.card_name(s) == "Claudiki", "пустое название — не название"
+
+
 def test_display_name_cyrillic_and_long():
-    assert b.display_name("/home/e/проекты/каталог", 16) == "katalog"
+    # Кириллица едет на экран как есть: у прошивки свой шрифт, транслит больше не нужен
+    assert b.display_name("/home/e/проекты/каталог", 16) == "каталог"
     long = b.display_name("/repo/.worktrees/feature-knowledgebase-migration-v2", 16)
     assert long == "feature-~tion-v2" and len(long) <= 16
 
@@ -176,9 +199,9 @@ def test_coerce_pid(value, expected):
 
 # --- Автомат: start и переходы ------------------------------------------------
 def test_handle_event_stores_display_name(bridge):
-    # кириллица транслитерируется, длинное worktree-имя режется по центру
+    # кириллица сохраняется как есть, длинное worktree-имя режется по центру
     bridge.handle_event({"session_id": "ru", "event": "start", "cwd": "/home/e/проекты/каталог"})
-    assert bridge.sessions["ru"].name == "katalog"
+    assert bridge.sessions["ru"].name == "каталог"
     bridge.handle_event({"session_id": "wt", "event": "start",
                          "cwd": "/repo/.worktrees/feature-knowledgebase-migration-v2"})
     assert bridge.sessions["wt"].name == "feature-~tion-v2"

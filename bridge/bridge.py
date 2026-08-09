@@ -232,8 +232,14 @@ def shorten_middle(s: str, n: int) -> str:
 
 
 def display_name(cwd: str, max_len: int = 16) -> str:
-    """Готовое к выводу на ESP имя карточки: basename → транслит → обрезка по центру."""
-    return shorten_middle(transliterate(basename_of(cwd)), max_len)
+    """Готовое к выводу на ESP имя карточки: basename → обрезка по центру.
+
+    Транслита больше нет. Он появился, когда прошивка умела только CP437 и рисовала
+    кириллицу мусором; с тех пор у неё свой шрифт, и «Проект» доезжает до экрана как
+    «Проект», а не «Proekt». Всё, что шрифт не умеет (иероглифы, эмодзи в имени папки),
+    прошивка покажет вопросом — это честнее молчаливой подмены букв.
+    """
+    return shorten_middle(basename_of(cwd), max_len)
 
 
 # --- рулетка обеда ------------------------------------------------------------
@@ -1683,15 +1689,33 @@ class Bridge:
                 return cut
         return {sid: sid[:limit] for sid in ids}
 
+    def card_name(self, s: Session) -> str:
+        """Что писать на карточке: НАЗВАНИЕ СЕССИИ, если Claude Code его дал.
+
+        В реестре у сессии есть человекочитаемое имя («тест, что название выводится»),
+        и оно куда полезнее имени каталога: сессий в одном репозитории обычно
+        несколько, и все карточки назывались одинаково. Каталог остаётся запасным
+        вариантом — на случай, когда реестр выключен или сессия в него ещё не попала.
+
+        Длинное название режется с ХВОСТА, а не по центру: это фраза, и смысл в её
+        начале. Имя каталога по-прежнему режется по центру — там различие как раз в
+        хвосте (worktree с общим префиксом).
+        """
+        title = (s.reg_name or "").strip()
+        if not title:
+            return s.name
+        n = self.cfg.name_max
+        return title if len(title) <= n else title[:n - 1] + "~"
+
     def _disambiguate(self, visible: list[Session]) -> list[dict]:
         """Готовит карточки; при совпадении имён (несколько сессий в одном репо/
         worktree) добавляет короткий суффикс из session_id, чтобы различать."""
-        names = [s.name for s in visible]
+        names = [self.card_name(s) for s in visible]
         dups = {n for n in names if names.count(n) > 1}
         short = self.short_ids(visible)
         out = []
         for s in visible:
-            name = s.name
+            name = self.card_name(s)
             if name in dups:
                 suffix = "#" + s.session_id[:4]
                 base = shorten_middle(name, max(1, self.cfg.name_max - len(suffix)))
