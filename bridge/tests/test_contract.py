@@ -57,6 +57,13 @@ class Snap:
         self.br.screen = 2
         self.br.places = ["НАПОЛИ", "СКАЗКА"]
         self.roulette = self.br.build_snapshot()
+        # второй режим того же экрана — на выбывание: у него свои поля (маска и
+        # порядок вылета), и контракт обязан покрывать оба
+        self.br.roul_mode = 1
+        self.br.roul_out = {0}
+        self.br.roul_seq = [0]
+        self.cull = self.br.build_snapshot()
+        self.br.roul_mode = 0
         self.br.screen = 3
         self.br._points_loaded = True
         self.slot = self.br.build_snapshot()
@@ -72,13 +79,14 @@ def snap():
 
 
 # "cmd" — не снэпшот, а отладочная команда мосту→плате (снимок экрана);
-# проверяется отдельным тестом ниже, поэтому из сверки снэпшота исключён.
-COMMAND_KEYS = {"cmd"}
+# "pl" — порция списка мест: он любой длины и в строку снэпшота не влезает, поэтому
+# едет отдельными строками. Обе проверяются своими тестами ниже.
+COMMAND_KEYS = {"cmd", "pl"}
 
 
 def test_firmware_top_level_keys_are_sent(sketch, snap):
     read = keys_read_from(sketch, "doc") - COMMAND_KEYS
-    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.slot)
+    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.cull) | set(snap.slot)
     missing = read - available
     assert not missing, f"прошивка читает, а мост не шлёт: {sorted(missing)}"
 
@@ -102,7 +110,7 @@ def test_shot_command_matches_firmware(sketch):
 
 def test_bridge_top_level_keys_are_understood(sketch, snap):
     read = keys_read_from(sketch, "doc")
-    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.slot)
+    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.cull) | set(snap.slot)
     # "v" прошивка намеренно игнорирует: версия нужна людям и логам
     unread = sent - read - {"v"}
     assert not unread, f"мост шлёт, а прошивка не разбирает: {sorted(unread)}"
@@ -151,7 +159,10 @@ def test_encoder_events_from_sketch_are_accepted_by_bridge(sketch):
     """Строки, которые скетч реально отправляет, мост обязан понимать."""
     events = set(re.findall(r'sendEnc\(\s*(?:[^,]*\?\s*)?"(\w+)"\s*:?\s*"?(\w+)?"?', sketch))
     sent = {e for pair in events for e in pair if e}
-    assert {"cw", "ccw", "key", "hold"} <= sent, f"в скетче нашлось только {sorted(sent)}"
+    # "hold" из жестов убран намеренно: ручной сон гасил подсвеченный экран и только
+    # занимал ручку. Клик отдан режиму экрана обеда, двойной клик — сбросу круга.
+    assert {"cw", "ccw", "key", "dbl"} <= sent, f"в скетче нашлось только {sorted(sent)}"
+    assert "hold" not in sent, "удержание вернулось в прошивку — жест убран намеренно"
 
     cfg = b.Config(max_sessions=6)
     br = b.Bridge(cfg, sink=None, clock=lambda: 1.0, is_alive=lambda p: True,
@@ -250,18 +261,82 @@ def test_roulette_fields_match(sketch, tmp_path):
                   wall_clock=lambda: 1_700_000_000.0, registry_probe=lambda: None)
     br.places = ["НАПОЛИ", "СКАЗКА"]
     sent = set(br.build_roulette())
+    br.roul_mode = 1
+    sent |= set(br.build_roulette())
     assert read, "в скетче не нашлось чтения полей рулетки — регулярка устарела?"
     assert not (read - sent), f"прошивка читает, а мост не шлёт: {sorted(read - sent)}"
     assert not (sent - read), f"мост шлёт, а прошивка не разбирает: {sorted(sent - read)}"
 
 
-def test_roulette_limits_match_firmware(sketch):
-    """Список мест должен влезать в буферы прошивки — иначе имена обрежутся молча."""
-    places_max = int(re.search(r"#define R_PLACES_MAX\s+(\d+)", sketch).group(1))
+def test_button_gestures_are_blocked_while_drum_spins(sketch):
+    """Кнопка обязана молчать, пока барабан крутится.
+
+    Блокировка живёт в ПРОШИВКЕ: только она знает, крутится ли барабан. Через мост
+    это не проверить (POST /enc обходит плату), поэтому проверяем сам обработчик:
+    в нём должен стоять roulBusy(), а сам roulBusy — покрывать все ходовые состояния.
+    """
+    press = sketch[sketch.index("void pollEncoder"):]
+    press = press[:press.index(chr(10) + "}")]
+    assert "roulBusy()" in press, "жесты кнопки перестали блокироваться на ходу"
+    busy = sketch[sketch.index("bool roulBusy() {"):]      # тело, а не прототип
+    busy = busy[:busy.index(chr(10) + "}")]
+    for st in ("R_CHARGE", "R_SPIN", "R_LAND", "R_CULL"):
+        assert st in busy, f"roulBusy не считает {st} движением"
+
+
+def test_board_reports_drum_state(sketch):
+    """Плата обязана уметь рассказать о барабане: иначе логику выбывания не проверить
+    ничем, кроме глаз у стола — так оба бага первого переноса и дожили до железа."""
+    plain = sketch.replace("\\", "")
+    assert '"esp":"roul"' in plain, "прошивка не отдаёт состояние барабана"
+    for field in ('"md"', '"st"', '"alive"', '"champ"', '"out"'):
+        assert field in plain, f"в отчёте о барабане нет поля {field}"
+    src = pathlib.Path(b.__file__).read_text(encoding="utf-8")
+    assert 'kind == "roul"' in src, "мост не разбирает отчёт о барабане"
+    assert "roulette_esp" in src, "состояние барабана не попадает в /debug"
+
+
+def test_places_chunk_fields_match(sketch):
+    """Поля строки-порции сверяются в обе стороны: иначе барабан останется пустым.
+
+    Порцию прошивка разбирает своим сканером, а не ArduinoJson (в 2-килобайтную арену
+    документа порция не влезает), поэтому имена полей ищем в её литералах: `"rev":`,
+    `"n":`, `"b":`, `"i":`, `"p":[`.
+    """
+    body = sketch[sketch.index("bool roulTakePlaces"):]
+    body = body[:body.index("\n}")]
+    read = set(re.findall(r'\\"(\w+)\\":', body)) - {"pl"}   # "pl" — имя самого блока
+    sent = set(json.loads(b.places_chunks(["НАПОЛИ", "СКАЗКА"])[0])["pl"])
+    assert read, "в скетче не нашлось чтения полей порции — регулярка устарела?"
+    assert not (read - sent), f"прошивка читает, а мост не шлёт: {sorted(read - sent)}"
+    assert not (sent - read), f"мост шлёт, а прошивка не разбирает: {sorted(sent - read)}"
+
+
+def test_places_request_understood_by_bridge(sketch):
+    """Плата просит список при чужой ревизии — мост обязан понимать этот запрос."""
+    plain = sketch.replace("\\", "")
+    assert '"enc":"places"' in plain, "прошивка перестала просить список мест"
+    assert b.parse_esp_line('{"enc":"places"}') == {"enc": "places", "held": False}
+    src = pathlib.Path(b.__file__).read_text(encoding="utf-8")
+    assert 'event == "places"' in src, "мост не разбирает запрос списка мест"
+    # ответ платы о принятом списке: по нему мост видит, что она уместила не всё
+    assert '"esp":"places"' in plain, "прошивка не отчитывается о принятом списке"
+    assert 'kind == "places"' in src, "мост не разбирает отчёт платы о списке"
+
+
+def test_places_chunks_fit_firmware_buffers(sketch):
+    """Порции обязаны влезать и в приёмную строку прошивки, и в её арену JSON."""
+    line_max = int(re.search(r"LINE_MAX\s*=\s*(\d+)", sketch).group(1))
+    arena = int(re.search(r"CAP\s*=\s*(\d+)", sketch).group(1))
     name_buf = int(re.search(r"#define R_NAME_MAX\s+(\d+)", sketch).group(1))
-    assert b.PLACES_MAX <= places_max, "мост шлёт больше мест, чем помещается"
     # кириллица в UTF-8 — два байта на символ, плюс завершающий ноль
     assert b.PLACE_NAME_MAX * 2 + 1 <= name_buf, "имя места не влезает в буфер прошивки"
+    assert b.PLACES_LINE_MAX < line_max, "порция не влезет в приёмную строку прошивки"
+    assert b.PLACES_LINE_MAX * 2 <= arena, "порции негде разобраться: мала арена JSON"
+    # худший случай: имена максимальной длины, список заведомо длиннее одной порции
+    names = [b.prepare_place("Я" * b.PLACE_NAME_MAX) + str(i) for i in range(50)]
+    for line in b.places_chunks(names):
+        assert len(line.encode("utf-8")) <= b.PLACES_LINE_MAX + 1
 
 
 def test_roulette_spin_event_understood_by_bridge(sketch):

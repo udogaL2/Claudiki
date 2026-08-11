@@ -161,8 +161,8 @@
         </div>
         <p class="knobhint">
           крути — <b>страницы</b><br>
-          нажми — <b>экран</b><br>
-          держи — <b>сон</b><br>
+          <kbd>Shift</kbd>+крути — <b>экран</b><br>
+          клик — <b>режим обеда</b>, два клика — <b>сброс</b><br>
           <kbd>←</kbd><kbd>→</kbd> · <kbd>Space</kbd>
         </p>
       </div>
@@ -233,6 +233,24 @@
       </div>
       <p class="note">
         Сон держит мост; будит любой щелчок и любая ожившая сессия — <b>WAITING обязательно</b>.
+      </p>
+    </section>
+
+    <section class="card-panel">
+      <h2>Обед</h2>
+      <div class="btns" id="roulmode">
+        <button data-rm="0" class="on">рулетка</button>
+        <button data-rm="1">на выбывание</button>
+      </div>
+      <div class="btns" id="roulcnt">
+        <button data-rc="6" class="on">6 мест</button>
+        <button data-rc="12">12</button>
+        <button data-rc="25">25</button>
+      </div>
+      <p class="note">
+        На выбывание: первая раскрутка отсеивает поле <b>до пяти финалистов</b> (каждый
+        вылет показывается отдельно), дальше по одному за раскрутку и медленнее — ради
+        интриги. Круг заканчивается победителем, сброс — <b>два клика</b>.
       </p>
     </section>
 
@@ -1462,9 +1480,71 @@
 
   let rPlaces = ["КАЙЗЕРВЮРСТ", "ФЬЮЖН ЭКСПРЕСС", "ПЕЛЬМЕННАЯ",
                  "НАПОЛИ", "СКАЗКА", "РОСТИКС"];
+  // Запас хода: строки, которые барабан обязан пройти, прежде чем начнёт тормозить.
+  // Копится щелчками на потолке скорости и тратится в полёте — так длительность
+  // раскрутки задаёт длину полёта, а не только его первые полсекунды.
+  // Подобрано симуляцией: 3-5 щелчков дают полёт ~3.5с, 14 щелчков ~7.4с. Больше —
+  // уже не интрига, а ожидание, поэтому запас упирается в потолок.
+  const R_EXTRA_KICK = 2;                 // строк за щелчок сверх потолка скорости
+  const R_EXTRA_MAX = 12;
+  let rExtra = 0;
   let rPos = 0, rVel = 0, rWin = -1, rWonAt = 0, rLastTick = 0;
   let rLanding = false, rLandA = 0, rLandEnd = 0, rLandT0 = 0;
   let rState = "idle";                    // idle | charging | spinning | landing | won
+
+  // --- режим на выбывание ---------------------------------------------------
+  // Второй режим ТОГО ЖЕ экрана, а не отдельный экран: список, барабан и крупье
+  // те же, разная только судьба выпавшего. Переключается кликом.
+  //
+  // Выбывшие НЕ убираются из списка, а помечаются маской. Убрать значило бы сменить
+  // состав, а смена состава на плате сбрасывает барабан в нулевую позицию — после
+  // каждого выстрела картинка дёргалась бы. С маской кольцо целое: вылетевшие
+  // остаются и пролетают в окне зачёркнутыми, и видно, как поле редеет.
+  const R_FINALISTS = 5;                  // до скольких сокращает первая раскрутка
+  let rMode = 0;                          // 0 — обычная рулетка, 1 — на выбывание
+  let rOut = new Set();                   // индексы выбывших
+  let rCullQ = [];                        // очередь вылетов текущей серии
+  let rCullHold = 0;                      // до какого времени показываем вылетевшего
+  let rCullFast = false;                  // отсев до пятёрки (быстро) или финал (медленно)
+  let rCullN = 0;                         // длина текущей серии — от неё время показа
+  let rLastOut = -1;                      // кого показываем вылетевшим прямо сейчас
+  let rChamp = -1;                        // победитель круга
+
+  const rAlive = () => rPlaces.map((_, i) => i).filter(i => !rOut.has(i));
+  // Барабан в движении — жесты не принимаются. Смена режима на ходу выбрасывала
+  // результат уже начатой раскрутки: барабан доезжал в одном режиме, а на экране
+  // был другой. Ждём остановки; «победа» и покой движением не считаются.
+  const rBusy = () => rState==="charging" || rState==="spinning"
+                   || rState==="landing"  || rState==="culling";
+  // Вылетевшего держим на экране СЕКУНДУ, независимо от длины серии: прочитать имя
+  // за четверть секунды нельзя, а весь смысл показа — увидеть, кто именно выбыл.
+  // Экономим на перелёте между жертвами, а не на показе.
+  const R_SHOW_MS = 1000;
+
+  // Состояние обеда наружу — чтобы режим можно было проверить скриптом, а не только
+  // глазами по экрану: «выбывание не крутится» ловится тут за секунду.
+  window.roulState = () => ({mode: rMode, state: rState, vel: +rVel.toFixed(2), extra: +rExtra.toFixed(1),
+                             alive: rAlive().length, out: [...rOut], champ: rChamp,
+                             queue: rCullQ.length});
+
+  function roulReset(){
+    rOut = new Set(); rCullQ = []; rCullHold = 0; rLastOut = -1; rChamp = -1;
+    rWin = -1; rState = "idle"; rVel = 0; rLanding = false; rExtra = 0;
+    wire("in", {enc: "dbl"});
+    pushSnapshot();
+  }
+
+  // Так отвечает мост: он и решает, кто вылетает. Первая раскрутка сокращает поле
+  // до пяти финалистов разом, дальше — по одному за раскрутку.
+  function roulCull(){
+    const alive = rAlive();
+    if(alive.length <= 1) return [];
+    const k = alive.length > R_FINALISTS ? alive.length - R_FINALISTS : 1;
+    const pool = alive.slice();
+    const out = [];
+    for(let i = 0; i < k; i++) out.push(pool.splice((Math.random()*pool.length)|0, 1)[0]);
+    return out;
+  }
 
   const rN = () => Math.max(1, rPlaces.length);
   const R_FIT = ((R_WW-16)/6)|0;          // сколько символов влезает в окно
@@ -1477,11 +1557,35 @@
   }
 
   function roulKick(dir){
-    if(rState==="landing") return;                    // доезжает — не мешаем
-    if(rState==="won"){ rState="idle"; rWin=-1; rLanding=false; }     // новый заход
+    if(rState==="landing" || rState==="culling") return;   // доезжает — не мешаем
+    if(rMode===1 && rChamp>=0) return;                     // круг сыгран, ждём сброса
+    if(rState==="won"){ rState="idle"; rWin=-1; rLanding=false; rExtra=0; }   // новый заход
+    // Потолок разгона общий для всех режимов. Понижать его в финале нельзя: порог
+    // пуска R_SPIN_MIN лежит прямо под ним, и барабан переставал улетать вовсе —
+    // сколько ни крути, ничего не происходило. Финал замедляется НА ВЫБЕГЕ (см.
+    // roulPhysics), а не на разгоне.
+    const wasMax = rVel >= R_VEL_MAX - 0.01;
     rVel = Math.min(rVel + R_KICK * (rState==="spinning" ? 0.6 : 1), R_VEL_MAX);
+    // Щелчки, упёршиеся в потолок, не пропадают, а копят ЗАПАС ХОДА. Без этого
+    // «крутил долго» и «крутил три раза» давали одинаковый полёт: скорость упиралась
+    // в потолок, и результат приходил через те же две секунды. Теперь усилие видно.
+    if(wasMax || rState==="spinning") rExtra = Math.min(R_EXTRA_MAX, rExtra + R_EXTRA_KICK);
     if(rVel >= R_SPIN_MIN && rState!=="spinning"){
       rState = "spinning";
+      if(rMode===1){
+        wire("in", {enc:"spin", v:+rVel.toFixed(1)});
+        const out = roulCull();
+        setTimeout(()=>{
+          if(rState!=="spinning") return;
+          rCullQ = out.slice();
+          rCullN = out.length;
+          rCullFast = out.length > 1;      // отсев до пятёрки идёт бодро, финал — нет
+          if(rCullFast) rExtra = 0;        // отсев не растягиваем: он и так длинный
+          wire("out", {scr:2, mode:1, seq:out});
+          if(rCullQ.length){ rWin = rCullQ[0]; rState = "culling"; }
+        }, 140);
+        return;
+      }
       // скорость не подменяем: в полёт уходит ровно накрученное, поэтому «сильнее
       // раскрутил — дольше летит» выходит само
       wire("in", {enc:"spin", v:+rVel.toFixed(1)});
@@ -1505,17 +1609,65 @@
       rPos += rVel * dt;
     }
     if(rState==="charging" && rVel===0) rState = "idle";
-    if(rState==="spinning" && rWin>=0 && rVel < R_SPIN_MIN*1.6) rState = "landing";
-    if(rState==="landing"){
-      // Доводим ТОЛЬКО вперёд: доводка назад читалась бы как подкрутка результата.
-      // Пол скорости обязан быть НИЖЕ порога остановки, иначе барабан не встанет
-      // никогда — уже наступали: max(0.4,...) против условия rVel<0.3.
-      const n = rN();
-      const d = ((rWin - rPos) % n + n) % n;
-      if(d < 0.04 && rVel < 0.25){ rPos = rWin; rVel = 0; rState = "won"; rWonAt = now; }
-      else { rVel = Math.max(0.12, Math.min(rVel, d*2.4)); rPos += rVel*dt; }
+    // Серия выбывания: доехали до жертвы → пометили → секунду показываем → к следующей.
+    // Пауза обязательна: без неё вылетевший исчезает в тот же кадр, и человек видит
+    // только итог, а не «кто именно вылетел».
+    if(rState==="culling"){
+      if(rCullHold){
+        rVel = 0;
+        if(now < rCullHold) return;
+        rCullHold = 0;
+        rCullQ.shift();
+        if(rCullQ.length){ rWin = rCullQ[0]; rVel = rCullFast ? 13 : 6; rLanding = false; return; }
+        const alive = rAlive();
+        if(alive.length === 1){                 // остался один — доводим до него
+          rChamp = alive[0]; rWin = rChamp; rVel = 6; rState = "landing"; rLanding = false;
+        } else {
+          rState = "idle"; rWin = -1;           // ждём следующей раскрутки
+        }
+        return;
+      }
+      if(roulLand(dt)){                     // доехали до жертвы
+        rOut.add(rWin); rLastOut = rWin;
+        rCullHold = now + R_SHOW_MS;
+      }
+      return;
     }
+    // В доводку уходим, когда барабан УЖЕ заметно замедлился: раньше порог стоял выше
+    // потолка разгона, и доводка начиналась сразу после пуска — результат приходил
+    // через полсекунды, сколько ручку ни крути.
+    if(rState==="spinning" && rWin>=0 && rVel < R_SPIN_MIN*0.75){
+      rState = "landing"; rLanding = false;
+    }
+    if(rState==="landing" && roulLand(dt)){ rState = "won"; rWonAt = now; }
     rPos = ((rPos % rN()) + rN()) % rN();
+  }
+
+  // Доводка до rWin: РАВНОЗАМЕДЛЕННАЯ, как в прошивке. Тормозим с постоянным
+  // ускорением по заранее посчитанной дистанции, а не «скоростью от остатка пути»:
+  // второе выглядит как рывок у самой цели. Запас хода (rExtra) добавляет оборотов —
+  // так длительность раскрутки превращается в длину полёта.
+  // Возвращает true, когда барабан встал на цель.
+  function roulLand(dt){
+    const n = rN();
+    if(!rLanding){
+      const d = ((rWin - rPos) % n + n) % n;
+      const natural = rVel*rVel / (2*R_SPIN_FRICTION);       // сколько прошёл бы сам
+      const want = natural + rExtra;
+      rLandEnd = rPos + d + n*Math.max(1, Math.round((want - d)/n));   // целые обороты
+      const D = rLandEnd - rPos;
+      rLandA = Math.max(0.05, rVel*rVel / (2*D));
+      rLanding = true;
+      rExtra = 0;
+    }
+    rVel = Math.max(0, rVel - rLandA*dt);
+    if(rVel <= 0.03){
+      rPos = ((rWin % n) + n) % n; rVel = 0; rLanding = false;
+      return true;
+    }
+    rPos = rLandEnd - rVel*rVel/(2*rLandA);
+    rPos = ((rPos % n) + n) % n;
+    return false;
   }
 
   function renderRoulette(tt){
@@ -1528,8 +1680,10 @@
     g.fillRect(0,0,DW,18, lerp(ACCENT,BG,0.8));
     g.drawFastHLine(0,18,DW,lerp(ACCENT,BG,0.4));
     txPx("ГДЕ ОБЕДАЕМ", 8, 5, 1, lerp(CREAM,BG,0.05));
-    txPx(`${rN()} МЕСТ  ${hhmm(cafeNow)}`, DW-8-txPxW(`${rN()} МЕСТ  ${hhmm(cafeNow)}`), 5, 1,
-         lerp(CREAM,BG,0.35));
+    // В режиме выбывания в шапке — сколько ещё в игре: это главное число режима
+    const head = rMode===1 ? `В ИГРЕ ${rAlive().length} ИЗ ${rN()}  ${hhmm(cafeNow)}`
+                           : `${rN()} МЕСТ  ${hhmm(cafeNow)}`;
+    txPx(head, DW-8-txPxW(head), 5, 1, lerp(CREAM,BG,0.35));
 
     // корпус барабана: боковые рейки и подсветка окна ПОД текстом
     g.drawFastVLine(R_WX-6, R_TOP, R_BOT-R_TOP, lerp(ACCENT,BG,0.72));
@@ -1544,10 +1698,16 @@
       if(y < R_TOP-2 || y > R_BOT-8) continue;
       const off = Math.abs(y - R_WIN_Y);
       const inWin = off < R_ROW*0.5;
-      const col = inWin ? (won ? 0xFFFF : CREAM)
-                        : lerp(CREAM, BG, 0.4 + Math.min(0.5, off/(R_ROW*3.2)));
+      const dead = rOut.has(idx);
+      let col = inWin ? (won ? 0xFFFF : CREAM)
+                      : lerp(CREAM, BG, 0.4 + Math.min(0.5, off/(R_ROW*3.2)));
+      // Вылетевшие остаются в кольце: гаснут и перечёркиваются. Только что выбитого
+      // подсвечиваем красным — иначе в череде серых полосок не видно, кто сейчас выбыл.
+      if(dead) col = (idx===rLastOut && rCullHold) ? C_ERR : lerp(col, BG, 0.62);
       const nm = rFit(rPlaces[idx]);
-      txPx(nm, R_WX + ((R_WW - txPxW(nm))>>1), y+3, 1, col);
+      const tx = R_WX + ((R_WW - txPxW(nm))>>1);
+      txPx(nm, tx, y+3, 1, col);
+      if(dead) g.drawFastHLine(tx-2, y+7, txPxW(nm)+4, col);
     }
 
     // края барабана глуше — окно читается как окно
@@ -1635,6 +1795,25 @@
   }
 
   function roulStatus(now, won){
+    if(rMode===1){
+      if(rChamp>=0 && won){
+        const flash = (now-rWonAt) < 1200 && (((now-rWonAt)/130)|0)%2===0;
+        txPx("ПОБЕДИТЕЛЬ!", 8, DH-13, 1, flash ? 0xFFFF : C_WORK);
+        txPx("ДВА КЛИКА — ЗАНОВО", DW-8-txPxW("ДВА КЛИКА — ЗАНОВО"), DH-13, 1, lerp(CREAM,BG,0.62));
+        return;
+      }
+      if(rState==="culling"){
+        const nm = rFit(rPlaces[rLastOut>=0 && rCullHold ? rLastOut : rWin]);
+        txPx(rCullHold ? `ВЫЛЕТЕЛ: ${nm}` : "ВЫБИВАЕТ...", 8, DH-13, 1,
+             rCullHold ? C_ERR : lerp(CREAM,BG,0.3));
+        return;
+      }
+      const left = rAlive().length;
+      txPx(left > R_FINALISTS ? "КРУТИ — ОТСЕВ ДО ПЯТИ" : `ФИНАЛ: ОСТАЛОСЬ ${left}`,
+           8, DH-13, 1, lerp(CREAM,BG,0.25));
+      txPx("КЛИК — РЕЖИМ", DW-8-txPxW("КЛИК — РЕЖИМ"), DH-13, 1, lerp(CREAM,BG,0.7));
+      return;
+    }
     if(won){
       // мигание первые секунды: глаз ловит смену, а не статичную надпись
       const flash = (now-rWonAt) < 1200 && (((now-rWonAt)/130)|0)%2===0;
@@ -2201,16 +2380,34 @@
     popupUntil = performance.now() + 1400;
     pushSnapshot();
   }
+  // Клик и двойной клик. Экраны переключаются ТОЛЬКО вращением с зажатой кнопкой,
+  // поэтому клик свободен и отдан режиму рулетки, а двойной — сбросу круга.
+  // Одиночный клик приходится придержать на окно двойного: иначе двойной клик
+  // сначала сработает как одиночный и успеет переключить режим.
+  const DBL_MS = 320;
+  let clickTimer = null;
   function press(){
-    wire("in", {enc:"key"});
-    if(sleeping){ markActivity(true); return; }
-    markActivity(false);
-    setScreen(screenIdx+1);
-  }
-  function longPress(){                        // удержание ≥1с — уложить экран спать
-    wire("in", {enc:"hold"});
-    setSleep(!sleeping);
-    if(!sleeping) markActivity(false);
+    // Пока барабан крутится, кнопка не работает вовсе: и режим, и сброс меняют
+    // состав круга, а барабан уже летит к результату прежнего.
+    if(screenIdx===2 && rBusy()) return;
+    if(clickTimer){                            // второй клик внутри окна — это двойной
+      clearTimeout(clickTimer); clickTimer = null;
+      if(sleeping){ markActivity(true); return; }
+      markActivity(false);
+      if(screenIdx===2 && rMode===1) roulReset();
+      return;
+    }
+    clickTimer = setTimeout(()=>{
+      clickTimer = null;
+      if(screenIdx===2 && rBusy()) return;      // успел крутануть, пока ждали двойного
+      wire("in", {enc:"key"});
+      if(sleeping){ markActivity(true); return; }
+      markActivity(false);
+      if(screenIdx!==2) return;                // клик живёт только на экране обеда
+      rMode = rMode===1 ? 0 : 1;               // переключаем режим
+      if(rMode===1) roulReset(); else { rWin = -1; rState = "idle"; rVel = 0; rExtra = 0; }
+      pushSnapshot();
+    }, DBL_MS);
   }
   document.getElementById("cw").onclick  = e=>rotate(+1, e.shiftKey);
   document.getElementById("ccw").onclick = e=>rotate(-1, e.shiftKey);
@@ -2224,9 +2421,10 @@
   });
   knob.addEventListener("pointerup", ()=>{
     knob.classList.remove("pressed");
-    // короткое нажатие — экран, удержание ≥1с — сон. Двойной клик намеренно не вводим:
-    // он требует задержки распознавания, и крутилка начинает тупить.
-    if(!dragged) (performance.now()-pressStart >= 1000) ? longPress() : press();
+    // Удержания больше нет: единственным его смыслом был ручной сон, а сон и так
+    // гасил подсвеченный экран — жест занимал ручку и ничего не давал. Клик —
+    // режим рулетки, два клика подряд — сброс круга выбывания.
+    if(!dragged) press();
     dragAngle=null; dragged=false;
   });
   knob.addEventListener("pointercancel", ()=>{ knob.classList.remove("pressed"); dragAngle=null; dragged=false; });
@@ -2429,7 +2627,7 @@
   };
 
   const sleepEl=document.getElementById("sleepsec"), sleepValEl=document.getElementById("sleepsecval");
-  document.getElementById("sleepbtn").onclick=longPress;
+  document.getElementById("sleepbtn").onclick=()=>{ setSleep(!sleeping); if(!sleeping) markActivity(false); };
   sleepEl.addEventListener("input", ()=>{
     sleepAfterSec=+sleepEl.value;
     sleepValEl.textContent = sleepAfterSec ? sleepAfterSec+"с" : "выкл";
@@ -2482,6 +2680,20 @@
     b.onclick=()=>{ document.querySelectorAll(sel).forEach(x=>x.classList.toggle("on", x===b)); apply(b); };
   });
   pick("#modebtns button", b=>{ mode=b.dataset.mode; espKey=""; popupCur=null; lastRestore=null; });
+  // Панель обеда: режим и длина списка. Длинный список нужен именно здесь — на шести
+  // местах отсев до пятёрки выбивает одного и режим выглядит одинаково с рулеткой.
+  pick("#roulmode button", b=>{
+    rMode = +b.dataset.rm;
+    roulReset();
+    if(screenIdx!==2) setScreen(2);
+  });
+  pick("#roulcnt button", b=>{
+    const n = +b.dataset.rc;
+    const base = ["КАЙЗЕРВЮРСТ", "ФЬЮЖН ЭКСПРЕСС", "ПЕЛЬМЕННАЯ", "НАПОЛИ", "СКАЗКА", "РОСТИКС"];
+    rPlaces = Array.from({length: n}, (_, i) => i < base.length ? base[i] : `СТОЛОВАЯ ${i - 5}`);
+    roulReset();
+    if(screenIdx!==2) setScreen(2);
+  });
   pick("#restbtns button", b=>{ restoreMode=b.dataset.rest; });
   pick("#wbtns button", b=>{ weightStyle=b.dataset.w; espKey=""; });
   pick("#livebtns button", b=>{

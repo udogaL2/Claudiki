@@ -29,6 +29,7 @@ import socket
 import sys
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Protocol
@@ -246,9 +247,25 @@ def display_name(cwd: str, max_len: int = 16) -> str:
 # Третий экран. Список мест и выбор победителя держит МОСТ: список — это состояние
 # (правится без перепрошивки), а «не повторять прошлого» — правило, которому нужна
 # память. Прошивке остаётся физика барабана и рисование.
-PLACES_MAX = 12               # больше на барабан не нужно, а строка снэпшота дорога
+#
+# Числом мест мост НЕ ограничен: сколько строк в файле — столько и на барабане.
+# Раньше стоял потолок в 12 (столько влезало в одну строку снэпшота), и всё сверх
+# него молча пропадало — а «молча» здесь худшая часть: список правит человек и
+# видит на экране не то, что написал. Поэтому список уехал из снэпшота в отдельные
+# строки-порции (`places_chunks`), которые прошивка запрашивает при смене ревизии;
+# снэпшот везёт только номер ревизии, размер списка и победителя.
 PLACE_NAME_MAX = 20           # столько влезает в окно барабана
 PLACES_FILE = "lunch-places.json"
+# Порция списка. Потолок — приёмная строка прошивки (LINE_MAX=1024 байта); 800
+# оставляют запас на перевод строки и на служебные поля. В арену документа
+# ArduinoJson порция НЕ обязана влезать: прошивка разбирает её отдельным сканером
+# именно потому, что арена мала (порция в 484 байта уже не разбиралась — плата
+# молча просила список снова и снова, а на экране стояло «0 МЕСТ»).
+PLACES_LINE_MAX = 800
+# До скольких мест первая раскрутка сокращает поле в режиме на выбывание. Дальше
+# выбывает по одному: интрига живёт в последних раскрутках, а двадцать четыре
+# раскрутки подряд на длинном списке — это не игра, а работа.
+ROUL_FINALISTS = 5
 
 
 def prepare_place(name: str) -> str:
@@ -279,10 +296,55 @@ def load_places(path: str) -> list[str] | None:
     if not isinstance(raw, list):
         return None
     out = []
-    for item in raw[:PLACES_MAX]:
+    for item in raw:
         name = prepare_place(item if isinstance(item, str) else "")
         if name:
             out.append(name)
+    return out
+
+
+def places_rev(places: list[str]) -> int:
+    """Ревизия списка = CRC его содержимого.
+
+    Именно содержимого, а не счётчик: счётчик пришлось бы хранить в файле состояния,
+    и после перезапуска моста он мог бы совпасть с тем, что плата уже держит, при
+    другом составе — барабан крутил бы старые названия. CRC совпадает тогда и только
+    тогда, когда списки совпадают.
+    """
+    return zlib.crc32("\n".join(places).encode("utf-8")) & 0x7FFFFFFF
+
+
+def _places_line(rev: int, n: int, total: int, start: int, batch: list[str]) -> str:
+    """Одна строка-порция: `rev` — ревизия, `n` — всего мест, `b` — байт под имена
+    (прошивка выделяет буфер одним куском), `i` — индекс первого имени порции."""
+    return json.dumps({"v": 1, "pl": {"rev": rev, "n": n, "b": total, "i": start, "p": batch}},
+                      separators=(",", ":"), ensure_ascii=False) + "\n"
+
+
+def places_chunks(places: list[str], line_max: int = PLACES_LINE_MAX) -> list[str]:
+    """Режет список на строки-порции по `line_max` байт.
+
+    Порции идут подряд с нулевого индекса: прошивка складывает имена в один буфер
+    последовательно и по разрыву нумерации видит потерянную строку — тогда она
+    просто перезапросит список целиком.
+    """
+    rev = places_rev(places)
+    total = sum(len(p.encode("utf-8")) + 1 for p in places)   # +1 — завершающий ноль
+    out: list[str] = []
+    i = 0
+    while i < len(places):
+        batch: list[str] = []
+        j = i
+        while j < len(places):
+            line = _places_line(rev, len(places), total, i, batch + [places[j]])
+            if batch and len(line.encode("utf-8")) > line_max:
+                break
+            batch.append(places[j])
+            j += 1
+        out.append(_places_line(rev, len(places), total, i, batch))
+        i = j
+    if not out:                       # пустой список тоже надо доставить: барабан чистится
+        out.append(_places_line(rev, 0, 0, 0, []))
     return out
 
 
@@ -916,6 +978,20 @@ class Bridge:
         # «крутится». Поэтому счётчики лежат в файле состояния рядом с баллами.
         self.roul_spin = 0
         self.roul_last = -1                   # прошлый победитель — его не повторяем
+        # Сколько мест плата реально уместила в память. Заполняется её ответом
+        # `{"esp":"places","n":K,"rev":R}`: если список длиннее её бюджета, победителя
+        # выбираем среди принятых — иначе барабан доезжал бы до пустой строки.
+        self._roul_fit: tuple[int, int] | None = None
+        self._places_sent = 0                 # сколько раз отдавали список (для /debug)
+        # Второй режим того же экрана — на выбывание. Выбывшие не убираются из списка,
+        # а помечаются: убрать значило бы сменить состав, а смена состава сбрасывает
+        # барабан платы в нулевую позицию — картинка дёргалась бы после каждой раскрутки.
+        self.roul_mode = 0                    # 0 — рулетка, 1 — на выбывание
+        self.roul_out: set[int] = set()       # индексы выбывших в текущем круге
+        self.roul_seq: list[int] = []         # кого выбило последней раскруткой (по порядку)
+        self.roul_champ = -1                  # победитель круга, пока не сброшен
+        self.esp_roul: dict = {}              # что о барабане говорит сама плата
+        self._places_asked = (-1, 0)          # (ревизия, сколько раз её просили подряд)
 
         # Автомат на баллы. Баллы капают за отработанные минуты и переживают
         # перезапуск: файл рядом с логом, пишется только когда счёт изменился.
@@ -1313,6 +1389,17 @@ class Bridge:
             # всегда — иначе включил и не увидел. Это и есть весь смысл канала.
             self.log.info("ручка: %s", json.dumps(d, ensure_ascii=False))
             return True
+        if kind == "roul":
+            # Состояние барабана, как его видит ПЛАТА. Нужно, чтобы логику выбывания
+            # можно было проверить прогоном, а не глазами: мост знает, кто выбыл, но
+            # не знает, куда доехал барабан и что нарисовано.
+            self.esp_roul = {k: v for k, v in d.items() if k != "esp"}
+            self.log.info("барабан платы: %s", json.dumps(d, ensure_ascii=False))
+            return True
+        if kind == "places":
+            # Отчёт о принятом списке мест: сколько имён плата уместила в память.
+            self.note_places_fit(d.get("rev") or 0, d.get("n") or 0)
+            return True
         if kind not in ("boot", "life"):
             return False
         now_ms = int(self._wall() * 1000)
@@ -1341,6 +1428,12 @@ class Bridge:
         улетаешь не на ту страницу.
         """
         event = str(event or "").lower()
+        if event == "places":
+            # Плата увидела чужую ревизию списка мест и просит его целиком. Это не
+            # жест человека: ни будить экран, ни считаться активностью не должно —
+            # поэтому разбирается ДО пробуждения. Снэпшот пушить тоже незачем.
+            self.send_places()
+            return False
         self._enc_n += 1
         self._last_activity = self._clock()
         if self.sleeping:
@@ -1358,7 +1451,16 @@ class Bridge:
             else:
                 return False                      # вне аквариума листать нечего
         elif event == "key":
-            self.screen = (self.screen + 1) % self.SCREENS
+            # Клик больше НЕ листает экраны: экраны переключаются вращением с зажатой
+            # кнопкой, а клик отдан режиму экрана обеда — рулетка или на выбывание.
+            if self.screen != 2:
+                return False
+            self.set_roul_mode(0 if self.roul_mode else 1)
+        elif event == "dbl":
+            # Двойной клик — сброс круга выбывания. В обычной рулетке сбрасывать нечего.
+            if self.screen != 2 or self.roul_mode != 1:
+                return False
+            self.reset_round()
         elif event == "slot":
             # Прошивка раскрутила барабаны и просит исход. Как и в рулетке, экран не
             # проверяем: событие приходит только с этого экрана.
@@ -1557,8 +1659,128 @@ class Bridge:
             return False
         self.places = places
         self.roul_win = -1                     # состав сменился — прошлый выбор недействителен
+        self._roul_fit = None                  # что уместилось у платы — про старый список
+        # Круг выбывания тоже недействителен: выбывшие хранятся индексами, а в новом
+        # списке под теми же номерами стоят другие места.
+        self.roul_out = set()
+        self.roul_seq = []
+        self.roul_champ = -1
         self.log.info("список мест обновлён (%d): %s", len(places), ", ".join(places))
         return True
+
+    def places_fit(self) -> int:
+        """Сколько мест реально доступно барабану: столько же, сколько в списке, а если
+        плата не смогла принять весь — столько, сколько она подтвердила."""
+        n = len(self.places)
+        if self._roul_fit and self._roul_fit[0] == places_rev(self.places):
+            return max(0, min(n, self._roul_fit[1]))
+        return n
+
+    def send_places(self, reason: str = "запрос") -> bool:
+        """Отдаёт список мест порциями. Вызывается по запросу платы.
+
+        Запросом, а не пушем по изменению: плата сама знает, какая ревизия у неё
+        лежит, и просит список после перезагрузки, после правки файла и после
+        потерянной порции — одним и тем же путём. Проактивный пуш был бы вторым
+        механизмом, который отказывает молча и незаметно.
+        """
+        self.refresh_places()
+        rev = places_rev(self.places)
+        lines = places_chunks(self.places)
+        ok = True
+        for line in lines:
+            ok = self.sink.send(line) and ok
+        self._places_sent += 1
+        # Плата просит один и тот же список по кругу — значит он до неё не доезжает
+        # (так и было: порция не влезала в арену JSON, плата молчала, на экране «0
+        # МЕСТ»). Сама она об этом сказать не может, поэтому считаем повторы здесь.
+        if rev == self._places_asked[0]:
+            self._places_asked = (rev, self._places_asked[1] + 1)
+            if self._places_asked[1] == 3:
+                self.log.warning("плата просит список мест уже %d раз подряд — "
+                                 "он до неё не доезжает (порция велика? прошивка старая?)",
+                                 self._places_asked[1])
+        else:
+            self._places_asked = (rev, 1)
+        self.log.info("список мест отправлен (%s): %d мест, %d порций%s",
+                      reason, len(self.places), len(lines), "" if ok else ", serial не принял")
+        return ok
+
+    def note_places_fit(self, rev: int, taken: int) -> None:
+        """Плата отчиталась, сколько имён уместила. Меньше списка — предупреждаем.
+
+        Молчаливая обрезка списка — ровно та ошибка, из-за которой список уехал из
+        снэпшота; повторять её на стороне платы нельзя.
+        """
+        self._roul_fit = (int(rev), int(taken))
+        if places_rev(self.places) == int(rev) and taken < len(self.places):
+            self.log.warning("плата взяла %d мест из %d — не хватило её памяти; "
+                             "барабан крутит только принятые", taken, len(self.places))
+
+    # -- режим на выбывание ----------------------------------------------------
+    def set_roul_mode(self, mode: int) -> bool:
+        """Переключает режим экрана обеда. Круг выбывания при этом начинается заново.
+
+        Блокировку «нельзя менять режим на ходу» держит ПРОШИВКА: только она знает,
+        крутится ли барабан прямо сейчас, и просто не шлёт жест, пока он не встал.
+        """
+        self.roul_mode = 1 if mode else 0
+        self.reset_round()
+        self.log.info("экран обеда: режим %s", "на выбывание" if self.roul_mode else "рулетка")
+        return True
+
+    def reset_round(self) -> bool:
+        """Сброс круга: все снова в игре. Жест — двойной клик."""
+        self.roul_out = set()
+        self.roul_seq = []
+        self.roul_champ = -1
+        self.roul_win = -1
+        self.roul_spin += 1        # номер ответа: по нему плата видит, что состояние новое
+        self.mark_dirty()
+        return True
+
+    def roul_alive(self) -> list[int]:
+        return [i for i in range(self.places_fit()) if i not in self.roul_out]
+
+    def cull_round(self) -> bool:
+        """Одна раскрутка в режиме выбывания.
+
+        Первая сокращает поле до ROUL_FINALISTS разом (иначе на двадцати пяти местах
+        круг — это двадцать четыре раскрутки), дальше выбывает по одному. Порядок
+        вылета едет на плату целиком: она проигрывает его, показывая каждого.
+        """
+        self.refresh_places()
+        alive = self.roul_alive()
+        if len(alive) <= 1:
+            self.log.info("рулетка: круг уже сыгран, нужен сброс (двойной клик)")
+            return False
+        k = len(alive) - ROUL_FINALISTS if len(alive) > ROUL_FINALISTS else 1
+        pool = list(alive)
+        seq = []
+        for _ in range(k):
+            seq.append(pool.pop(self._rng.randrange(len(pool))))
+        self.roul_out.update(seq)
+        self.roul_seq = seq
+        self.roul_spin += 1
+        left = self.roul_alive()
+        self.roul_champ = left[0] if len(left) == 1 else -1
+        self.log.info("выбывание #%d: вылетели %s%s", self.roul_spin,
+                      ", ".join(self.places[i] for i in seq),
+                      f"; победитель {self.places[self.roul_champ]}" if self.roul_champ >= 0 else "")
+        self.save_points()
+        self.mark_dirty()
+        return True
+
+    def roul_out_mask(self) -> str:
+        """Маска выбывших в hex: по биту на место, младший бит — место 0.
+
+        Маской, а не списком: на длинном списке список индексов длиннее строки
+        снэпшота, а маска на сотню мест — это 25 символов.
+        """
+        bits = 0
+        for i in self.roul_out:
+            bits |= 1 << i
+        return f"{bits:x}"
 
     def spin_roulette(self) -> bool:
         """Выбирает победителя. Вызывается на событие 'spin' от прошивки.
@@ -1567,8 +1789,10 @@ class Bridge:
         это состояние, а состояние держит мост. Прошивка накопила скорость и просит
         результат; барабан доедет ровно до присланного индекса.
         """
+        if self.roul_mode == 1:
+            return self.cull_round()
         self.refresh_places()
-        n = len(self.places)
+        n = self.places_fit()
         if n == 0:
             self.log.warning("рулетка: список мест пуст, крутить нечего")
             return False
@@ -1592,10 +1816,20 @@ class Bridge:
         if not self._points_loaded:
             self.load_points()      # там же лежит счётчик ответов рулетки
         self.refresh_places()
+        # Самих названий здесь НЕТ: список любой длины в строку снэпшота не влезает,
+        # он едет отдельными порциями (`send_places`). Снэпшот везёт ревизию и размер —
+        # по ним плата понимает, что её список устарел, и просит новый.
         # nm — текущее время: шапка экрана его показывает, а без блока кофейни
         # прошивке взять его негде (стояло 00:00)
-        return {"p": list(self.places), "win": self.roul_win, "sp": self.roul_spin,
-                "nm": self.cafe_now()[1]}
+        # md/out/seq — режим на выбывание: маска выбывших и порядок вылета последней
+        # раскрутки. В обычном режиме их нет вовсе: незачем гонять пустые поля.
+        block = {"rev": places_rev(self.places), "win": self.roul_win,
+                 "sp": self.roul_spin, "nm": self.cafe_now()[1], "md": self.roul_mode}
+        if self.roul_mode == 1:
+            block["out"] = self.roul_out_mask()
+            block["seq"] = list(self.roul_seq)
+            block["win"] = self.roul_champ
+        return block
 
     def build_cafe(self) -> dict:
         """Готовый статус кофейни для прошивки: она в расписании не разбирается.
@@ -1826,6 +2060,14 @@ class Bridge:
                 # рулетка: чем крутили и что выпало — иначе «почему опять оно»
                 # снаружи не разобрать
                 "places": list(self.places),
+                # сколько мест дошло до платы: меньше списка = ей не хватило памяти
+                "places_fit": self.places_fit(),
+                "places_rev": places_rev(self.places),
+                "places_sent": self._places_sent,
+                "roulette_mode": self.roul_mode,
+                "roulette_esp": dict(self.esp_roul),   # состояние барабана глазами платы
+                "roulette_out": sorted(self.places[i] for i in self.roul_out
+                                       if i < len(self.places)),
                 "roulette_spins": self.roul_spin,
                 "roulette_win": (self.places[self.roul_win]
                                  if 0 <= self.roul_win < len(self.places) else None),
@@ -2171,8 +2413,11 @@ class Handler(BaseHTTPRequestHandler):
             # spin/slot — те же события, что шлёт прошивка, раскрутив барабан. Без них
             # исход рулетки и автомата (в том числе отказ «не хватает баллов») нельзя
             # ни воспроизвести, ни снять на скриншот, не стоя у платы с ручкой в руке.
-            if ev not in ("cw", "ccw", "key", "hold", "spin", "slot"):
-                self._respond(400, {"ok": False, "error": "enc: cw|ccw|key|hold|spin|slot"})
+            # places — запрос списка мест: тем же путём его можно передать в плату
+            # руками, не дожидаясь, пока она заметит смену ревизии.
+            if ev not in ("cw", "ccw", "key", "dbl", "hold", "spin", "slot", "places"):
+                self._respond(400, {"ok": False,
+                                    "error": "enc: cw|ccw|key|dbl|hold|spin|slot|places"})
                 return
             self.bridge.handle_encoder(ev, held=bool(data.get("held") or data.get("k")))
             self._respond(200, {"ok": True, "screen": self.bridge.screen,
@@ -2198,6 +2443,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond(400, {"ok": False, "error": "cmd: буквы и цифры"})
                 return
             n = max(1, min(60, int(data.get("n", 1) or 1)))
+            # Ответ на «расскажи о барабане» кладётся в esp_roul. Старый ответ надо
+            # стереть ДО запроса, иначе спросивший прочитает прошлый и не заметит,
+            # что плата не ответила вовсе (на этом уже попался прогон на железе).
+            if cmd == "roul":
+                self.bridge.esp_roul = {}
             ok = all(self.bridge.sink.send('{"cmd":"%s"}\n' % cmd) for _ in range(n))
             self._respond(200 if ok else 503, {"ok": ok, "cmd": cmd, "n": n})
             return

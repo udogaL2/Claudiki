@@ -1477,15 +1477,16 @@ def test_encoder_page_survives_shrinking_page_count(clock, liveness, sink):
     assert snap["pn"] == 2 and snap["p"] == 2 and br.page == 1
 
 
-def test_encoder_key_switches_screen(bridge):
-    # экранов четыре: аквариум → кофейня → рулетка → автомат → аквариум
-    assert bridge.handle_encoder("key") and bridge.screen == 1
-    bridge.handle_encoder("key")
-    assert bridge.screen == 2
-    bridge.handle_encoder("key")
-    assert bridge.screen == 3
-    bridge.handle_encoder("key")
-    assert bridge.screen == 0
+def test_encoder_key_no_longer_switches_screen(bridge):
+    """Клик отдан режиму экрана обеда: экраны листаются вращением с зажатой кнопкой.
+
+    Раньше клик листал экраны, и на ручке не оставалось ни одного свободного жеста
+    под режим рулетки. Удержание (ручной сон) убрано целиком — гасить нечего.
+    """
+    assert bridge.handle_encoder("key") is False and bridge.screen == 0
+    for expect in (1, 2, 3, 0):
+        bridge.handle_encoder("cw", held=True)
+        assert bridge.screen == expect
 
 
 def test_encoder_with_held_button_switches_screen(bridge):
@@ -1496,7 +1497,7 @@ def test_encoder_with_held_button_switches_screen(bridge):
 def test_encoder_does_not_page_outside_aquarium(clock, liveness, sink):
     br = make_bridge(b.Config(max_sessions=6), clock, liveness, sink)
     fill(br, 14)
-    br.handle_encoder("key")                      # ушли на кофейню
+    br.handle_encoder("cw", held=True)            # ушли на кофейню
     assert br.handle_encoder("cw") is False and br.page == 0
 
 
@@ -1766,7 +1767,7 @@ def test_snapshot_switches_to_cafe(clock, liveness, sink, monkeypatch):
     br = make_bridge(b.Config(), clock, liveness, sink)
     fill(br, 3)
     monkeypatch.setattr(br, "cafe_now", lambda: (MON, hm(12, 30)))
-    br.handle_encoder("key")
+    br.handle_encoder("cw", held=True)
     snap = br.build_snapshot()
     assert snap["scr"] == 1 and "sessions" not in snap
     cafe = snap["cafe"]
@@ -2093,10 +2094,14 @@ def test_http_enc_endpoint_drives_screens_and_pages():
         for i in range(8):                   # две страницы
             server.bridge.handle_event({"event": "start", "session_id": f"e{i}",
                                         "cwd": f"/w/p{i}"})
-        assert enc("key")["screen"] == 1
-        assert enc("key")["screen"] == 2
-        assert enc("key")["screen"] == 3
-        r = enc("key")
+        def held(ev):
+            with _post(port, "/enc", json.dumps({"enc": ev, "held": True}).encode()) as r:
+                return json.loads(r.read())
+
+        assert held("cw")["screen"] == 1
+        assert held("cw")["screen"] == 2
+        assert held("cw")["screen"] == 3
+        r = held("cw")
         assert r["screen"] == 0 and r["pages"] == 2
         assert enc("cw")["page"] == 1
         assert enc("ccw")["page"] == 0
@@ -2138,11 +2143,13 @@ def test_prepare_place_uppercases_and_shortens():
     assert len(long) == b.PLACE_NAME_MAX and "~" in long
 
 
-def test_load_places_reads_list_and_caps(tmp_path):
+def test_load_places_keeps_every_place(tmp_path):
+    # Потолка нет намеренно: раньше стояли 12, и всё сверх молча пропадало —
+    # человек правил файл и не находил своё место на барабане.
     path = write_places(tmp_path, [f"Место {i}" for i in range(30)])
     places = b.load_places(path)
-    assert len(places) == b.PLACES_MAX
-    assert places[0] == "МЕСТО 0"
+    assert len(places) == 30
+    assert places[0] == "МЕСТО 0" and places[-1] == "МЕСТО 29"
 
 
 def test_load_places_accepts_bare_array(tmp_path):
@@ -2182,7 +2189,8 @@ def test_roulette_snapshot_shape(tmp_path):
     br.screen = 2
     snap = br.build_snapshot()
     assert snap["scr"] == 2
-    assert snap["roul"]["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    # названий в снэпшоте нет: они едут отдельными порциями, снэпшот везёт ревизию
+    assert snap["roul"]["rev"] == b.places_rev(["НАПОЛИ", "СКАЗКА", "РОСТИКС"])
     assert snap["roul"]["win"] == -1 and snap["roul"]["sp"] == 0
     # строка снэпшота обязана влезать в приёмный буфер прошивки
     assert len(br.snapshot_line().encode("utf-8")) < 1024
@@ -2214,12 +2222,13 @@ def test_roulette_empty_list_does_not_spin(tmp_path):
 
 def test_roulette_reloads_file_by_mtime(tmp_path):
     br = roulette_bridge(tmp_path)
-    assert br.build_roulette()["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    br.refresh_places()
+    assert br.places == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
     path = pathlib.Path(br.places_path())
     path.write_text(json.dumps({"places": ["Кайзервюрст"]}, ensure_ascii=False), encoding="utf-8")
     os.utime(path, (1e9, 1e9))                    # заведомо иной mtime
     assert br.refresh_places() is True
-    assert br.build_roulette()["p"] == ["КАЙЗЕРВЮРСТ"]
+    assert br.places == ["КАЙЗЕРВЮРСТ"]
     assert br.refresh_places() is False            # второй раз без изменений
 
 
@@ -2231,10 +2240,10 @@ def test_roulette_keeps_list_when_file_breaks(tmp_path):
     path.write_text("{сломано", encoding="utf-8")
     os.utime(path, (1e9, 1e9))
     br.refresh_places()
-    assert br.build_roulette()["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    assert br.places == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
     path.unlink()
     br.refresh_places()
-    assert br.build_roulette()["p"] == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
+    assert br.places == ["НАПОЛИ", "СКАЗКА", "РОСТИКС"]
 
 
 def test_roulette_win_resets_when_list_changes(tmp_path):
@@ -2254,6 +2263,164 @@ def test_roulette_spin_via_encoder_marks_dirty(tmp_path):
     assert br.handle_encoder("spin") is True
     assert br.roul_spin == 1
     assert 0 <= br.roul_win < 3
+
+
+def test_places_chunks_cover_whole_list_in_order(tmp_path):
+    """Длинный список доезжает целиком: порции идут подряд и склеиваются обратно."""
+    names = [f"МЕСТО НОМЕР {i}" for i in range(40)]
+    lines = b.places_chunks(names)
+    assert len(lines) > 1, "40 мест обязаны не влезть в одну строку — иначе тест пустой"
+    rebuilt, expect_i = [], 0
+    for line in lines:
+        assert len(line.encode("utf-8")) <= b.PLACES_LINE_MAX + 1   # +1 — перевод строки
+        pl = json.loads(line)["pl"]
+        assert pl["rev"] == b.places_rev(names) and pl["n"] == 40
+        assert pl["i"] == expect_i, "порции обязаны идти по порядку: плата так и складывает"
+        expect_i += len(pl["p"])
+        rebuilt += pl["p"]
+    assert rebuilt == names
+    # b — размер буфера, который плата выделит под имена: имена с завершающими нулями
+    assert json.loads(lines[0])["pl"]["b"] == sum(len(n.encode("utf-8")) + 1 for n in names)
+
+
+def test_places_chunks_of_empty_list_still_sent(tmp_path):
+    # Пустой список — тоже состав: плата обязана очистить барабан, а не держать старое
+    lines = b.places_chunks([])
+    assert len(lines) == 1 and json.loads(lines[0])["pl"]["n"] == 0
+
+
+def test_places_rev_changes_with_content():
+    assert b.places_rev(["А", "Б"]) != b.places_rev(["Б", "А"])
+    assert b.places_rev(["А", "Б"]) == b.places_rev(["А", "Б"])
+
+
+def test_long_list_travels_to_board(tmp_path):
+    """Тридцать мест: снэпшот остаётся коротким, а список уезжает по запросу платы."""
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(30)])
+    br.screen = 2
+    br.push("test")
+    assert len(br.snapshot_line().encode("utf-8")) < 1024
+    br.sink.lines.clear()
+    assert br.handle_encoder("places") is False, "запрос списка — не жест человека"
+    got = []
+    for line in br.sink.lines:
+        got += json.loads(line)["pl"]["p"]
+    assert got == br.places and len(got) == 30
+
+
+def test_repeated_places_requests_are_flagged(tmp_path, caplog):
+    """Плата просит один и тот же список по кругу — значит он до неё не доезжает.
+
+    Ровно так и было на живой плате: порция не влезала в арену JSON прошивки, плата
+    молча просила снова каждые пять секунд, а на экране стояло «0 МЕСТ». Сама она об
+    этом сказать не может — считать повторы обязан мост.
+    """
+    br = roulette_bridge(tmp_path)
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            br.handle_encoder("places")
+    assert any("просит список мест" in r.message for r in caplog.records)
+
+
+def test_places_request_does_not_wake_screen(tmp_path):
+    br = roulette_bridge(tmp_path)
+    br.set_sleep(True)
+    br.handle_encoder("places")
+    assert br.sleeping is True, "плата просит список — человек тут ни при чём"
+
+
+def test_roulette_picks_only_what_board_took(tmp_path):
+    """Плата не уместила весь список — крутим среди принятых, а не в пустоту."""
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(30)])
+    br.refresh_places()
+    br.note_esp_health(json.dumps({"esp": "places", "rev": b.places_rev(br.places), "n": 12}))
+    assert br.places_fit() == 12
+    for _ in range(30):
+        assert br.spin_roulette() is True
+        assert 0 <= br.roul_win < 12
+    # список сменился — прошлый отчёт платы к нему не относится
+    path = pathlib.Path(br.places_path())
+    path.write_text(json.dumps({"places": ["Наполи"]}, ensure_ascii=False), encoding="utf-8")
+    os.utime(path, (1e9, 1e9))
+    br.refresh_places()
+    assert br.places_fit() == 1
+
+
+# ------------------------------------------------------- обед: режим на выбывание
+
+def test_cull_first_spin_cuts_to_five_finalists(tmp_path):
+    """Первая раскрутка сокращает поле до пятёрки — иначе круг это 24 раскрутки."""
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(25)])
+    br.set_roul_mode(1)
+    assert br.cull_round() is True
+    assert len(br.roul_alive()) == b.ROUL_FINALISTS
+    assert len(br.roul_seq) == 25 - b.ROUL_FINALISTS, "порядок вылета едет на плату целиком"
+    assert len(set(br.roul_seq)) == len(br.roul_seq), "одно место вылетело дважды"
+
+
+def test_cull_then_one_per_spin_until_champion(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(9)])
+    br.set_roul_mode(1)
+    br.cull_round()
+    assert len(br.roul_alive()) == 5 and br.roul_champ == -1
+    for left in (4, 3, 2, 1):
+        assert br.cull_round() is True
+        assert len(br.roul_seq) == 1, "в финале выбывает по одному"
+        assert len(br.roul_alive()) == left
+    assert br.roul_champ >= 0, "остался один — он и победитель"
+    assert br.cull_round() is False, "круг сыгран, дальше только сброс"
+
+
+def test_round_reset_returns_everyone(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(8)])
+    br.set_roul_mode(1)
+    br.cull_round()
+    br.cull_round()
+    sp = br.roul_spin
+    assert br.reset_round() is True
+    assert br.roul_alive() == list(range(8)) and br.roul_champ == -1
+    assert br.roul_spin > sp, "номер ответа обязан вырасти: плата поймёт, что состояние новое"
+
+
+def test_cull_mask_and_snapshot_shape(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(12)])
+    br.screen = 2
+    br.set_roul_mode(1)
+    br.cull_round()
+    roul = br.build_snapshot()["roul"]
+    assert roul["md"] == 1
+    mask = int(roul["out"], 16)
+    assert [i for i in range(12) if mask >> i & 1] == sorted(br.roul_out)
+    assert roul["seq"] == br.roul_seq
+    assert len(br.snapshot_line().encode("utf-8")) < 1024
+
+
+def test_click_switches_mode_and_double_click_resets(tmp_path):
+    br = roulette_bridge(tmp_path)
+    br.screen = 2
+    assert br.handle_encoder("key") is True and br.roul_mode == 1
+    br.cull_round()
+    assert br.roul_out, "круг начался"
+    assert br.handle_encoder("dbl") is True and not br.roul_out
+    assert br.handle_encoder("key") is True and br.roul_mode == 0
+    # вне экрана обеда клик не делает ничего: экраны листаются вращением с зажатой
+    br.screen = 0
+    assert br.handle_encoder("key") is False and br.screen == 0
+    assert br.handle_encoder("dbl") is False
+
+
+def test_new_places_file_cancels_round(tmp_path):
+    """Список сменился — выбывшие указывают в другой состав, круг обязан сброситься."""
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(8)])
+    br.set_roul_mode(1)
+    br.cull_round()
+    assert br.roul_out
+    path = pathlib.Path(br.places_path())
+    path.write_text(json.dumps({"places": ["Наполи", "Сказка"]}, ensure_ascii=False),
+                    encoding="utf-8")
+    os.utime(path, (1e9, 1e9))
+    br.refresh_places()
+    assert not br.roul_out and br.roul_champ == -1
 
 
 def test_debug_exposes_roulette(tmp_path):
@@ -2447,7 +2614,7 @@ def test_four_screens_cycle(tmp_path):
     assert b.Bridge.SCREENS == 4
     seen = []
     for _ in range(5):
-        br.handle_encoder("key")
+        br.handle_encoder("cw", held=True)
         seen.append(br.screen)
     assert seen == [1, 2, 3, 0, 1]
 
