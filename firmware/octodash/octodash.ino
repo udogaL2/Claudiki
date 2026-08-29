@@ -442,6 +442,8 @@ void slotKick();
 void slotPhysics(unsigned long now);
 bool slotHot(int i);
 void roulKick();
+bool roulSetMask(const char *hex);
+void roulNeedRedraw();
 bool roulBusy();          // барабан в движении — жесты кнопки не принимаются
 void roulPhysics(unsigned long now);
 void roulBubblesStep(float dt, float spin);
@@ -1298,17 +1300,32 @@ unsigned long roulLandT0 = 0;
 RoulState roulState = R_IDLE;
 unsigned long roulWonAt = 0, roulLastPhys = 0, roulStallSince = 0;
 bool roulDirty = true;      // состав сменился — нужна полная перерисовка экрана
+// Та же перерисовка, но отложенная до остановки барабана. Полный кадр стоит ~300мс,
+// а шаг физики зажат сверху 0.05с — перерисовка посреди полёта выглядит так: барабан
+// замирает на случайной (обычно зачёркнутой) строке, теряет ход и потом доворачивает
+// до победителя. А маска в рулетке меняется ровно в полёте: ответ на раскрутку
+// приносит и нового победителя, и вычеркнутого прошлого.
+bool roulDirtyLate = false;
+// Видели ли мы вообще номер ответа моста. Первый снэпшот после включения приносит
+// номер прошлой раскрутки — по нему барабан крутить нельзя, иначе плата «сама
+// крутится» на старте.
+bool roulSpSynced = false;
 int roulStatusShown = -1;   // какое состояние уже нарисовано в строке снизу
 float roulExtra = 0;        // запас хода: щелчки сверх потолка скорости, строк
 
 int   roulMode = 0;              // 0 — рулетка, 1 — на выбывание
-uint32_t *roulOut = nullptr;     // маска выбывших, по биту на место
+uint32_t *roulOut = nullptr;     // маска вычеркнутых, по биту на место
+uint32_t *roulOutWas = nullptr;  // она же до разбора строки — сравнить «было/стало»
 int   roulOutW = 0;              // слов в маске
 int16_t *roulSeq = nullptr;      // порядок вылета текущей раскрутки (от моста)
 int   roulSeqN = 0, roulSeqI = 0;
 unsigned long roulShowUntil = 0; // до какого момента показываем вылетевшего
 int   roulLastOut = -1;          // кто вылетел прямо сейчас — его подсвечиваем
 int   roulChamp = -1;            // победитель круга
+// Сколько мест вышло на этот круг — знаменатель шапки. В рулетке это весь список,
+// в выбывании — сколько было непосещённых на старте партии. Считает мост: только он
+// знает журнал обедов, а плата видит лишь маску вычеркнутых.
+int   roulK = 0;
 
 int   roulCullSp = -1;           // номер раскрутки, которую уже проигрываем
 // Сколько раз доводку запускал АВАРИЙНЫЙ предохранитель (барабан встал сам, ответ
@@ -1337,8 +1354,9 @@ int roulAlive() {
 
 // Маска выбывших приходит строкой hex — по биту на место, младший бит = место 0.
 // Строкой, а не списком индексов: список на длинном составе не влезает в снэпшот.
-void roulSetMask(const char *hex) {
-  if (!roulOut) return;
+bool roulSetMask(const char *hex) {
+  if (!roulOut) return false;
+  if (roulOutWas) memcpy(roulOutWas, roulOut, roulOutW * sizeof(uint32_t));
   for (int i = 0; i < roulOutW; i++) roulOut[i] = 0;
   int len = strlen(hex);
   for (int i = 0; i < len; i++) {                 // младшая цифра — в конце строки
@@ -1348,6 +1366,9 @@ void roulSetMask(const char *hex) {
           : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : 0;
     for (int b = 0; b < 4; b++) if (v & (1 << b)) roulMark(i * 4 + b);
   }
+  // Ответ честный, а не «маска непустая»: в рулетке она приезжает каждым снэпшотом,
+  // и вечное «изменилась» перерисовывало бы экран раз в пять секунд.
+  return roulOutWas ? memcmp(roulOutWas, roulOut, roulOutW * sizeof(uint32_t)) != 0 : true;
 }
 
 // Ответ моста на раскрутку в режиме выбывания: итоговая маска и ПОРЯДОК вылета.
@@ -1384,6 +1405,13 @@ void roulTakeCull(JsonObject r, int sp) {
     roulState = R_IDLE; roulVel = 0; roulLanding = false; roulWin = -1;
     roulDirty = true;
   }
+}
+
+// Просьба перерисовать экран целиком. На ходу откладывается: пока барабан крутится,
+// его полосу и так перерисовывает каждый кадр, а шапку — событие смены числа живых.
+void roulNeedRedraw() {
+  if (roulBusy()) roulDirtyLate = true;
+  else            roulDirty = true;
 }
 
 int roulCount() { return roulN > 0 ? roulN : 1; }
@@ -1444,9 +1472,11 @@ void roulCommitPlaces() {
   roulRev = roulRxRev;
   // Маска выбывших живёт столько же, сколько список: её размер задан числом мест.
   free(roulOut);
+  free(roulOutWas);
   free(roulSeq);
   roulOutW = (roulN + 31) / 32;
   roulOut = (uint32_t *)calloc(roulOutW > 0 ? roulOutW : 1, sizeof(uint32_t));
+  roulOutWas = (uint32_t *)calloc(roulOutW > 0 ? roulOutW : 1, sizeof(uint32_t));
   roulSeq = (int16_t *)malloc(sizeof(int16_t) * (roulN > 0 ? roulN : 1));
   roulSeqN = roulSeqI = 0;
   roulLastOut = -1; roulChamp = -1; roulShowUntil = 0;
@@ -1796,8 +1826,11 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
   char hm[8];
   cafeTime(cafeNm, hm);
   // В режиме выбывания в шапке — сколько ещё в игре: это главное число режима
-  if (roulMode == 1) snprintf(head, sizeof(head), "В ИГРЕ %d ИЗ %d  %s", roulAlive(), roulN, hm);
-  else               snprintf(head, sizeof(head), "%d МЕСТ  %s", roulN, hm);
+  // Слова разные намеренно: «в игре» — про партию отсева, «осталось» — про круг
+  // обедов. Числа рядом, и путать их нечем.
+  int denom = roulK > 0 ? roulK : roulN;
+  if (roulMode == 1) snprintf(head, sizeof(head), "В ИГРЕ %d ИЗ %d  %s", roulAlive(), denom, hm);
+  else               snprintf(head, sizeof(head), "ОСТАЛОСЬ %d ИЗ %d  %s", roulAlive(), denom, hm);
   drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, lerp565(CREAMC, BG, 0.35f), 1);
   }
 
@@ -1825,7 +1858,7 @@ void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, flo
     uint16_t col = inWin ? (won ? 0xFFFF : CREAMC) : lerp565(CREAMC, BG, fade);
     // Вылетевшие остаются в кольце: гаснут и перечёркиваются, а только что выбитый
     // горит красным — иначе в череде серых полосок не видно, кто выбыл сейчас.
-    bool dead = (roulMode == 1) && roulDead(idx);
+    bool dead = roulDead(idx);
     if (dead) col = (idx == roulLastOut && roulState == R_CULL) ? C_ERROR
                                                                : lerp565(col, BG, 0.62f);
     const char *nm = roulPlace(idx);
@@ -3213,6 +3246,8 @@ void handleLine(const char *line) {
       int win = r["win"] | -1, sp = r["sp"] | 0;
       cafeNm = r["nm"] | cafeNm;      // время для шапки: блока кофейни здесь нет
       int md = r["md"] | 0;
+      int kk = r["k"] | 0;            // знаменатель шапки: круг обедов, а не весь список
+      if (kk != roulK) { roulK = kk; roulNeedRedraw(); }
       if (md != roulMode) {           // режим сменили кликом — экран перерисовываем весь
         roulMode = md;
         roulDirty = true;
@@ -3225,8 +3260,29 @@ void handleLine(const char *line) {
         roulSp = sp;
         roulTakeCull(r, sp);
       } else {
-        if (sp != roulSp) { roulSp = sp; roulWin = win; }  // новый ответ на нашу раскрутку
-        else roulWin = win;
+        // Маска вычеркнутых нужна и здесь: в рулетке это журнал обедов — куда уже
+        // ходили в этом круге. Перерисовываем только когда она реально сменилась,
+        // иначе heartbeat раз в пять секунд гасил бы экран впустую.
+        if (roulSetMask(r["out"] | "")) roulNeedRedraw();
+        if (sp != roulSp) {
+          bool first = !roulSpSynced;
+          int was = roulWin;
+          roulSp = sp; roulWin = win; roulSpSynced = true;
+          // Цель сменилась, а барабан уже тормозит по посчитанной траектории: без
+          // пересчёта он доедет до СТАРОЙ цели, встанет там и в последнем кадре
+          // прыгнет на новую (в конце доводки стоит roulPos = roulWin). Выглядит это
+          // как «остановилась не на том месте, потом доехала». Сбрасываем признак
+          // доводки — траектория пересчитается от текущей позиции к новой цели.
+          if (roulState == R_LAND && roulWin != was) roulLanding = false;
+          // Ответ пришёл, а мы не крутили (`POST /enc spin` с моста) — барабан всё
+          // равно обязан доехать до победителя, как это давно делает выбывание.
+          // Иначе анимацию рулетки нельзя проверить ничем, кроме руки на ручке:
+          // «замирание в полёте» дожило до живого прогона именно поэтому.
+          if (!first && roulWin >= 0 && roulWin < roulN && !roulBusy()) {
+            roulSeenSp = sp;
+            roulVel = 8.0f; roulState = R_LAND; roulLanding = false;
+          }
+        } else roulWin = win;
         if (roulWin >= roulN) roulWin = -1;   // победитель из списка, которого у нас нет
       }
     }
@@ -3449,6 +3505,9 @@ void loop() {
   }
 
   if (curScreen == 2) {
+    // Отложенную перерисовку забираем, как только барабан встал: на ходу она рвала
+    // полёт, а после остановки её уже никто не видит.
+    if (roulDirtyLate && !roulBusy()) { roulDirtyLate = false; roulDirty = true; }
     if (roulDirty) { roulDirty = false; roulStatusShown = -1; roulHeadShown = roulAlive(); redrawAll(); }
     // Свой период кадра: барабан стоит ~39мс, и на сетке 40мс кадры то влезали, то
     // нет — частота скакала. Стабильные 20 к/с лучше прыгающих 24: глаз замечает
@@ -3465,7 +3524,7 @@ void loop() {
       // Шапка лежит ВНЕ полосы кадра, поэтому счётчик «в игре» обновляем событием —
       // когда число живых изменилось. Без этого он держал состав на начало круга
       // («13 ИЗ 13») всю серию отсева, пока экран не перерисуется целиком.
-      if (roulMode == 1 && roulAlive() != roulHeadShown) {
+      if (roulAlive() != roulHeadShown) {
         roulHeadShown = roulAlive();
         redrawRect(0, 0, W, 19);
       }

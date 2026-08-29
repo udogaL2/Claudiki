@@ -479,3 +479,78 @@ def test_slot_payouts_match_firmware_hint(sketch):
     for pay in (b.SLOT_PAY_TRIPLE, b.SLOT_PAY_PAIR):
         want = f"x{pay:g}"
         assert want in sketch, f"мост платит {want}, а на экране такой подписи нет"
+
+
+def test_visited_mask_is_drawn_in_both_modes(sketch):
+    """Журнал обедов виден на экране только если маску разбирают и рисуют в обоих
+    режимах. Мост шлёт `out` всегда — прошивка обязана её брать и в рулетке, иначе
+    посещённые места молча перестают выпадать без единого следа на экране."""
+    plain = sketch.replace(chr(92), "")
+    body = sketch[sketch.index("if (scr == 2) {"):]
+    body = body[:body.index("if (scr == 1) {")]
+    roulette = body[body.index("} else {"):]                 # ветка режима рулетки
+    assert 'roulSetMask(r["out"]' in roulette, \
+        "в рулетке маска вычеркнутых не применяется — журнал обедов не виден"
+    assert 'r["k"]' in body, "прошивка не берёт знаменатель шапки"
+    drum = sketch[sketch.index("bool drumVis"):]
+    drum = drum[:drum.index("void composeSlot")]
+    assert "bool dead = roulDead(idx);" in drum, \
+        "барабан гасит вычеркнутых только в выбывании — в рулетке журнал не видно"
+    assert "ОСТАЛОСЬ %d ИЗ %d" in plain and "В ИГРЕ %d ИЗ %d" in plain, \
+        "шапка перестала различать круг обедов и партию отсева"
+
+
+def test_visited_mask_survives_heartbeat_without_redraw(sketch):
+    """Маска приезжает КАЖДЫМ снэпшотом, в том числе heartbeat раз в пять секунд.
+    Если roulSetMask отвечает «изменилась» просто потому, что она непустая, экран
+    будет полностью перерисовываться каждые пять секунд — это заметно глазом."""
+    fn = sketch[sketch.index("bool roulSetMask(const char *hex) {"):]
+    fn = fn[:fn.index(chr(10) + "}")]
+    assert "memcmp" in fn, "roulSetMask не сравнивает «было/стало» — лишние перерисовки"
+
+
+def test_full_redraw_never_happens_mid_flight(sketch):
+    """Полная перерисовка экрана обеда стоит 72мс (замер telon на живой плате), а шаг
+    физики зажат сверху 0.05с. Дёрнуть её посреди полёта — значит уронить пару кадров
+    и часть хода барабана. Маска в рулетке меняется РОВНО в полёте (ответ на раскрутку
+    приносит нового победителя и вычёркивает прошлого), поэтому такие просьбы обязаны
+    откладываться до остановки."""
+    body = sketch[sketch.index("if (scr == 2) {"):]
+    body = body[:body.index("if (scr == 1) {")]
+    # Ветка смены режима (выше по телу) перерисовывает сразу, и это законно: кнопка
+    # на ходу не принимается вовсе. Проверяем то, что приходит КАЖДЫМ снэпшотом.
+    assert "roulDirty = true" not in body.split("if (md == 1)")[-1], \
+        "снэпшот дёргает полную перерисовку напрямую — она попадёт в полёт барабана"
+    fn = sketch[sketch.index("void roulNeedRedraw() {"):]
+    fn = fn[:fn.index(chr(10) + "}")]
+    assert "roulBusy()" in fn and "roulDirtyLate" in fn, \
+        "перерисовка перестала откладываться на время движения барабана"
+    loop = sketch[sketch.index("if (roulDirtyLate"):]
+    assert "!roulBusy()" in loop[:120], "отложенную перерисовку никто не забирает"
+
+
+def test_landing_retargets_when_answer_changes_winner(sketch):
+    """Доводка считает траекторию ОДИН раз и в конце делает `roulPos = roulWin`. Если
+    победитель сменился уже на торможении, барабан доедет до старой цели, встанет и
+    прыгнет на новую — «остановился не на том месте, потом доехал». Значит смена цели
+    обязана сбрасывать признак доводки, чтобы траектория пересчиталась."""
+    body = sketch[sketch.index("if (scr == 2) {"):]
+    body = body[:body.index("if (scr == 1) {")]
+    assert "roulState == R_LAND && roulWin != was" in body, \
+        "смена победителя на доводке не пересчитывает траекторию"
+    land = sketch[sketch.index("if (roulState == R_LAND) {"):]
+    assert "roulPos = roulWin;" in land[:land.index("roulBubblesStep")], \
+        "доводка больше не доснапывает на цель — проверка выше устарела"
+
+
+def test_bridge_spin_animates_the_drum_in_both_modes(sketch):
+    """`POST /enc spin` обязан крутить барабан и в рулетке, а не только в выбывании:
+    иначе анимацию рулетки нельзя проверить ничем, кроме руки на ручке — ровно поэтому
+    «замирание в полёте» дожило до живого прогона."""
+    body = sketch[sketch.index("if (scr == 2) {"):]
+    body = body[:body.index("if (scr == 1) {")]
+    roulette = body[body.index("} else {"):]
+    assert "roulState = R_LAND" in roulette, \
+        "ответ моста без нашей раскрутки не двигает барабан в рулетке"
+    assert "roulSpSynced" in roulette, \
+        "первый снэпшот после включения крутанёт барабан сам — нужен признак синхронизации"

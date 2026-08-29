@@ -170,6 +170,36 @@ def cmd_reset() -> int:
     return cmd_status()
 
 
+def cmd_lunch(action: str | None) -> int:
+    """Журнал обедов: что уже пройдено в круге, сброс и отмена последнего результата.
+
+    Ручкой журнал не сбрасывается намеренно — случайный двойной клик не должен
+    стирать историю за две недели, поэтому это живёт только тут и в веб-морде.
+    """
+    if action == "reset":
+        r = call("/lunch/reset", "POST")
+        print(f"журнал обедов сброшен ({r.get('forgotten')} мест), "
+              f"в круге снова {r.get('left')}")
+        return 0
+    if action == "undo":
+        r = call("/lunch/undo", "POST")
+        if not r.get("ok"):
+            return die("отменять нечего: журнал пуст")
+        print(f"{r.get('place')} снова в круге, осталось {r.get('left')}")
+        return 0
+    dbg = call("/debug").get("bridge", {})
+    places = dbg.get("places") or []
+    visited = dbg.get("lunch_visited") or []
+    pending = dbg.get("lunch_pending")
+    print(f"круг: осталось {dbg.get('lunch_left')} из {len(places)}")
+    if pending:
+        print(f"сегодня ({dbg.get('lunch_day')}): {pending}")
+    print("пройдено: " + (", ".join(visited) if visited else "ничего"))
+    left = [x for x in places if x not in visited and x != pending]
+    print("впереди: " + (", ".join(left) if left else "круг закрыт, сбросится сам"))
+    return 0
+
+
 def cmd_hide(prefix: str) -> int:
     sid = resolve_id(call("/debug"), prefix)
     if sid is None:
@@ -233,6 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("reset", help="забыть все сессии и пересобрать из реестра")
     hide = sub.add_parser("hide", aliases=["rm"], help="убрать карточку с экрана")
     hide.add_argument("session", help="id сессии или его префикс")
+    lunch = sub.add_parser("lunch", help="журнал обедов: что пройдено, сброс, отмена")
+    lunch.add_argument("action", nargs="?", choices=["reset", "undo"],
+                       help="reset — начать круг заново; undo — отменить последний результат")
     sub.add_parser("shot", help="снять экран платы в PNG (нужна прошивка с cmd shot)")
     sub.add_parser("restart", help="перезапустить процесс моста")
     args = p.parse_args(argv)
@@ -246,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_resync()
         if args.cmd == "reset":
             return cmd_reset()
+        if args.cmd == "lunch":
+            return cmd_lunch(args.action)
         if args.cmd in ("hide", "rm"):
             return cmd_hide(args.session)
         if args.cmd == "shot":

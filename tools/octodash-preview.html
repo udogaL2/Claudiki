@@ -1509,8 +1509,23 @@
   let rCullN = 0;                         // длина текущей серии — от неё время показа
   let rLastOut = -1;                      // кого показываем вылетевшим прямо сейчас
   let rChamp = -1;                        // победитель круга
+  // Журнал обедов: куда уже сходили в этом круге. На мосту он хранится ИМЕНАМИ и
+  // переживает перезапуск, здесь достаточно индексов — состав в эмуляторе не меняют.
+  // Правила те же: победитель выбывает из выбора, пока не пройден весь список.
+  let rVisited = new Set();
+  let rK = 0;                             // сколько мест вышло на круг — знаменатель шапки
 
-  const rAlive = () => rPlaces.map((_, i) => i).filter(i => !rOut.has(i));
+  // Вычеркнутые на экране: посещённые плюс выбитые в партии. Текущий результат не
+  // гасим — победителя нельзя рисовать зачёркнутым, пока барабан стоит на нём.
+  const rDead = (i) => (rVisited.has(i) || (rMode===1 && rOut.has(i)))
+                       && i !== (rMode===1 ? rChamp : rWin);
+  const rAlive = () => rPlaces.map((_, i) => i).filter(i => !rDead(i));
+  // Пул выбора — не то же самое: сегодняшний победитель из него исключён,
+  // хотя на экране и не зачёркнут.
+  const rPool = () => rPlaces.map((_, i) => i).filter(i => !rVisited.has(i) && !rOut.has(i));
+  function rCloseCircle(){                // все места пройдены — круг заново
+    if(!rPool().length){ rVisited = new Set(); }
+  }
   // Барабан в движении — жесты не принимаются. Смена режима на ходу выбрасывала
   // результат уже начатой раскрутки: барабан доезжал в одном режиме, а на экране
   // был другой. Ждём остановки; «победа» и покой движением не считаются.
@@ -1525,10 +1540,13 @@
   // глазами по экрану: «выбывание не крутится» ловится тут за секунду.
   window.roulState = () => ({mode: rMode, state: rState, vel: +rVel.toFixed(2), extra: +rExtra.toFixed(1),
                              alive: rAlive().length, out: [...rOut], champ: rChamp,
+                             visited: [...rVisited],
                              queue: rCullQ.length});
 
   function roulReset(){
-    rOut = new Set(); rCullQ = []; rCullHold = 0; rLastOut = -1; rChamp = -1;
+    // Двойной клик сбрасывает ПАРТИЮ отсева, а не журнал обедов: журнал сбрасывается
+    // сам, когда круг пройден, либо руками через octoctl / веб-морду моста.
+    rOut = new Set(); rCullQ = []; rCullHold = 0; rLastOut = -1; rChamp = -1; rK = 0;
     rWin = -1; rState = "idle"; rVel = 0; rLanding = false; rExtra = 0;
     wire("in", {enc: "dbl"});
     pushSnapshot();
@@ -1537,7 +1555,9 @@
   // Так отвечает мост: он и решает, кто вылетает. Первая раскрутка сокращает поле
   // до пяти финалистов разом, дальше — по одному за раскрутку.
   function roulCull(){
-    const alive = rAlive();
+    rCloseCircle();
+    const alive = rPool();
+    if(!rK || !rOut.size) rK = alive.length;   // знаменатель считаем на старте партии
     if(alive.length <= 1) return [];
     const k = alive.length > R_FINALISTS ? alive.length - R_FINALISTS : 1;
     const pool = alive.slice();
@@ -1590,9 +1610,13 @@
       // раскрутил — дольше летит» выходит само
       wire("in", {enc:"spin", v:+rVel.toFixed(1)});
       // так ответит мост: выбирает победителя и присылает индекс
-      const avoid = rWin;
-      let pick = (Math.random()*rN())|0;
-      if(rN()>1 && pick===avoid) pick = (pick+1)%rN();
+      // Правило «не повторять прошлого» отдельным условием больше не нужно: журнал
+      // строго сильнее, прошлый победитель в нём.
+      rCloseCircle();
+      const pool = rPool().length ? rPool() : rPlaces.map((_, i) => i);
+      rK = rPlaces.length;
+      const pick = pool[(Math.random()*pool.length)|0];
+      rVisited.add(pick);
       setTimeout(()=>{ if(rState==="spinning"){ rWin=pick; wire("out",{scr:2,win:pick}); } }, 140);
     } else if(rState!=="spinning"){
       rState = "charging";
@@ -1619,9 +1643,10 @@
         rCullHold = 0;
         rCullQ.shift();
         if(rCullQ.length){ rWin = rCullQ[0]; rVel = rCullFast ? 13 : 6; rLanding = false; return; }
-        const alive = rAlive();
+        const alive = rPool();
         if(alive.length === 1){                 // остался один — доводим до него
           rChamp = alive[0]; rWin = rChamp; rVel = 6; rState = "landing"; rLanding = false;
+          rVisited.add(rChamp);                 // победитель круга — уже посещённое место
         } else {
           rState = "idle"; rWin = -1;           // ждём следующей раскрутки
         }
@@ -1681,8 +1706,11 @@
     g.drawFastHLine(0,18,DW,lerp(ACCENT,BG,0.4));
     txPx("ГДЕ ОБЕДАЕМ", 8, 5, 1, lerp(CREAM,BG,0.05));
     // В режиме выбывания в шапке — сколько ещё в игре: это главное число режима
-    const head = rMode===1 ? `В ИГРЕ ${rAlive().length} ИЗ ${rN()}  ${hhmm(cafeNow)}`
-                           : `${rN()} МЕСТ  ${hhmm(cafeNow)}`;
+    // Слова разные намеренно: «в игре» — про партию отсева, «осталось» — про круг
+    // обедов, который обходит все места и только потом начинается заново.
+    const denom = rK > 0 ? rK : rN();
+    const head = rMode===1 ? `В ИГРЕ ${rAlive().length} ИЗ ${denom}  ${hhmm(cafeNow)}`
+                           : `ОСТАЛОСЬ ${rAlive().length} ИЗ ${denom}  ${hhmm(cafeNow)}`;
     txPx(head, DW-8-txPxW(head), 5, 1, lerp(CREAM,BG,0.35));
 
     // корпус барабана: боковые рейки и подсветка окна ПОД текстом
@@ -1698,7 +1726,7 @@
       if(y < R_TOP-2 || y > R_BOT-8) continue;
       const off = Math.abs(y - R_WIN_Y);
       const inWin = off < R_ROW*0.5;
-      const dead = rOut.has(idx);
+      const dead = rDead(idx);
       let col = inWin ? (won ? 0xFFFF : CREAM)
                       : lerp(CREAM, BG, 0.4 + Math.min(0.5, off/(R_ROW*3.2)));
       // Вылетевшие остаются в кольце: гаснут и перечёркиваются. Только что выбитого

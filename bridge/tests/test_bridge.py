@@ -2736,3 +2736,154 @@ def test_points_count_only_working_sessions(tmp_path):
     clock.advance(60)
     br.accrue_points()
     assert br.points == 1, "считаться должна только работающая сессия"
+
+
+# --- журнал обедов: круг по всем местам ---------------------------------------
+# Механика долгая (недели), поэтому проверяется на подменённых сутках: у моста
+# берётся дата из _wall, её и двигаем.
+
+def set_day(br, day):
+    """Сдвигает часы моста на сутки вперёд от базовой даты тестов."""
+    br._wall = lambda: 1_700_000_000.0 + day * 86400
+
+
+def test_roulette_walks_every_place_before_repeating(tmp_path):
+    br = roulette_bridge(tmp_path, names=["Наполи", "Сказка", "Ростикс"])
+    seen = []
+    for day in range(3):
+        set_day(br, day)
+        assert br.spin_roulette() is True
+        seen.append(br.places[br.roul_win])
+    assert sorted(seen) == sorted(br.places), "круг обязан обойти все места без повторов"
+    set_day(br, 3)
+    assert br.spin_roulette() is True
+    assert br.visit_log == [], "круг закрыт — журнал начинается заново"
+
+
+def test_reroll_same_day_replaces_choice_and_burns_one_place(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(5)])
+    set_day(br, 0)
+    br.spin_roulette()
+    first = br.places[br.roul_win]
+    br.spin_roulette()
+    second = br.places[br.roul_win]
+    assert second != first, "перекрутка не должна возвращать то же самое"
+    assert br.visit_log == [], "журнал пополняется только со сменой дня"
+    assert br.visited_names() == {second}, "за обед сгорает одно место, а не три"
+    set_day(br, 1)
+    br.spin_roulette()
+    assert br.visit_log == [second], "вчерашний выбор ушёл в журнал, позавчерашний — нет"
+
+
+def test_journal_keyed_by_name_survives_places_edit(tmp_path):
+    br = roulette_bridge(tmp_path, names=["Наполи", "Сказка", "Ростикс"])
+    set_day(br, 0)
+    br.spin_roulette()
+    picked = br.places[br.roul_win]
+    # человек дописал место в НАЧАЛО файла — все индексы уехали на единицу
+    br._places_mtime = None
+    write_places(tmp_path, ["Пельменная", "Наполи", "Сказка", "Ростикс"])
+    br.refresh_places()
+    assert picked in br.visited_names()
+    assert picked not in [br.places[i] for i in br.roul_alive()], \
+        "журнал по индексам после правки списка вычеркнул бы не то место"
+
+
+def test_cull_champion_enters_journal_and_stays_out_next_round(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(4)])
+    br.set_roul_mode(1)
+    set_day(br, 0)
+    while br.roul_champ < 0:
+        assert br.cull_round() is True
+    champ = br.places[br.roul_champ]
+    assert champ in br.visited_names()
+    br.reset_round()
+    assert champ not in [br.places[i] for i in br.roul_alive()], \
+        "победитель прошлой партии уже посещён — в новую он не выходит"
+
+
+def test_cull_declares_last_unvisited_without_a_round(tmp_path):
+    br = roulette_bridge(tmp_path, names=["Наполи", "Сказка", "Ростикс"])
+    br.set_roul_mode(1)
+    br.visit_log = ["НАПОЛИ", "СКАЗКА"]
+    assert br.cull_round() is True
+    assert br.places[br.roul_champ] == "РОСТИКС"
+    assert br.roul_seq == [], "отсеивать некого: плата просто показывает чемпиона"
+    assert br.cull_round() is False, "круг сыгран, дальше только сброс"
+
+
+def test_cull_closes_circle_when_everything_visited(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(6)])
+    br.set_roul_mode(1)
+    br.visit_log = list(br.places)
+    assert br.cull_round() is True
+    assert br.visit_log == [], "все места пройдены — круг начинается заново"
+    assert len(br.roul_alive()) == 5, "первая раскрутка режет поле до пяти финалистов"
+
+
+def test_snapshot_carries_mask_and_denominator_in_both_modes(tmp_path):
+    br = roulette_bridge(tmp_path, names=[f"Место {i}" for i in range(6)])
+    set_day(br, 0)
+    br.spin_roulette()
+    set_day(br, 1)
+    br.spin_roulette()
+    roul = br.build_roulette()
+    mask = int(roul["out"], 16)
+    assert roul["k"] == 6, "в рулетке знаменатель — весь список"
+    assert mask, "посещённое обязано вычёркиваться и в рулетке"
+    assert not mask >> br.roul_win & 1, "сегодняшний победитель на барабане не гаснет"
+    assert bin(mask).count("1") == 1, "вычеркнут ровно вчерашний"
+    br.set_roul_mode(1)
+    br.cull_round()
+    roul = br.build_roulette()
+    assert roul["k"] == len(br.roul_alive()) + len(roul["seq"]), \
+        "в выбывании знаменатель — сколько мест вышло на партию"
+
+
+def test_lunch_reset_and_undo(tmp_path):
+    br = roulette_bridge(tmp_path, names=["Наполи", "Сказка", "Ростикс"])
+    set_day(br, 0)
+    br.spin_roulette()
+    picked = br.places[br.roul_win]
+    sp = br.roul_spin
+    assert br.undo_visit() == picked, "передумали — место возвращается в круг"
+    assert br.visited_names() == set()
+    assert br.roul_spin > sp, "номер ответа обязан вырасти: плата увидит новую маску"
+    set_day(br, 1)
+    br.spin_roulette()
+    set_day(br, 2)
+    br.spin_roulette()
+    assert br.reset_visits() == 2
+    assert br.visited_names() == set() and br.visit_log == []
+    assert br.undo_visit() is None, "отменять больше нечего"
+
+
+def test_journal_survives_restart_through_points_file(tmp_path):
+    br = roulette_bridge(tmp_path, names=["Наполи", "Сказка", "Ростикс"])
+    set_day(br, 0)
+    br.spin_roulette()
+    picked = br.places[br.roul_win]
+    fresh = roulette_bridge(tmp_path, names=["Наполи", "Сказка", "Ростикс"])
+    fresh.load_points()
+    assert fresh.visit_pending == picked and fresh.visit_day == br.visit_day
+    set_day(fresh, 1)
+    fresh.spin_roulette()
+    assert fresh.visit_log == [picked], "журнал обязан пережить перезапуск моста"
+
+
+def test_manual_lunch_actions_do_not_wipe_points(tmp_path):
+    """Журнал и баллы лежат в ОДНОМ файле состояния. Ручные действия пишут его, и
+    если написать раньше, чем прочитать, счёт затрётся нулями — ровно это и вышло на
+    живом мосту при первом же `octoctl lunch reset` после рестарта."""
+    for action in (lambda br: br.reset_visits(), lambda br: br.undo_visit()):
+        br = roulette_bridge(tmp_path, names=["Наполи", "Сказка"])
+        br.points = 133
+        br.pts_earned = 132
+        br.save_points()
+        cold = roulette_bridge(tmp_path, names=["Наполи", "Сказка"])
+        assert cold._points_loaded is False, "тест проверяет именно нечитанное состояние"
+        action(cold)
+        again = roulette_bridge(tmp_path, names=["Наполи", "Сказка"])
+        again.load_points()
+        assert again.points == 133 and again.pts_earned == 132, \
+            "ручное действие с журналом обнулило баллы"

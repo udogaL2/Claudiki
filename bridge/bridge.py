@@ -977,7 +977,16 @@ class Bridge:
         # сочла ответ повторным, не взяла цели, и барабаны замерли на полпути с вечным
         # «крутится». Поэтому счётчики лежат в файле состояния рядом с баллами.
         self.roul_spin = 0
-        self.roul_last = -1                   # прошлый победитель — его не повторяем
+        # Журнал посещённых: круг обходит все места и только потом начинается заново.
+        # Хранится ИМЕНАМИ, а не индексами: индексы живут до первой правки
+        # lunch-places.json, а журнал — недели. Имя, которого в списке больше нет,
+        # лежит молча: место может вернуться.
+        self.visit_log: list[str] = []
+        # Один обед — одно место. Победитель дня висит отдельно от журнала и
+        # уходит в него, когда наступает следующий день: перекрутка «не хочу туда»
+        # заменяет его, а не сжигает второе место.
+        self.visit_pending: str | None = None
+        self.visit_day: str | None = None      # дата этого победителя (YYYY-MM-DD)
         # Сколько мест плата реально уместила в память. Заполняется её ответом
         # `{"esp":"places","n":K,"rev":R}`: если список длиннее её бюджета, победителя
         # выбираем среди принятых — иначе барабан доезжал бы до пустой строки.
@@ -990,6 +999,7 @@ class Bridge:
         self.roul_out: set[int] = set()       # индексы выбывших в текущем круге
         self.roul_seq: list[int] = []         # кого выбило последней раскруткой (по порядку)
         self.roul_champ = -1                  # победитель круга, пока не сброшен
+        self.roul_k = 0                       # сколько мест вышло на партию отсева
         self.esp_roul: dict = {}              # что о барабане говорит сама плата
         self._places_asked = (-1, 0)          # (ревизия, сколько раз её просили подряд)
 
@@ -1509,6 +1519,13 @@ class Bridge:
         self._work_sec = max(0.0, float(data.get("work_sec", 0) or 0))
         self.slot_sp = max(self.slot_sp, int(data.get("slot_sp", 0) or 0))
         self.roul_spin = max(self.roul_spin, int(data.get("roul_sp", 0) or 0))
+        lunch = data.get("lunch")
+        if isinstance(lunch, dict):
+            self.visit_log = [str(x) for x in (lunch.get("visited") or []) if str(x)]
+            pending = lunch.get("pending")
+            self.visit_pending = str(pending) if pending else None
+            day = lunch.get("day")
+            self.visit_day = str(day) if day else None
         self.log.info("баллы загружены: %d (заработано %d, спинов %d, рекорд %d)",
                       self.points, self.pts_earned, self.pts_spins, self.pts_best)
 
@@ -1520,7 +1537,11 @@ class Bridge:
                 "best": self.pts_best, "peak": self.pts_peak,
                 "work_sec": round(self._work_sec, 1),
                 # счётчики ответов — состояние протокола, а не статистика
-                "slot_sp": self.slot_sp, "roul_sp": self.roul_spin}
+                "slot_sp": self.slot_sp, "roul_sp": self.roul_spin,
+                # журнал обедов: состояние, а не настройка, поэтому здесь, а не в
+                # lunch-places.json — тот файл правит человек, и мост в него не пишет
+                "lunch": {"visited": list(self.visit_log),
+                          "pending": self.visit_pending, "day": self.visit_day}}
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp = path + ".tmp"
@@ -1735,12 +1756,100 @@ class Bridge:
         self.roul_seq = []
         self.roul_champ = -1
         self.roul_win = -1
+        self.roul_k = 0
         self.roul_spin += 1        # номер ответа: по нему плата видит, что состояние новое
         self.mark_dirty()
         return True
 
     def roul_alive(self) -> list[int]:
-        return [i for i in range(self.places_fit()) if i not in self.roul_out]
+        """Кто ещё в игре: не выбит в этой партии и не посещён в этом круге.
+
+        Ровно то же число, что плата считает по маске (`gone_idx`) и печатает в
+        шапке. Пул выбора — не это: там нужен ещё и сегодняшний победитель,
+        которого маска намеренно не гасит.
+        """
+        gone = self.gone_idx()
+        return [i for i in range(self.places_fit()) if i not in gone]
+
+    # -- журнал посещённых -----------------------------------------------------
+    def _today(self) -> str:
+        return time.strftime("%Y-%m-%d", time.localtime(self._wall()))
+
+    def commit_visit(self) -> None:
+        """Победитель прошлого дня уходит в журнал.
+
+        Коммит ленивый, на следующей раскрутке, а не по таймеру: сколько раз за обед
+        крутили — не важно, сгореть должно одно место. Перекрутка в тот же день просто
+        заменяет `visit_pending`.
+        """
+        if self.visit_pending and self.visit_day != self._today():
+            if self.visit_pending not in self.visit_log:
+                self.visit_log.append(self.visit_pending)
+            self.visit_pending = None
+            self.visit_day = None
+
+    def note_visit(self, name: str) -> None:
+        """Запоминает выбор дня. В журнал он уйдёт завтра (см. commit_visit)."""
+        self.visit_pending = name
+        self.visit_day = self._today()
+
+    def visited_names(self) -> set[str]:
+        names = set(self.visit_log)
+        if self.visit_pending:
+            names.add(self.visit_pending)
+        return names
+
+    def visited_idx(self) -> set[int]:
+        """Журнал в индексах текущего списка. Считается каждый раз заново: список
+        правят руками, и вчерашние индексы после вставки места указывают не туда."""
+        names = self.visited_names()
+        return {i for i in range(self.places_fit()) if self.places[i] in names}
+
+    def close_circle(self) -> None:
+        """Все места пройдены — журнал чистится, круг начинается заново.
+
+        Сегодняшний выбор при этом НЕ забывается: мы туда сходили, и повторить его
+        сегодня же было бы враньём. Завтра он ляжет первой записью нового круга.
+        """
+        if not self.visit_log:
+            return
+        self.log.info("круг обедов закрыт: пройдены все %d мест, начинаем заново",
+                      len(self.visit_log))
+        self.visit_log = []
+
+    def reset_visits(self) -> int:
+        """Забыть журнал руками (octoctl/веб-морда). Возвращает, сколько забыли."""
+        if not self._points_loaded:
+            self.load_points()      # иначе save_points затрёт баллы нулями
+        n = len(self.visited_names())
+        self.visit_log = []
+        self.visit_pending = None
+        self.visit_day = None
+        self.roul_win = -1         # текущего выбора больше нет — и барабану незачем к нему ехать
+        self.roul_spin += 1        # плата увидит новую маску по номеру ответа
+        self.save_points()
+        self.mark_dirty()
+        self.log.info("журнал обедов сброшен вручную (%d мест)", n)
+        return n
+
+    def undo_visit(self) -> str | None:
+        """Отменить последний результат: передумали, туда не пошли."""
+        if not self._points_loaded:
+            self.load_points()      # тот же файл, что у баллов: сперва читаем
+        if self.visit_pending:
+            name = self.visit_pending
+            self.visit_pending = None
+            self.visit_day = None
+        elif self.visit_log:
+            name = self.visit_log.pop()
+        else:
+            return None
+        self.roul_win = -1         # «туда не пошли»: результата на экране больше нет
+        self.roul_spin += 1
+        self.save_points()
+        self.mark_dirty()
+        self.log.info("отменён последний обед: %s снова в круге", name)
+        return name
 
     def cull_round(self) -> bool:
         """Одна раскрутка в режиме выбывания.
@@ -1750,10 +1859,35 @@ class Bridge:
         вылета едет на плату целиком: она проигрывает его, показывая каждого.
         """
         self.refresh_places()
+        self.commit_visit()
+        if self.roul_champ >= 0:
+            self.log.info("выбывание: круг уже сыгран, нужен сброс (двойной клик)")
+            return False
+        fresh = not self.roul_out                  # партия ещё не начиналась
+        if fresh and self.places_fit() and not self.roul_alive():
+            self.close_circle()                    # все места пройдены — круг заново
         alive = self.roul_alive()
+        if not alive:
+            self.log.warning("выбывание: играть некем — список пуст")
+            return False
+        if len(alive) == 1 and fresh:
+            # Последнее непосещённое: отсеивать некого, объявляем победителем сразу.
+            # Плата такой ответ понимает: пустая `seq` — просто показать чемпиона.
+            self.roul_champ = alive[0]
+            self.roul_seq = []
+            self.roul_k = 1
+            self.roul_spin += 1
+            self.note_visit(self.places[self.roul_champ])
+            self.log.info("выбывание #%d: последнее непосещённое — %s",
+                          self.roul_spin, self.places[self.roul_champ])
+            self.save_points()
+            self.mark_dirty()
+            return True
         if len(alive) <= 1:
             self.log.info("рулетка: круг уже сыгран, нужен сброс (двойной клик)")
             return False
+        if fresh:
+            self.roul_k = len(alive)               # знаменатель шапки «В ИГРЕ N ИЗ K»
         k = len(alive) - ROUL_FINALISTS if len(alive) > ROUL_FINALISTS else 1
         pool = list(alive)
         seq = []
@@ -1764,6 +1898,8 @@ class Bridge:
         self.roul_spin += 1
         left = self.roul_alive()
         self.roul_champ = left[0] if len(left) == 1 else -1
+        if self.roul_champ >= 0:
+            self.note_visit(self.places[self.roul_champ])
         self.log.info("выбывание #%d: вылетели %s%s", self.roul_spin,
                       ", ".join(self.places[i] for i in seq),
                       f"; победитель {self.places[self.roul_champ]}" if self.roul_champ >= 0 else "")
@@ -1771,14 +1907,30 @@ class Bridge:
         self.mark_dirty()
         return True
 
+    def gone_idx(self) -> set[int]:
+        """Что вычеркнуто НА ЭКРАНЕ: посещённые в этом круге плюс выбитые в партии.
+
+        Маска одна на оба режима намеренно: посещённое на прошлой неделе и выбитое
+        минуту назад одинаково «вне игры», а кто вылетел прямо сейчас, видно и так —
+        плата подсвечивает его красным на время показа.
+
+        Текущий результат из маски исключён: победителя нельзя гасить, пока барабан
+        стоит на нём, иначе выигрыш выглядел бы вычеркнутым.
+        """
+        gone = self.visited_idx()
+        if self.roul_mode == 1:
+            gone |= self.roul_out
+        gone.discard(self.roul_champ if self.roul_mode == 1 else self.roul_win)
+        return gone
+
     def roul_out_mask(self) -> str:
-        """Маска выбывших в hex: по биту на место, младший бит — место 0.
+        """Маска вычеркнутых в hex: по биту на место, младший бит — место 0.
 
         Маской, а не списком: на длинном списке список индексов длиннее строки
         снэпшота, а маска на сотню мест — это 25 символов.
         """
         bits = 0
-        for i in self.roul_out:
+        for i in self.gone_idx():
             bits |= 1 << i
         return f"{bits:x}"
 
@@ -1792,22 +1944,26 @@ class Bridge:
         if self.roul_mode == 1:
             return self.cull_round()
         self.refresh_places()
+        self.commit_visit()
         n = self.places_fit()
         if n == 0:
             self.log.warning("рулетка: список мест пуст, крутить нечего")
             return False
-        if n == 1:
-            pick = 0
-        else:
-            pick = self._rng.randrange(n - 1)   # выбираем среди всех, кроме прошлого
-            if self.roul_last >= 0 and pick >= self.roul_last:
-                pick += 1
-            if pick >= n:                       # прошлый индекс уехал за границы нового списка
-                pick = self._rng.randrange(n)
+        # Выбираем только среди непосещённых. Отдельного правила «не повторять
+        # прошлого» больше нет: журнал строго сильнее — прошлый победитель в нём.
+        pool = [i for i in range(n) if i not in self.visited_idx()]
+        if not pool:
+            self.close_circle()
+            pool = [i for i in range(n) if i not in self.visited_idx()]
+        if not pool:
+            pool = list(range(n))               # единственное место, и оно же сегодняшнее
+        pick = pool[self._rng.randrange(len(pool))]
         self.roul_win = pick
-        self.roul_last = pick
+        self.roul_k = n
         self.roul_spin += 1
-        self.log.info("рулетка #%d: %s", self.roul_spin, self.places[pick])
+        self.note_visit(self.places[pick])
+        self.log.info("рулетка #%d: %s (осталось в круге %d из %d)",
+                      self.roul_spin, self.places[pick], len(pool) - 1, n)
         self.save_points()          # счётчик ответа — состояние, он обязан пережить рестарт
         self.mark_dirty()
         return True
@@ -1823,10 +1979,15 @@ class Bridge:
         # прошивке взять его негде (стояло 00:00)
         # md/out/seq — режим на выбывание: маска выбывших и порядок вылета последней
         # раскрутки. В обычном режиме их нет вовсе: незачем гонять пустые поля.
+        # out/k — маска вычеркнутых и знаменатель шапки. Едут в ОБОИХ режимах:
+        # в рулетке это журнал посещённых («ОСТАЛОСЬ N ИЗ K»), в выбывании к нему
+        # добавлены выбитые в партии, а K — сколько мест вышло на этот круг.
         block = {"rev": places_rev(self.places), "win": self.roul_win,
-                 "sp": self.roul_spin, "nm": self.cafe_now()[1], "md": self.roul_mode}
+                 "sp": self.roul_spin, "nm": self.cafe_now()[1], "md": self.roul_mode,
+                 "out": self.roul_out_mask(),
+                 "k": (self.roul_k or self.places_fit()) if self.roul_mode == 1
+                      else self.places_fit()}
         if self.roul_mode == 1:
-            block["out"] = self.roul_out_mask()
             block["seq"] = list(self.roul_seq)
             block["win"] = self.roul_champ
         return block
@@ -2068,6 +2229,11 @@ class Bridge:
                 "roulette_esp": dict(self.esp_roul),   # состояние барабана глазами платы
                 "roulette_out": sorted(self.places[i] for i in self.roul_out
                                        if i < len(self.places)),
+                # журнал обедов: почему любимое место перестало выпадать — видно тут
+                "lunch_visited": list(self.visit_log),
+                "lunch_pending": self.visit_pending,
+                "lunch_day": self.visit_day,
+                "lunch_left": len(self.roul_alive()),
                 "roulette_spins": self.roul_spin,
                 "roulette_win": (self.places[self.roul_win]
                                  if 0 <= self.roul_win < len(self.places) else None),
@@ -2276,6 +2442,8 @@ UI_HTML = """<!doctype html>
   <div class="bar">
     <button onclick="act('/resync','POST')">Сверить с реестром</button>
     <button class="danger" onclick="reset()">Сбросить состав</button>
+    <button onclick="act('/lunch/undo','POST')">Отменить обед</button>
+    <button class="danger" onclick="lunchReset()">Сбросить круг обедов</button>
     <button onclick="tick()">Обновить</button>
   </div>
   <table>
@@ -2304,6 +2472,8 @@ function render(d) {
     ["реестр", b.registry_ok === null ? "не сверялся"
       : (b.registry_ok ? b.registry_sessions + " сессий" : "недоступен")],
     ["пушей", b.push_n],
+    ["круг обедов", b.lunch_left + " из " + (b.places || []).length
+      + (b.lunch_pending ? " · сегодня " + esc(b.lunch_pending) : "")],
     ["скрывать после", c.stale_idle_hours + "ч / " + c.stale_any_hours + "ч"],
   ].map(([k, v]) => "<div class=box><span>" + k + "</span><b>" + v + "</b></div>").join("");
 
@@ -2339,6 +2509,10 @@ function hide(id) { act("/sessions/" + encodeURIComponent(id), "DELETE"); }
 function reset() {
   if (confirm("Забыть все сессии? Состав сразу пересоберётся из реестра."))
     act("/reset", "POST");
+}
+function lunchReset() {
+  if (confirm("Забыть, куда уже ходили? Круг начнётся заново со всех мест."))
+    act("/lunch/reset", "POST");
 }
 tick();
 setInterval(tick, 2000);
@@ -2459,6 +2633,15 @@ class Handler(BaseHTTPRequestHandler):
             forgotten = self.bridge.reset()
             self._respond(200, {"ok": True, "forgotten": forgotten,
                                 "sessions": self.bridge.build_debug()["bridge"]})
+        elif self.path == "/lunch/reset":
+            # Сброс круга обедов руками. Ручкой этого сделать нельзя намеренно:
+            # случайный двойной клик не должен стирать журнал за две недели.
+            self._respond(200, {"ok": True, "forgotten": self.bridge.reset_visits(),
+                                "left": len(self.bridge.roul_alive())})
+        elif self.path == "/lunch/undo":
+            name = self.bridge.undo_visit()
+            self._respond(200, {"ok": name is not None, "place": name,
+                                "left": len(self.bridge.roul_alive())})
         else:
             self._respond(404, {"ok": False, "error": "not found"})
 
