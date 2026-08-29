@@ -130,7 +130,11 @@ def main() -> None:
     # MetaJetCore ставит их вкладке агента, а claude передаёт своим детям. Это
     # быстрее и надёжнее сверки с реестром: работает с первого же события и не
     # зависит от того, включена ли сверка вообще.
-    for key, env in (("agent", "CLAUDE_CODE_AGENT"), ("sess_name", "CLAUDE_CODE_SESSION_NAME")):
+    # MJC_PARENT — имя оркестратора, который завёл этого агента. Плагин знает его
+    # только в момент спавна и кладёт во вкладку; в реестре Claude Code такого поля
+    # нет. Без него состав команды приходится угадывать по префиксу имени.
+    for key, env in (("agent", "CLAUDE_CODE_AGENT"), ("sess_name", "CLAUDE_CODE_SESSION_NAME"),
+                     ("parent", "MJC_PARENT")):
         val = os.environ.get(env, "").strip()
         if val:
             payload[key] = val[:64]

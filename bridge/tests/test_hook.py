@@ -165,3 +165,26 @@ def test_hook_start_carries_pid_and_transcript(hook, monkeypatch):
         "cwd": "/work/proj", "transcript_path": "/t/abc.jsonl",
     })
     assert payload["pid"] == 4242 and payload["transcript"] == "/t/abc.jsonl"
+
+
+def test_hook_carries_meta_orchestration_env(hook, monkeypatch):
+    """Роль, имя сессии и родителя хук берёт ИЗ ОКРУЖЕНИЯ агента.
+
+    Другого способа нет: `MJC_PARENT` кладёт плагин MetaJetCore во вкладку, и в реестре
+    Claude Code этого поля не существует вовсе — без хука связь «агент → оркестратор»
+    мосту взять неоткуда."""
+    monkeypatch.setenv("CLAUDE_CODE_AGENT", "reviewer")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_NAME", "mjc-rev-sec")
+    monkeypatch.setenv("MJC_PARENT", "mjc-orc")
+    sent = run_hook(hook, monkeypatch, {"hook_event_name": "Stop", "session_id": "s1", "cwd": "/w"})
+    assert sent["agent"] == "reviewer"
+    assert sent["sess_name"] == "mjc-rev-sec"
+    assert sent["parent"] == "mjc-orc"
+
+
+def test_hook_omits_meta_keys_outside_orchestration(hook, monkeypatch):
+    """Обычная сессия — обычный конверт: пустых ключей мост не должен разбирать."""
+    for var in ("CLAUDE_CODE_AGENT", "CLAUDE_CODE_SESSION_NAME", "MJC_PARENT"):
+        monkeypatch.delenv(var, raising=False)
+    sent = run_hook(hook, monkeypatch, {"hook_event_name": "Stop", "session_id": "s1", "cwd": "/w"})
+    assert not ({"agent", "sess_name", "parent"} & set(sent))

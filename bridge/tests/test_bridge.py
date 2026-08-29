@@ -2974,3 +2974,50 @@ def test_alarm_name_counts_the_rest(bridge):
                          "sess_name": name, "agent": "reviewer"})
     name = br.build_snapshot()["sessions"][0]["name"]
     assert "+1" in name and name.endswith("?"), "встали двое — счётчик обязан это сказать"
+
+
+def test_parent_env_beats_prefix_guess(bridge):
+    """`MJC_PARENT` — точная связь, и она сильнее эвристики по префиксу.
+
+    Две команды с одним префиксом в одном каталоге эвристика склеивает в одну: имена
+    `mjc-orc` и `mjc-orc-2` дают одинаковый ключ `mjc`. Плагин же знает родителя точно —
+    он его сам и передал в spawn_agent."""
+    br = bridge
+    for sid, name in (("o1", "mjc-orc"), ("o2", "mjc-orc-2")):
+        br.handle_event({"event": "waiting", "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": name})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent": "mjc-orc-2"})
+    teams = br.teams(list(br.sessions.values()))
+    assert [a.reg_name for a in teams["o2"]] == ["mjc-impl-be"], "агент ушёл не к тому оркестратору"
+    assert teams["o1"] == [], "первой команде агент не принадлежит"
+
+
+def test_agent_with_unknown_parent_is_not_adopted(bridge):
+    """Родитель назван, но его на экране нет — агент НЕ прилипает к чужой команде.
+
+    Иначе агент из соседнего окна IDE (тот же проект, тот же префикс) свернулся бы в
+    чужую карточку и пропал с глаз."""
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent": "mjc-orc-где-то-ещё"})
+    teams = br.teams(list(br.sessions.values()))
+    assert teams["orc"] == []
+    names = [c["name"] for c in br.build_snapshot()["sessions"]]
+    assert "mjc-impl-be" in names, "агент чужой команды обязан остаться своей карточкой"
+
+
+def test_prefix_guess_still_works_without_parent(bridge):
+    """Агент без `MJC_PARENT` (запущен руками, старая сборка плагина) собирается
+    эвристикой — иначе обновление плагина стало бы обязательным."""
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-rsrch", "agent": "researcher"})
+    teams = br.teams(list(br.sessions.values()))
+    assert [a.reg_name for a in teams["orc"]] == ["mjc-rsrch"]

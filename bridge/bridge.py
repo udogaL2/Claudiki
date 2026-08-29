@@ -180,6 +180,7 @@ class Session:
     transcript: str = ""              # путь к файлу транскрипта (из конверта хука)
     size_mb: float = 0.0              # его размер: «вес» сессии, копоть на карточке
     role: int = 0                     # роль в мета-оркестрации, см. ROLE_*
+    parent: str = ""                  # имя оркестратора (MJC_PARENT), если плагин его дал
 
 
 # --- Мета-оркестрация (MetaJetCore) -------------------------------------------
@@ -1102,6 +1103,7 @@ class Bridge:
         # даже если реестр выключен.
         hook_role = role_of(data.get("agent"), data.get("sess_name"))
         hook_name = str(data.get("sess_name") or "")[:64] or None
+        hook_parent = str(data.get("parent") or "")[:64]
 
         with self.lock:
             sess = self.sessions.get(session_id)
@@ -1114,6 +1116,8 @@ class Bridge:
                 # а не именем каталога — а по нему же собирается команда.
                 if hook_name and not sess.reg_name:
                     sess.reg_name = hook_name
+                if hook_parent:
+                    sess.parent = hook_parent
 
             if event == "end":
                 if self.sessions.pop(session_id, None) is not None:
@@ -1123,7 +1127,7 @@ class Bridge:
 
             if event == "start":
                 if sess is None:
-                    sess = Session(session_id, name, IDLE, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name)
+                    sess = Session(session_id, name, IDLE, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent)
                     self.sessions[session_id] = sess
                     self._note_transcript(sess, transcript)
                     self.log.info("start: %s (%s) pid=%s", session_id, name, pid)
@@ -1142,7 +1146,7 @@ class Bridge:
             if event in ("subagent", "subagent_done"):
                 if sess is None:
                     # спавн суб-агента у незнакомой сессии → создаём (родитель активен)
-                    sess = Session(session_id, name, WORKING, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name)
+                    sess = Session(session_id, name, WORKING, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent)
                     self.sessions[session_id] = sess
                     self._note_transcript(sess, transcript)
                 if event == "subagent":
@@ -1165,7 +1169,7 @@ class Bridge:
 
             if sess is None:
                 # событие для незнакомой сессии — создаём на лету (мост мог рестартнуть)
-                sess = Session(session_id, name, new_state, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name)
+                sess = Session(session_id, name, new_state, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent)
                 self.sessions[session_id] = sess
                 self._note_transcript(sess, transcript)
                 self.log.info("создана на лету: %s (%s) state=%d", session_id, name, new_state)
@@ -1380,25 +1384,35 @@ class Bridge:
     def teams(self, sessions: list[Session]) -> dict[str, list[Session]]:
         """Кто чьей команды: {session_id оркестратора: [его агенты]}.
 
-        Агенты и оркестратор связываются по общему префиксу имени и общему каталогу
-        (`mjc-orc` ↔ `mjc-impl-be`). Точной связи нет нигде: плагин MetaJetCore знает
-        родителя только в момент спавна и никуда его не пишет. Если оркестратора в
-        составе нет — агенты остаются обычными карточками, ничего не прячем.
+        Связь берётся ТОЧНАЯ, если она есть: плагин MetaJetCore кладёт агенту в
+        окружение `MJC_PARENT` — имя оркестратора, который его завёл, — и хук привозит
+        это имя мосту. Тогда две команды с одним префиксом в одном проекте не склеятся.
+
+        Если родителя не назвали (агента запустили руками, плагин старой версии), в дело
+        идёт эвристика: общий префикс имени и общий каталог (`mjc-orc` ↔ `mjc-impl-be`).
+        Она же остаётся единственным вариантом для оркестратора, поднятого не через
+        действие плагина. Оркестратора на экране нет — агенты остаются обычными
+        карточками, ничего не прячем.
         """
-        orcs = {}
-        for s in sessions:
-            if s.role == ROLE_ORC:
-                orcs.setdefault((team_key(s.reg_name or s.name), s.name), s)
-        out: dict[str, list[Session]] = {o.session_id: [] for o in orcs.values()}
+        orcs = [s for s in sessions if s.role == ROLE_ORC]
+        out: dict[str, list[Session]] = {o.session_id: [] for o in orcs}
         if not orcs:
             return out
+        by_name = {(o.reg_name or "").strip().lower(): o for o in orcs if o.reg_name}
         for s in sessions:
-            if s.role in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV):
-                key = team_key(s.reg_name or s.name)
-                for (okey, oname), orc in orcs.items():
-                    if okey == key and oname == s.name:
-                        out[orc.session_id].append(s)
-                        break
+            if s.role not in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV):
+                continue
+            named = by_name.get(s.parent.strip().lower()) if s.parent else None
+            if named is not None:
+                out[named.session_id].append(s)
+                continue
+            if s.parent:
+                continue     # родитель назван, но его нет на глазах — чужая команда
+            key = team_key(s.reg_name or s.name)
+            for orc in orcs:
+                if team_key(orc.reg_name or orc.name) == key and orc.name == s.name:
+                    out[orc.session_id].append(s)
+                    break
         for agents in out.values():
             agents.sort(key=lambda a: (a.role, a.reg_name or ""))
         return out
