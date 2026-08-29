@@ -1394,7 +1394,17 @@ class Bridge:
         действие плагина. Оркестратора на экране нет — агенты остаются обычными
         карточками, ничего не прячем.
         """
-        orcs = [s for s in sessions if s.role == ROLE_ORC]
+        # Оркестратором сессию делает СКИЛЛ `/orchestrate`, а он не меняет ни имени, ни
+        # окружения, ни реестра — по метке такую сессию не узнать вовсе. Зато её узнают
+        # собственные агенты: каждый привозит `MJC_PARENT` с её именем. Показание агента
+        # сильнее любой эвристики по имени, поэтому названный родитель считается
+        # оркестратором, даже если сам о себе ничего не сообщил. Ровно поэтому карточка
+        # превращается в команду в тот момент, когда команда появляется.
+        named = {s.parent.strip().lower() for s in sessions if s.parent}
+        orcs = [s for s in sessions
+                if s.role == ROLE_ORC
+                or ((s.reg_name or "").strip().lower() in named
+                    and s.role not in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV))]
         out: dict[str, list[Session]] = {o.session_id: [] for o in orcs}
         if not orcs:
             return out
@@ -2281,8 +2291,10 @@ class Bridge:
                     room = max(1, self.cfg.name_max - len(tail))
                     name = (label if len(label) <= room else label[:room - 1] + "~") + tail
             item = {"id": short[s.session_id], "name": name, "state": s.state}
-            if s.role:
-                item["r"] = s.role
+            if s.role or agents:
+                # роль могла и не приехать (сессию сделал оркестратором скилл), но раз
+                # у неё есть свита — на экране она оркестратор
+                item["r"] = s.role or ROLE_ORC
             if agents:
                 item["ag"] = self.agents_field(agents)
             if s.subagents:

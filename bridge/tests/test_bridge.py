@@ -3021,3 +3021,43 @@ def test_prefix_guess_still_works_without_parent(bridge):
                      "sess_name": "mjc-rsrch", "agent": "researcher"})
     teams = br.teams(list(br.sessions.values()))
     assert [a.reg_name for a in teams["orc"]] == ["mjc-rsrch"]
+
+
+def test_plain_session_becomes_orchestrator_when_its_agent_appears(bridge):
+    """`/orchestrate` — это скилл: он не меняет ни имени сессии, ни окружения, ни
+    реестра. Метки «я оркестратор» у такой сессии нет и взяться ей неоткуда.
+
+    Зато её узнаёт первый же собственный агент: он привозит `MJC_PARENT` с её именем.
+    Показание агента сильнее эвристики по имени — и карточка становится командной ровно
+    тогда, когда команда появляется, а не когда человек нажал скилл."""
+    br = bridge
+    br.handle_event({"event": "working", "session_id": "s1", "cwd": "/w/proj",
+                     "sess_name": "какая-то-сессия"})
+    card = br.build_snapshot()["sessions"][0]
+    assert "r" not in card and "ag" not in card, "команды ещё нет — и показывать нечего"
+
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/proj",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent": "какая-то-сессия"})
+    cards = br.build_snapshot()["sessions"]
+    assert len(cards) == 1, "агент обязан свернуться в карточку своего оркестратора"
+    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i0"
+
+
+def test_agent_named_as_parent_does_not_become_orchestrator(bridge):
+    """Имя, названное родителем, оркестратором делает НЕ всегда: у самого носителя не
+    должно быть агентской роли.
+
+    Имена сессий глобальны на машину и переиспользуются: оркестратор умер, имя занял
+    новый имплементер — и протухший `MJC_PARENT` указывает уже на него. Без проверки
+    имплементер стал бы командной карточкой и проглотил бы чужого агента."""
+    br = bridge
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer"})
+    br.handle_event({"event": "working", "session_id": "a2", "cwd": "/w/mjc",
+                     "sess_name": "mjc-rev-sec", "agent": "reviewer",
+                     "parent": "mjc-impl-be"})
+    teams = br.teams(list(br.sessions.values()))
+    assert teams == {}, "имплементер не может быть чьим-то оркестратором"
+    names = sorted(c["name"] for c in br.build_snapshot()["sessions"])
+    assert names == ["mjc-impl-be", "mjc-rev-sec"], "обе сессии остаются своими карточками"
