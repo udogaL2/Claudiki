@@ -92,6 +92,28 @@
   .leg .hook{font-family:var(--font-mono); font-size:11px; color:var(--faint);}
   .leg.work .swatch{background:var(--work);color:var(--work)} .leg.wait .swatch{background:var(--wait);color:var(--wait)}
   .leg.idle .swatch{background:#9aa3ad;color:#9aa3ad} .leg.err .swatch{background:var(--err);color:var(--err)}
+  /* Ростер команды: одна строка — один агент. Фигура слева повторяет силуэт с экрана,
+     чтобы список и панель читались как одно целое. */
+  .roster{display:flex; flex-direction:column; gap:5px;}
+  .rrow{display:grid; grid-template-columns:16px minmax(0,1fr) auto auto; gap:9px; align-items:center;
+        font-family:var(--font-mono); font-size:11.5px; color:var(--muted);
+        padding:4px 6px; border-radius:8px; background:rgba(255,255,255,.02);}
+  .rrow.orc{background:rgba(255,176,64,.10); border:1px solid rgba(255,176,64,.35);}
+  .rrow .nm{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .rshape{width:14px; height:14px; justify-self:center; cursor:pointer;}
+  .rshape.ci{border-radius:50%}
+  .rshape.sq{border-radius:2px}
+  .rshape.tri{clip-path:polygon(50% 0,100% 100%,0 100%)}
+  .rshape.di{clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+  .rstates{display:flex; gap:3px;}
+  .rstates button{padding:3px 6px; font-size:10.5px; border-radius:6px;}
+  .rstates button.on{border-color:currentColor}
+  .rstates button.w.on{color:var(--work); border-color:var(--work); background:rgba(49,255,58,.12)}
+  .rstates button.a.on{color:var(--wait); border-color:var(--wait); background:rgba(255,214,0,.12)}
+  .rstates button.i.on{color:#9aa3ad; border-color:#9aa3ad; background:rgba(154,163,173,.12)}
+  .rstates button.e.on{color:var(--err); border-color:var(--err); background:rgba(255,20,99,.12)}
+  .rdel{padding:3px 7px; color:var(--faint);}
+  .rdel:hover{color:var(--err); border-color:var(--err); background:rgba(255,20,99,.08)}
   .btns{display:flex; gap:6px; flex-wrap:wrap;}
   button{font-family:var(--font-mono); font-size:12px; color:var(--ink); cursor:pointer;
     background:transparent; border:1px solid var(--line); border-radius:8px; padding:7px 10px;
@@ -193,6 +215,68 @@
     </section>
 
     <section class="card-panel">
+      <h2>Мета-оркестратор</h2>
+      <div class="btns" id="metavar">
+        <button data-mv="off" class="on">как сейчас</button>
+        <button data-mv="crew">свита</button>
+        <button data-mv="shape">фигуры на орбите</button>
+      </div>
+      <div class="btns" id="metateammode">
+        <button data-tm="collapsed" class="on">команда одной карточкой</button>
+        <button data-tm="expanded">агенты отдельно</button>
+      </div>
+      <div class="btns" id="metapreset">
+        <button data-n="3">3 агента</button>
+        <button data-n="5">5</button>
+        <button data-n="8">8</button>
+        <button data-n="12">12</button>
+      </div>
+      <div class="roster" id="roster"></div>
+      <div class="btns">
+        <button id="metaadd">+ агент</button>
+        <button id="metaclear">убрать команду</button>
+      </div>
+      <p class="note" id="metanote"></p>
+      <p class="note">
+        <b>Как смотреть:</b> нажми <b>свиту</b> — команда соберётся сама и
+        встанет <b>первой слева</b> на аквариуме (уголки в цвете оркестратора). В списке ниже:
+        клик по фигуре — сменить роль, кнопки справа — статус агента.
+      </p>
+      <p class="note">
+        <b>Свёрнутая команда — основной режим.</b> Агенты видны спутниками, своих карточек
+        не занимают: пятеро съедали всю страницу, и аквариум превращался в одну команду.
+        Имя агента появляется ровно тогда, когда нужно — <b>в строке имени вместо имени
+        оркестратора, когда агент встал</b>: это и есть ответ на вопрос «в какую вкладку
+        идти». Метки роли в свёрнутом режиме нет: помечать нечего, карточка с уголками
+        и свитой одна.
+      </p>
+      <p class="note">
+        Роль кодируется <b>фигурой и цветом</b>, без букв: на 7 пикселях силуэт читается,
+        а глиф 3×5 — нет. Круг — оркестратор, квадрат — имплементер, треугольник —
+        ресерчер, ромб — ревьювер. Метка рисуется <b>поверх копоти</b> и со своей
+        подложкой: под дымом она пропадала.
+      </p>
+      <p class="note">
+        <b>Свита стоит по бокам, а не на орбите:</b> на кольце спутники наезжают на тело
+        и вынужденно мельчают, а в боковых столбцах места 18 пикселей — там осьминожек
+        помещается целиком, с глазами и щупальцами. Босс ради этого ужимается с 17 до 13:
+        карточка команды — это сцена, а не один зверь.
+      </p>
+      <p class="note">
+        <b>Много агентов — не мельче, а группами.</b> Одна фигура на роль; что их несколько,
+        видно по силуэтам за спиной (один дубль — двое, два — трое и больше). Точной цифры
+        на экране нет намеренно: шрифт 3×5 в проекте читается только на scale 3, а считать
+        агентов глазами всё равно никто не будет — точное число есть в панели и в octoctl.
+        Знак «?» или «!» у головы говорит, что <b>кто-то из них</b> встал, а кто именно —
+        говорит <b>имя в строке карточки</b>: `mjc-rev-sec ?`. Опознать агента силуэтом
+        в 9 пикселей нельзя ни при какой раскладке, поэтому выделять его отдельной
+        фигурой смысла нет — это пробовалось и выброшено. Провод: роль полем <code>r</code>, агенты строкой
+        <code>ag</code> (буква роли + цифра статуса). Массивами нельзя — у прошивки
+        статическая арена ArduinoJson 2 КБ, и вложенные узлы дороже байтов.
+      </p>
+    </section>
+
+    <section class="card-panel">
       <h2>События сессии</h2>
       <div class="btns">
         <button id="poke">Промпт</button>
@@ -219,11 +303,6 @@
 
     <section class="card-panel">
       <h2>Экран</h2>
-      <div class="row">
-        <label for="sleepsec">сон через</label>
-        <input type="range" id="sleepsec" min="0" max="60" step="5" value="20">
-        <span class="val" id="sleepsecval">20с</span>
-      </div>
       <div class="btns">
         <button id="sleepbtn">Усыпить</button>
       </div>
@@ -232,7 +311,10 @@
         <button data-ind="off">без него</button>
       </div>
       <p class="note">
-        Сон держит мост; будит любой щелчок и любая ожившая сессия — <b>WAITING обязательно</b>.
+        Авто-сна нет: подсветка не управляется с пина, и погашенный экран — это чёрная
+        картинка на светящейся панели, хуже живого аквариума. Вернём, когда LED переедет
+        на пин. Кнопка ниже — ручной сон через <code>POST /enc</code>; будит любой щелчок
+        и любая ожившая сессия, <b>WAITING обязательно</b>.
       </p>
     </section>
 
@@ -438,6 +520,11 @@
     "0":[7,5,5,5,7], "1":[2,6,2,2,7], "2":[7,1,7,4,7], "3":[7,1,7,1,7], "4":[5,5,7,1,1],
     "5":[7,4,7,1,7], "6":[7,4,7,5,7], "7":[7,1,1,1,1], "8":[7,5,7,5,7], "9":[7,5,7,1,7],
     "/":[1,1,2,4,4],
+    // Буквы ролей MetaJetCore: orc / impl / rsrch / rev. Латиница намеренно —
+    // на клетке 3×5 кириллическая «И» неотличима от «Н», а короткие имена ролей
+    // у самого MJC тоже латинские (Role.shortName).
+    "O":[7,5,5,5,7], "I":[7,2,2,2,7], "R":[7,5,7,6,5], "V":[5,5,5,5,2],
+    "+":[0,2,7,2,0], "?":[7,1,3,0,2], "!":[2,2,2,0,2], "x":[0,5,2,5,0],
   };
   // px — куда рисовать прямоугольник: в буфер GFX или сразу на канву дисплея.
   // Пиксели одни и те же, меняется только приёмник — так индикатор можно рисовать
@@ -559,7 +646,12 @@
     const riseY = fresh ? Math.round((1-born/1400)*26) : 0;
 
     const hy = cy + bob + riseY + (flipped?5:0);
-    const R  = 17 - squash;   // базовый радиус 17; на выдохе тело сдувается
+    // Босс НЕ ужимается, хотя со свитой это выглядело бы просторнее: в прошивке
+    // сфера тела — предрасчитанный тайл фиксированного радиуса (SPH_R=17), и второй
+    // размер стоил бы ещё 2.4 КБ статической памяти либо sqrt на пиксель в кадре.
+    // Свита влезает и так: столбцы на ±25, кольцо ожидания ещё 7 — ровно габарит
+    // буфера 68×72. Эмулятор обязан показывать то же, что железо.
+    const R  = 17 - squash;
 
     tentacles(cx, hy, R, dir, tt, speed, amp*(1+squash*0.5), 6, 9);
     sphereBody(cx, hy, R);
@@ -624,6 +716,54 @@
     if(evCrab>0 && evCrabId===card.id && now-evCrab<CRAB_MS)
       crabInCell(cx, hy, (now-evCrab)/CRAB_MS, now);
 
+    // Спутники оркестратора идут по ТОЙ ЖЕ орбите, что и суб-агенты: механика
+    // одна, различается смысл. Поэтому и поле в снэпшоте отдельное — смешивать
+    // «мои суб-агенты» и «мои сессии-агенты» в одном числе нельзя.
+    const sats = (metaVar!=="off" && card.role===ROLE_ORC) ? (card.sats||[]) : null;
+    if(sats && sats.length && metaVar==="crew"){
+      // Свита стоит В СТОЛБЦАХ по бокам от босса. На орбите она лезла на тело и
+      // мельчала до нечитаемости; сбоку у каждого есть свои 18×20 пикселей.
+      const groups = crewGroups(sats);
+      const half = Math.ceil(groups.length/2);
+      groups.forEach((grp,k)=>{
+        const right = k >= half;
+        const col = right ? groups.length-half : half;        // сколько в этом столбце
+        const idx = right ? k-half : k;
+        const gx = cx + (right ? 25 : -25);
+        // Шаг и якорь подобраны так, чтобы ТРИ фигуры влезли в окно 68×72 целиком,
+        // вместе с шапкой-ролью сверху и щупальцами снизу: у крайних иначе срезало
+        // макушку, и это не видно на экране — клип у канвы тихий.
+        const gy = hy + 2 + Math.round((idx - (col-1)/2) * (col >= 3 ? 19 : 22));
+        miniOcto(gx, gy, grp.role, grp.state, tt, k, grp.n);
+      });
+      return;
+    }
+    if(sats && sats.length){
+      const crew = false;
+      // Больше шести на одном кольце слипаются: длина эллипса 28×10 — всего ~127px,
+      // а спутник с контуром занимает 9. Поэтому кольца ДВА, и крутятся они навстречу
+      // друг другу: так видно, что их два, а не одно рваное.
+      const n = sats.length;
+      // Радиус упирается не в красоту, а в БУФЕР: осьминог собирается в канву 68×72
+      // с центром на 32, а спутник с кольцом ожидания занимает ещё 6 пикселей —
+      // значит rx не больше 26, иначе левый край срежется. Проверено арифметикой,
+      // а не глазами: клип тихий, его на экране не заметишь.
+      const rings = n<=6 ? [{from:0, to:n, rx:R+9, ry:R*0.62, dir:1, sz:3}]
+                         : [{from:0, to:n-Math.ceil(n/2), rx:R+3, ry:R*0.34, dir:-1, sz:2},
+                            {from:n-Math.ceil(n/2), to:n,  rx:R+9, ry:R*0.72, dir:1,  sz:3}];
+      for(const ring of rings){
+        const cnt = ring.to - ring.from;
+        for(let k=0;k<cnt;k++){
+          const a = tt*0.5*ring.dir + k*(2*Math.PI/cnt);
+          const ox = cx + Math.round(Math.cos(a)*ring.rx);
+          const oy = hy - 2 + Math.round(Math.sin(a)*ring.ry);
+          const s = sats[ring.from+k];
+          if(crew && ring.sz>2) miniOcto(ox, oy, s.role, s.state, tt, ring.from+k);
+          else satellite(ox, oy, s.role, s.state, tt, ring.from+k, ring.sz);
+        }
+      }
+      return;                                   // орбита занята агентами
+    }
     const nsub = Math.min(sub||0, 5);
     for(let k=0;k<nsub;k++){
       const a=tt*1.0 + k*(2*Math.PI/nsub);
@@ -685,6 +825,198 @@
     };
   });
 
+  // ================= мета-оркестратор: роли и спутники =================
+  // Роль сессии мост берёт из реестра Claude Code (поле `agent` в
+  // ~/.claude/sessions/<pid>.json — туда её кладёт плагин через CLAUDE_CODE_AGENT),
+  // а связь «оркестратор → его агенты» приезжает из env спавна. Здесь это просто
+  // поля карточки: эмулятор проверяет картинку, а не способ добычи данных.
+  const ROLE_NONE=0, ROLE_ORC=1, ROLE_IMPL=2, ROLE_RSRCH=3, ROLE_REV=4;
+  const ROLE_LETTER = ["", "O", "I", "R", "V"];
+  // Цвета ролей держим ПОДАЛЬШЕ от палитры статусов (зелёный/жёлтый/серый/красный):
+  // на карточке рядом и то и другое, и путать их нельзя.
+  const ROLE_COLOR = [0, rgb(255,176,64), rgb(96,196,255), rgb(178,142,255), rgb(120,235,180)];
+  const ROLE_NAME = ["", "оркестратор", "имплементер", "ресерчер", "ревьювер"];
+  // off — как сейчас; crew — свита осьминожков по бокам; shape — фигуры на орбите.
+  let metaVar = "off";
+  // collapsed — команда одной карточкой (агенты только спутниками), expanded — у каждого
+  // агента своя карточка. Свёрнутый режим основной: карточка агента даёт сверх спутника
+  // только имя и вес, а стоит целого слота из шести.
+  let teamMode = "collapsed";
+
+  /** Силуэт роли: круг — оркестратор, квадрат — имплементер, треугольник — ресерчер,
+   *  ромб — ревьювер.
+   *
+   *  Фигура, а НЕ буква. Первый заход рисовал глиф 3×5, и он не читался: на клетке
+   *  такого размера «O» и «V» отличаются четырьмя пикселями, а поверх копоти не
+   *  отличаются вовсе. Силуэт узнаётся периферийным зрением и переживает и дым,
+   *  и мелкий масштаб — плюс цвет работает вторым, независимым кодом. */
+  function roleGlyph(cx, cy, r, role, col){
+    if(r < 1) r = 1;
+    if(role===ROLE_IMPL){ g.fillRect(cx-r, cy-r, 2*r+1, 2*r+1, col); return; }
+    if(role===ROLE_ORC){  g.fillCircle(cx, cy, r, col); return; }
+    for(let j=0;j<=2*r;j++){
+      // треугольник вершиной вверх / ромб — одна и та же развёртка по строкам
+      const hw = role===ROLE_RSRCH ? Math.round(j/2) : r - Math.abs(j - r);
+      g.fillRect(cx-hw, cy-r+j, 2*hw+1, 1, col);
+    }
+  }
+
+  /** Спутник: силуэт роли с контуром. Состояние — на нём же:
+   *  работает — дышит, ждёт — мигает в жёлтом кольце, спит — притушен, упал — крест.
+   *  Мигающий ждущий агент и есть весь смысл затеи: оркестратор не может подтвердить
+   *  пермишен за агента и всё равно зовёт человека. */
+  function satellite(cx, cy, role, state, tt, phase, size){
+    if(state===A && Math.floor(tt*2.6 + phase)%2===0) return;   // «жду человека»
+    const base = ROLE_COLOR[role] || rgb(200,200,200);
+    const dim  = state===I;
+    const col  = dim ? lerp(base, BG, 0.62) : base;
+    const rim  = dim ? lerp(base, BG, 0.3)  : lerp(base, 0xFFFF, 0.55);
+    const r = (size||3) + (state===W && Math.sin(tt*3.2 + phase) > 0.5 ? 1 : 0);
+    roleGlyph(cx, cy, r,   role, rim);       // контур — он и держит фигуру на дыму
+    roleGlyph(cx, cy, r-1, role, col);
+    if(role===ROLE_ORC) g.fillCircle(cx, cy, Math.max(0, r-3), BG);   // орк — обруч
+    if(state===A) g.drawCircle(cx, cy, r+2, C_WAIT);
+    if(state===E){
+      g.drawLine(cx-r, cy-r, cx+r, cy+r, C_ERR);
+      g.drawLine(cx+r, cy-r, cx-r, cy+r, C_ERR);
+    }
+  }
+
+  /** Осьминожек свиты: тот же зверь, что в ячейке, только меньше. Роль — цветом и
+   *  фигуркой-«шапкой» над головой, число одинаковых — точками под ним.
+   *
+   *  Тело r=4, а не 3: на тройке глаза и щупальца сливались в пятно — ровно то, на что
+   *  и жаловались. Место под это взято у босса (он ужат до 13) и у орбиты (свита ушла
+   *  в боковые столбцы, где есть 18 свободных пикселей). */
+  function miniOcto(cx, cy, role, state, tt, phase, count){
+    const base = ROLE_COLOR[role] || rgb(200,200,200);
+    const col = state===I ? lerp(base, BG, 0.55) : base;
+    const bob = Math.round(Math.sin(tt*(state===W?3.2:1.6) + phase*1.7));   // покачивается сам по себе
+    cy += bob;
+    for(let t=-3;t<=3;t++){                                   // щупальца
+      const sway = Math.round(Math.sin(tt*(state===W?6:2.4) + phase + t*0.7));
+      g.drawPixel(cx+t, cy+4, lerp(col, BG, 0.2));
+      g.drawPixel(cx+t+sway, cy+5, lerp(col, BG, 0.45));
+      if(t%2===0) g.drawPixel(cx+t+sway, cy+6, lerp(col, BG, 0.65));
+    }
+    // «Их несколько»: силуэты за спиной. Смещение только вбок — вниз мешают щупальца,
+    // вверх шапка-роль, а по бокам в столбце как раз есть по четыре пикселя.
+    // Каждый дубль сперва выбивает под собой фон и только потом рисуется приглушённым:
+    // без этого зазора в 1 пиксель три круга сливаются в одно толстое пятно, и «их
+    // несколько» читается как «этот жирный».
+    const ghost = lerp(col, BG, 0.55);
+    if(count > 1) g.fillCircle(cx-4, cy+2, 3, ghost);
+    if(count > 2) g.fillCircle(cx+4, cy+2, 3, ghost);
+    if(count > 1) g.fillCircle(cx, cy, 5, BG);      // зазор вокруг ГЛАВНОГО, а не под дублями:
+                                                    // иначе тело затирает его же и всё слипается
+    g.fillCircle(cx, cy, 4, col);
+    g.fillCircle(cx-1, cy-2, 1, lerp(col, 0xFFFF, 0.75));     // блик
+    const eye = state===I ? C_IDLE : 0xFFFF;
+    if(state===I){                                            // спит — глаза щёлочками
+      g.drawFastHLine(cx-3, cy, 2, eye); g.drawFastHLine(cx+2, cy, 2, eye);
+    } else {
+      g.fillCircle(cx-2, cy, 1, eye); g.fillCircle(cx+2, cy, 1, eye);
+      g.drawPixel(cx-2, cy, PUPIL);    g.drawPixel(cx+2, cy, PUPIL);
+    }
+    roleGlyph(cx, cy-8, 2, role, lerp(col, 0xFFFF, 0.5));     // «шапка» = роль
+    // Знак состояния — тот же, что у большого осьминога в ячейке: «?» значит «ждёт
+    // человека», и это единственное, ради чего на экран вообще смотрят. Ставим сбоку
+    // от головы, чтобы не спорил с шапкой-ролью.
+    if(state===A){
+      // Мигает ТОЛЬКО кольцо, сам зверёк остаётся на месте. Мигание всей фигуры
+      // читалось как «агент то появляется, то исчезает» — то есть как проблема
+      // с составом, а не как «ждёт человека»; заодно от него рябило в глазах.
+      // Знак «?» горит постоянно: состояние должно быть читаемо в любой фазе,
+      // мигание тут — привлечь внимание, а не сообщить факт.
+      const beat = Math.floor(tt*2.6 + phase) % 2 === 0;
+      g.drawCircle(cx, cy, beat ? 6 : 7, beat ? C_WAIT : lerp(C_WAIT, BG, 0.55));
+      tinyText(bufRect, cx+6, cy-8, "?", 1, C_WAIT);
+    }
+    if(state===E){
+      g.drawLine(cx-4, cy-4, cx+4, cy+4, C_ERR); g.drawLine(cx+4, cy-4, cx-4, cy+4, C_ERR);
+      tinyText(bufRect, cx+6, cy-8, "!", 1, C_ERR);
+    }
+    // Точного числа на экране НЕТ, и это решение, а не упущение. Пробовались точки 2×2
+    // (грязь под зверьком) и цифра 3×5 сбоку — а шрифт 3×5 в проекте используется ровно
+    // один раз, в индикаторе страниц, и там scale 3 «читается с руки». На панели 2.4"
+    // пиксель 0.15 мм: цифра scale 1 это 0.5×0.8 мм, втрое мельче имени карточки.
+    // Считать агентов глазами на этом экране всё равно никто не будет — важно «один или
+    // несколько». Поэтому за спиной у зверька выглядывают его дубли: один — двое,
+    // два — трое и больше. Точное число есть в панели и в octoctl.
+    void 0;
+  }
+
+  /** Свита — одна фигура на роль. Больше трёх фигур на карточке не бывает.
+   *
+   *  Пробовал выделять вставшего агента отдельной фигурой — выбросил. Опознать
+   *  конкретного агента силуэтом в 9 пикселей нельзя ни при какой раскладке: «один из
+   *  трёх ревьюверов ждёт» и «вот этот ревьювер ждёт» на экране выглядят одинаково.
+   *  Идентификацию несёт ИМЯ в строке карточки, и оно там одно — значит и фигур
+   *  достаточно по числу ролей. Меньше правил, столько же смысла.
+   *
+   *  Статус группы — самый тревожный из её агентов: упал важнее, чем ждёт, ждёт
+   *  важнее, чем работает. Иначе один упавший ревьювер тонул бы среди двух рабочих.
+   */
+  function crewGroups(sats){
+    const order = [ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
+    const worst = [E, A, W, I];                     // по убыванию тревожности
+    return order.map(role=>{
+      const mine = sats.filter(a=>a.role===role);
+      if(!mine.length) return null;
+      return {role, n:mine.length, state:worst.find(st=>mine.some(a=>a.state===st))};
+    }).filter(Boolean);
+  }
+
+
+  /** Метка роли на карточке. Живёт в строке имени и рисуется ПОСЛЕ копоти, со своей
+   *  подложкой: в углу под дымом её было не видно — первое, что сказали на просмотре. */
+  function roleMarks(i, card, tt){
+    if(metaVar==="off" || !card.role) return;
+    const x0=cellX(i)+2, y0=cellY(i)+2, bw=cw-4, bh=ch-4;
+    const col = ROLE_COLOR[card.role];
+    if(card.role===ROLE_ORC){
+      // Уголки: карточку оркестратора видно с другого конца стола, ещё до того как
+      // разберёшь фигуры. Рисуются поверх копоти — она их больше не съедает.
+      const arm=9, th=2;
+      g.fillRect(x0, y0, arm, th, col);            g.fillRect(x0, y0, th, arm, col);
+      g.fillRect(x0+bw-arm, y0, arm, th, col);     g.fillRect(x0+bw-th, y0, th, arm, col);
+      g.fillRect(x0, y0+bh-th, arm, th, col);      g.fillRect(x0, y0+bh-arm, th, arm, col);
+      g.fillRect(x0+bw-arm, y0+bh-th, arm, th, col); g.fillRect(x0+bw-th, y0+bh-arm, th, arm, col);
+    }
+    // В свёрнутом режиме метки нет: карточек агентов на экране не бывает, а карточку
+    // оркестратора и так видно по уголкам и свите. Метка нужна только там, где рядом
+    // стоят карточки разных ролей.
+    if(teamMode!=="expanded" || card.role===ROLE_ORC) return;
+    const cx = x0+8, cy = y0+bh-6;
+    g.fillRect(cx-5, cy-5, 11, 11, BG);            // подложка — иначе тонет в копоти
+    roleGlyph(cx, cy, 4, card.role, lerp(col, 0xFFFF, 0.5));
+    roleGlyph(cx, cy, 3, card.role, col);
+  }
+
+  /** Что писать в строке имени. У свёрнутой команды — имя ВСТАВШЕГО агента, а не
+   *  оркестратора: «кто-то ждёт» видно и по мигающему спутнику, а вот в какую вкладку
+   *  идти — только по имени. Упавший важнее ждущего, поэтому он и вперёд. */
+  function cardLabel(card){
+    if(metaVar==="off" || teamMode!=="collapsed" || card.role!==ROLE_ORC || !(card.sats||[]).length)
+      return {text:card.name, alarm:0};
+    const sats = card.sats;
+    // Имя вставшего агента, а не роли: «ревьювер ждёт» не говорит, какую вкладку
+    // открывать, когда ревьюверов трое. Если встали несколько — имя первого и счётчик.
+    const pick = (st) => {
+      const ids = sats.map((a,i)=>a.state===st?i:-1).filter(i=>i>=0);
+      if(!ids.length) return null;
+      const nm = TEAM_NAMES[ids[0]%TEAM_NAMES.length];
+      return ids.length>1 ? `${nm} +${ids.length-1}` : nm;
+    };
+    const dead = pick(E);
+    if(dead) return {text:dead+" !", alarm:E};
+    const wait = pick(A);
+    if(wait) return {text:wait+" ?", alarm:A};
+    return {text:card.name, alarm:0};
+  }
+
+
+
   const PRIO = {[W]:0, [E]:1, [A]:2, [I]:3};  // WORKING → ERROR → WAITING → IDLE
   let pool = makePool(14);
   let page = 0, screenIdx = 0, popupUntil = 0, indicator = "popup";
@@ -702,13 +1034,24 @@
   const NIGHT_MAX=0.3;
   const nk = () => (nightOn ? nightK : 0) * NIGHT_MAX;
   let sleeping = false, sleptDrawn = false, dotOn = false;
-  let lastActivity = 0, sleepAfterSec = 20;      // в жизни это минуты, тут секунды — чтобы видеть
+  // lastActivity нужен и без авто-сна: по нему просыпается ручной сон и живут вбросы.
+  let lastActivity = 0;
 
   function pages(){
     const sorted = [...pool].sort((a,b)=> PRIO[a.state]-PRIO[b.state] || b.last-a.last);
+    // Команда мета-оркестратора держится ВМЕСТЕ и идёт первой. Без этого правила
+    // приоритет статусов растаскивает её по страницам: орк почти всегда в WAITING
+    // (он ждёт агентов), а ждущий сортируется третьим — и уезжает со своей свитой
+    // с глаз долой. В мосте понадобится ровно эта же правка отбора.
+    if(metaVar!=="off"){
+      const team = sorted.filter(c=>c.role);
+      if(team.length) sorted.splice(0, sorted.length, ...team, ...sorted.filter(c=>!c.role));
+    }
     const out=[];
     for(let i=0;i<sorted.length;i+=PER_PAGE)
-      out.push(sorted.slice(i,i+PER_PAGE).sort((a,b)=>a.started-b.started));  // раскладка — по старту
+      out.push(sorted.slice(i,i+PER_PAGE).sort((a,b)=>
+        (metaVar!=="off" && (a.role||b.role) ? (b.role===ROLE_ORC)-(a.role===ROLE_ORC) || (!!b.role)-(!!a.role) : 0)
+        || a.started-b.started));                                            // раскладка — по старту
     return out.length ? out : [[]];
   }
   const pageCount = () => pages().length;
@@ -826,8 +1169,9 @@
     dctx.textAlign="center"; dctx.textBaseline="alphabetic";
     dctx.font="600 22px ui-monospace,Consolas,monospace";
     cards.forEach((card,i)=>{
-      dctx.fillStyle=css565(frameColor(card.state));
-      dctx.fillText(card.name, (cellX(i)+cw/2)*3, (cellY(i)+ch-8)*3);
+      const lb = cardLabel(card);
+      dctx.fillStyle=css565(lb.alarm===E ? C_ERR : lb.alarm===A ? C_WAIT : frameColor(card.state));
+      dctx.fillText(lb.text, (cellX(i)+cw/2)*3, (cellY(i)+ch-8)*3);
     });
     dctx.restore();
   }
@@ -845,9 +1189,11 @@
       if(st===A && Math.floor(tt*1.6)%2===0) col=BG;
       g.drawRect(x0+shake,y0,bw,bh,col);
       if(weightStyle!=="off") cardSmog(i, smokeOf(card));
+      roleMarks(i, card, tt);
       octo(octoCX(i)+shake, octoCY(i), tt, card);
       const blink = st!==A || (Math.floor(tt*1.6)%2===0);
       g.fillRect(x0+3+shake,y0+3,3,3, blink?frameColor(st):BG);
+
     });
     blit();
     drawNames(cards, null);
@@ -867,7 +1213,13 @@
     g.fillScreen(BG);
     for(let c=1;c<COLS;c++) g.drawFastVLine(c*cw,0,DH,GRID);
     for(let r=1;r<ROWS;r++) g.drawFastHLine(0,r*ch,DW,GRID);
-    cards.forEach((card,i)=>{ drawFrame(i,card); if(weightStyle!=="off") cardSmog(i, smokeOf(card)); });
+    // Порядок важен: метка роли рисуется ПОСЛЕ копоти. Раньше она уходила под дым
+    // и на тяжёлой сессии пропадала совсем.
+    cards.forEach((card,i)=>{
+      drawFrame(i,card);
+      if(weightStyle!=="off") cardSmog(i, smokeOf(card));
+      roleMarks(i, card, 0);
+    });
     spi(DW*DH);
     for(let i=0;i<cellTick.length;i++) cellTick[i]=0;   // ячейки перерисовать сразу
   }
@@ -2364,6 +2716,10 @@
     const sessions = currentPage().map(c=>{
       const o = {id:c.id, name:c.name, state:c.state};
       if(c.sub) o.sub=c.sub;
+      if(metaVar!=="off" && c.role) o.r=c.role;
+      // Компактная строка вместо массива: буква роли + цифра статуса на агента.
+      if(metaVar!=="off" && c.role===ROLE_ORC && (c.sats||[]).length)
+        o.ag = c.sats.map(a=>ROLE_LETTER[a.role].toLowerCase()+a.state).join("");
       return o;
     });
     // Спящему экрану состав не нужен: мост шлёт короткий снэпшот и не гоняет данные зря
@@ -2497,8 +2853,6 @@
       }
     }
     spiPx=0; spiWins=0; screenBuf.px=0; octoBuf.px=0;
-    // авто-сон: тишина в сессиях дольше порога — гасим панель
-    if(!sleeping && sleepAfterSec>0 && now-lastActivity > sleepAfterSec*1000) setSleep(true);
     // вбросы по таймеру. В жизни интервал минуты — сценка должна быть неожиданной,
     // иначе она из «о, смотри» превращается в мельтешение.
     if(autoEvents && !sleeping && now>nextEvent){
@@ -2589,6 +2943,156 @@
     pushSnapshot();
   });
 
+  // -- мета-оркестратор --------------------------------------------------------
+  const metaNote = document.getElementById("metanote");
+  function orcCard(){ return pool.find(c=>c.role===ROLE_ORC) || null; }
+  function noteMeta(){
+    const orc = orcCard();
+    if(metaVar==="off"){ metaNote.textContent = "Выключено: карточки как сегодня, без ролей."; return; }
+    if(!orc){ metaNote.textContent = "Команды нет — нажми «команда MJC»."; return; }
+    const sats = orc.sats || [];
+    const by = {};
+    sats.forEach(a=>{ by[a.role]=(by[a.role]||0)+1; });
+    const roles = Object.keys(by).map(r=>ROLE_NAME[r] + (by[r]>1 ? " ×"+by[r] : "")).join(", ");
+    const waiting = sats.filter(a=>a.state===A).length, dead = sats.filter(a=>a.state===E).length;
+    const alarm = [waiting?`ждут человека: ${waiting}`:"", dead?`упали: ${dead}`:""].filter(Boolean).join(" · ");
+    const label = cardLabel(orc);
+    metaNote.textContent = sats.length
+      ? `${orc.name} · ${sats.length} агентов: ${roles}${alarm ? " — " + alarm : ""}`
+        + (label.alarm ? ` · на карточке: «${label.text}»` : "")
+      : `${orc.name}: агентов нет`;
+  }
+  // Состав команды по числу агентов. Порядок ролей — как у самого MJC: один
+  // имплементер, один ресерчер, дальше ревьюверы и второй имплементер по доменам.
+  const TEAM_ROLES = [ROLE_IMPL, ROLE_RSRCH, ROLE_REV, ROLE_REV, ROLE_IMPL,
+                      ROLE_RSRCH, ROLE_REV, ROLE_IMPL, ROLE_REV, ROLE_RSRCH,
+                      ROLE_IMPL, ROLE_REV];
+  const TEAM_NAMES = ["mjc-impl-be","mjc-rsrch","mjc-rev-sec","mjc-rev-arch","mjc-impl-fe",
+                      "mjc-rsrch-2","mjc-rev-perf","mjc-impl-db","mjc-rev-ux","mjc-rsrch-3",
+                      "mjc-impl-api","mjc-rev-doc"];
+  /** Карточки агентов = отдельные сессии. Спутники их не заменяют: на карточке
+   *  оркестратора видно СОСТАВ, а у каждого агента есть своя карточка со статусом.
+   *  На страницу помещается пятеро — остальные живут только спутниками. */
+  function syncTeamCards(){
+    const orc = orcCard(); if(!orc) return;
+    pool.forEach((c,i)=>{ if(i>0) c.role = ROLE_NONE; });
+    if(teamMode==="expanded"){
+      (orc.sats||[]).slice(0,5).forEach((a,k)=>{
+        const c = pool[k+1]; if(!c) return;
+        c.role=a.role; c.name=TEAM_NAMES[k%TEAM_NAMES.length]; c.state=a.state; c.sub=0;
+      });
+    }
+    espKey="";                        // состав и метки сменились — статику заново
+    if(metaVar!=="off"){ screenIdx=0; page=0; }
+    markActivity(true); pushSnapshot(); renderRoster(); noteMeta();
+  }
+  function setTeamSize(n){
+    const orc = orcCard(); if(!orc) return;
+    const was = orc.sats || [];
+    orc.sats = Array.from({length:n}, (_,k)=> was[k] || {role:TEAM_ROLES[k%TEAM_ROLES.length], state:W});
+    syncTeamCards();
+  }
+  function makeTeam(n){
+    pool.forEach(c=>{ c.role=ROLE_NONE; c.sats=null; });
+    const orc = pool[0];
+    if(!orc) return;
+    orc.name = "mjc-orc"; orc.role = ROLE_ORC; orc.state = A; orc.sub = 0;
+    orc.sats = [];
+    setTeamSize(n || 3);
+  }
+  function dropTeam(){
+    pool.forEach(c=>{ c.role=ROLE_NONE; c.sats=null; });
+    espKey=""; markActivity(true); pushSnapshot(); renderRoster(); noteMeta();
+  }
+
+  // -- ростер: список команды, где роль и статус меняются одним кликом ----------
+  const rosterEl = document.getElementById("roster");
+  const ROLE_CSS = ["", "ci", "sq", "tri", "di"];
+  const ROLE_HEX = ["", "#ffb040", "#60c4ff", "#b28eff", "#78ebb4"];
+  const ST_LABEL = ["работает", "ждёт", "спит", "сбой"];
+  const ST_CLASS = ["w", "a", "i", "e"];
+  const stateBtns = (st, k) => ST_LABEL.map((l,i)=>
+    `<button class="${ST_CLASS[i]}${st===i?" on":""}" data-act="st" data-st="${i}" data-k="${k}">${l}</button>`
+  ).join("");
+
+  function renderRoster(){
+    const orc = orcCard();
+    if(!orc){
+      rosterEl.innerHTML = '<p class="note" style="margin:2px 0">Команды нет. Нажми вариант выше или «3 агента».</p>';
+      return;
+    }
+    const rows = [`<div class="rrow orc">
+        <span class="rshape ci" style="background:${ROLE_HEX[1]}"></span>
+        <span class="nm">${orc.name}</span>
+        <span class="rstates">${stateBtns(orc.state, -1)}</span>
+        <span></span>
+      </div>`];
+    (orc.sats||[]).forEach((a,k)=>{
+      rows.push(`<div class="rrow">
+        <span class="rshape ${ROLE_CSS[a.role]}" style="background:${ROLE_HEX[a.role]}"
+              data-act="role" data-k="${k}" title="сменить роль"></span>
+        <span class="nm">${TEAM_NAMES[k%TEAM_NAMES.length]}${k>4?" · только спутник":""}</span>
+        <span class="rstates">${stateBtns(a.state, k)}</span>
+        <button class="rdel" data-act="del" data-k="${k}" title="убрать агента">✕</button>
+      </div>`);
+    });
+    rosterEl.innerHTML = rows.join("");
+  }
+
+  rosterEl.addEventListener("click", e=>{
+    const el = e.target.closest("[data-act]"); if(!el) return;
+    const orc = orcCard(); if(!orc) return;
+    const k = +el.dataset.k;
+    if(el.dataset.act==="st"){
+      const st = +el.dataset.st;
+      if(k < 0) orc.state = st;                       // строка самого оркестратора
+      else if(orc.sats[k]) orc.sats[k].state = st;
+    } else if(el.dataset.act==="role"){
+      // Роль циклом по трём: оркестратор в свите не бывает — он и есть карточка.
+      const cyc = [ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
+      orc.sats[k].role = cyc[(cyc.indexOf(orc.sats[k].role)+1) % cyc.length];
+    } else if(el.dataset.act==="del"){
+      orc.sats.splice(k,1);
+    }
+    syncTeamCards();
+  });
+
+  document.querySelectorAll("#metateammode button").forEach(b=>{
+    b.onclick=()=>{
+      document.querySelectorAll("#metateammode button").forEach(x=>x.classList.remove("on"));
+      b.classList.add("on");
+      teamMode=b.dataset.tm;
+      if(!orcCard()) makeTeam(3); else syncTeamCards();
+    };
+  });
+  document.querySelectorAll("#metapreset button").forEach(b=>{
+    b.onclick=()=>{ if(!orcCard()) makeTeam(+b.dataset.n); else setTeamSize(+b.dataset.n); };
+  });
+  document.getElementById("metaadd").onclick=()=>{
+    const orc=orcCard(); if(!orc) return makeTeam(3);
+    setTeamSize((orc.sats||[]).length + 1);
+  };
+  document.getElementById("metaclear").onclick=dropTeam;
+  document.querySelectorAll("#metavar button").forEach(b=>{
+    b.onclick=()=>{
+      document.querySelectorAll("#metavar button").forEach(x=>x.classList.remove("on"));
+      b.classList.add("on");
+      metaVar=b.dataset.mv;
+      // Кнопка варианта делает всё сама: собирает команду, возвращает на аквариум
+      // и на первую страницу. Иначе жмёшь — и «ничего не произошло»: экран мог
+      // стоять на кофейне, а команда уехать страницей ниже.
+      if(metaVar!=="off"){
+        if(!orcCard()) makeTeam(3);
+        screenIdx=0; page=0; sleeping=false;
+      }
+      renderRoster();
+      espKey="";                       // статика сменилась — перерисовать целиком
+      markActivity(true); pushSnapshot(); noteMeta();
+    };
+  });
+  renderRoster();
+  noteMeta();
+
   document.getElementById("sub").onclick=()=>{ pool.forEach(c=>c.sub=((c.sub||0)+1)%6); markActivity(true); pushSnapshot(); };
   const playBtn=document.getElementById("play");
   playBtn.onclick=()=>{ playing=!playing;
@@ -2654,13 +3158,7 @@
     nextEvent=performance.now()+3000;
   };
 
-  const sleepEl=document.getElementById("sleepsec"), sleepValEl=document.getElementById("sleepsecval");
   document.getElementById("sleepbtn").onclick=()=>{ setSleep(!sleeping); if(!sleeping) markActivity(false); };
-  sleepEl.addEventListener("input", ()=>{
-    sleepAfterSec=+sleepEl.value;
-    sleepValEl.textContent = sleepAfterSec ? sleepAfterSec+"с" : "выкл";
-    lastActivity=performance.now();
-  });
   document.getElementById("reset").onclick=()=>{ pool=makePool(+cntEl.value); page=0; screenIdx=0; pushSnapshot(); };
 
   const cntEl=document.getElementById("cnt"), cntVal=document.getElementById("cntval");

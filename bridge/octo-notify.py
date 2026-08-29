@@ -126,6 +126,15 @@ def main() -> None:
     if event == "start":
         payload["pid"] = resolve_claude_pid()  # захват PID claude один раз за сессию
 
+    # Мета-оркестрация: роль и имя сессии видны прямо в ОКРУЖЕНИИ хука — плагин
+    # MetaJetCore ставит их вкладке агента, а claude передаёт своим детям. Это
+    # быстрее и надёжнее сверки с реестром: работает с первого же события и не
+    # зависит от того, включена ли сверка вообще.
+    for key, env in (("agent", "CLAUDE_CODE_AGENT"), ("sess_name", "CLAUDE_CODE_SESSION_NAME")):
+        val = os.environ.get(env, "").strip()
+        if val:
+            payload[key] = val[:64]
+
     # Stop/SubagentStop несут background_tasks — истинный список фоновой работы
     # сессии. Шлём абсолютное число работающих субагентов для синхронизации
     # счётчика в мосте: SubagentStop срабатывает на каждую остановку субагента

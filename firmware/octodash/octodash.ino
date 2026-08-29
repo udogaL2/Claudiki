@@ -350,6 +350,11 @@ struct Session {
   char  id[24];
   char  name[40];      // кириллица в UTF-8 по 2 байта: 16 символов = 33 байта
   State state;
+  int   role;         // роль в мета-оркестрации: 0 нет, 1 орк, 2 impl, 3 rsrch, 4 rev
+  // Свита оркестратора: пара символов на агента — буква роли и цифра состояния
+  // («i0r0v1»). Строкой, а не массивом: арена ArduinoJson всего 2 КБ, и каждый
+  // вложенный узел стоит дороже, чем весь этот текст.
+  char  ag[24];
   int   sub;          // активных суб-агентов
   int   mb;           // вес транскрипта, МБ — копоть по краям карточки
   uint32_t seed;      // хеш id: характер (темп, размах, фаза, моргание)
@@ -431,6 +436,10 @@ void smogRow(PixelSink &sink, const SmogP &p, int y);
 void octoWindow(int col, int row, int &wx, int &wy, int &wcx, int &wcy);
 void updateOctopusArea(int col, int row, Session &s, float tt);
 void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt);
+uint16_t roleColor(int role);
+void roleGlyph(Adafruit_GFX &g, int cx, int cy, int r, int role, uint16_t col);
+void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt, int phase, int count);
+void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt);
 void applySnapshot();
 void handleLine(const char *line);
 void composeCafe(Adafruit_GFX &g);
@@ -988,6 +997,125 @@ void drawGuests(Adafruit_GFX &g, int cx, int cy, int idx, uint32_t seed) {
 // =============================================================================
 // Осьминог целиком
 // =============================================================================
+// =============================================================================
+// Свита мета-оркестратора
+// =============================================================================
+// Оркестратор держит рядом отдельные сессии Claude Code — имплементера, ресерчера,
+// ревьювера. На карточке они стоят по бокам от него маленькими осьминожками: свои
+// карточки они не занимают (пятеро съедали всю страницу из шести), а роль читается
+// фигурой-«шапкой», а не буквой — глиф 3×5 на этом экране не разобрать.
+#define ROLE_ORC   1
+#define ROLE_IMPL  2
+#define ROLE_RSRCH 3
+#define ROLE_REV   4
+
+uint16_t roleColor(int role) {
+  switch (role) {
+    case ROLE_ORC:   return 0xFD88;   // янтарь
+    case ROLE_IMPL:  return 0x663F;   // голубой
+    case ROLE_RSRCH: return 0xB47F;   // фиолетовый
+    case ROLE_REV:   return 0x7F56;   // мятный
+  }
+  return 0xC618;
+}
+
+// Силуэт роли: круг — оркестратор, квадрат — имплементер, треугольник — ресерчер,
+// ромб — ревьювер. Фигура, а не буква: на семи пикселях силуэт узнаётся боковым
+// зрением, а «O» от «V» не отличить.
+void roleGlyph(Adafruit_GFX &g, int cx, int cy, int r, int role, uint16_t col) {
+  if (r < 1) r = 1;
+  if (role == ROLE_IMPL) { g.fillRect(cx - r, cy - r, 2 * r + 1, 2 * r + 1, col); return; }
+  if (role == ROLE_ORC)  { g.fillCircle(cx, cy, r, col); return; }
+  for (int j = 0; j <= 2 * r; j++) {
+    int hw = (role == ROLE_RSRCH) ? (j + 1) / 2 : r - abs(j - r);
+    g.fillRect(cx - hw, cy - r + j, 2 * hw + 1, 1, col);
+  }
+}
+
+// Насколько состояние тревожно: упал важнее, чем ждёт, ждёт важнее, чем работает.
+static int crewRank(int st) {
+  return st == ERR ? 0 : st == WAITING ? 1 : st == WORKING ? 2 : 3;
+}
+
+void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt,
+              int phase, int count) {
+  uint16_t base = roleColor(role);
+  uint16_t col = (state == IDLE) ? lerp565(base, BG, 0.55f) : base;
+  cy += iround(fastSin(tt * (state == WORKING ? 3.2f : 1.6f) + phase * 1.7f));
+  for (int t = -3; t <= 3; t++) {                       // щупальца
+    int sway = iround(fastSin(tt * (state == WORKING ? 6.0f : 2.4f) + phase + t * 0.7f));
+    g.drawPixel(cx + t, cy + 4, lerp565(col, BG, 0.2f));
+    g.drawPixel(cx + t + sway, cy + 5, lerp565(col, BG, 0.45f));
+    if (t % 2 == 0) g.drawPixel(cx + t + sway, cy + 6, lerp565(col, BG, 0.65f));
+  }
+  // «Их несколько» — силуэтами за спиной, без цифр: шрифт 3×5 читается только на
+  // scale 3 (индикатор страниц), а считать агентов глазами всё равно никто не будет.
+  // Вокруг главного выбивается фон: без этого зазора три круга сливаются в пятно.
+  uint16_t ghost = lerp565(col, BG, 0.55f);
+  if (count > 1) g.fillCircle(cx - 4, cy + 2, 3, ghost);
+  if (count > 2) g.fillCircle(cx + 4, cy + 2, 3, ghost);
+  if (count > 1) g.fillCircle(cx, cy, 5, BG);
+  g.fillCircle(cx, cy, 4, col);
+  g.fillCircle(cx - 1, cy - 2, 1, lerp565(col, 0xFFFF, 0.75f));
+  if (state == IDLE) {                                  // спит — глаза щёлочками
+    g.drawFastHLine(cx - 3, cy, 2, C_IDLE);
+    g.drawFastHLine(cx + 2, cy, 2, C_IDLE);
+  } else {
+    g.fillCircle(cx - 2, cy, 1, EYE_LIGHT); g.fillCircle(cx + 2, cy, 1, EYE_LIGHT);
+    g.drawPixel(cx - 2, cy, EYE_DARK);      g.drawPixel(cx + 2, cy, EYE_DARK);
+  }
+  roleGlyph(g, cx, cy - 8, 2, role, lerp565(col, 0xFFFF, 0.5f));
+  if (state == WAITING) {
+    // Мигает ТОЛЬКО кольцо, сам зверёк остаётся на месте: мигание всей фигуры
+    // читалось как «агент то появляется, то исчезает», то есть как проблема с
+    // составом. Знак «?» горит постоянно — состояние должно читаться в любой фазе.
+    bool beat = ((int)(tt * 2.6f + phase)) % 2 == 0;
+    g.drawCircle(cx, cy, beat ? 6 : 7, beat ? C_WAITING : lerp565(C_WAITING, BG, 0.55f));
+    g.fillRect(cx + 5, cy - 9, 3, 1, C_WAITING);
+    g.drawPixel(cx + 7, cy - 8, C_WAITING);
+    g.drawPixel(cx + 6, cy - 7, C_WAITING);
+    g.drawPixel(cx + 6, cy - 5, C_WAITING);
+  }
+  if (state == ERR) {
+    g.drawLine(cx - 4, cy - 4, cx + 4, cy + 4, C_ERROR);
+    g.drawLine(cx + 4, cy - 4, cx - 4, cy + 4, C_ERROR);
+    g.fillRect(cx + 6, cy - 9, 1, 3, C_ERROR);
+    g.drawPixel(cx + 6, cy - 5, C_ERROR);
+  }
+}
+
+// Свита стоит в СТОЛБЦАХ по бокам, а не на орбите: на кольце спутники наезжают на
+// тело и мельчают до нечитаемости, а сбоку у каждого есть свои 18×20 пикселей.
+// Одна фигура на РОЛЬ: опознать конкретного агента силуэтом всё равно нельзя, для
+// этого мост подставляет его имя в строку карточки.
+void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt) {
+  const int roles[3] = {ROLE_IMPL, ROLE_RSRCH, ROLE_REV};
+  int cnt[3] = {0, 0, 0}, st[3] = {-1, -1, -1};
+  for (const char *p = ag; p[0] && p[1]; p += 2) {
+    int idx = p[0] == 'i' ? 0 : p[0] == 'r' ? 1 : p[0] == 'v' ? 2 : -1;
+    if (idx < 0) continue;
+    int state = p[1] - '0';
+    if (state < 0 || state > 3) state = IDLE;
+    cnt[idx]++;
+    if (st[idx] < 0 || crewRank(state) < crewRank(st[idx])) st[idx] = state;
+  }
+  int order[3], n = 0;
+  for (int k = 0; k < 3; k++) if (cnt[k]) order[n++] = k;
+  if (!n) return;
+  int half = (n + 1) / 2;
+  for (int k = 0; k < n; k++) {
+    bool right = k >= half;
+    int col = right ? n - half : half;
+    int idx = right ? k - half : k;
+    // Шаг и якорь подобраны так, чтобы три фигуры влезли в окно 68×72 целиком,
+    // вместе с шапкой сверху и щупальцами снизу: клип у канвы тихий, срезанную
+    // макушку на экране не заметишь.
+    int gx = cx + (right ? 25 : -25);
+    int gy = hy + 2 + iround((idx - (col - 1) / 2.0f) * (col >= 3 ? 19 : 22));
+    crewOcto(g, gx, gy, roles[order[k]], st[order[k]], tt, k, cnt[order[k]]);
+  }
+}
+
 void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt) {
   unsigned long now = millis();
   // характер: свой темп, размах, фаза курения и ритм моргания
@@ -1059,6 +1187,13 @@ void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt) {
       g.fillRect(zx, zy + 2, 3, 1, C_IDLE);
       g.drawLine(zx + 2, zy, zx, zy + 2, C_IDLE);
     }
+  }
+
+  // Свита мета-оркестратора вместо пузырьков суб-агентов: у оркестратора своих
+  // суб-агентов не бывает (он не пишет код), а орбита нужна свите целиком.
+  if (s.role == ROLE_ORC && s.ag[0]) {
+    drawCrew(g, cx, hy, s.ag, tt);
+    return;
   }
 
   // суб-агенты: пузырьки-искры на орбите
@@ -3330,6 +3465,8 @@ void handleLine(const char *line) {
     c.state = (State)(int)(s["state"] | (int)IDLE);
     c.sub = s["sub"] | 0;
     c.mb  = s["mb"] | 0;
+    c.role = s["r"] | 0;
+    strlcpy(c.ag, s["ag"] | "", sizeof(c.ag));
     c.seed = hash32(c.id);
     c.poke = 0;
     c.born = 0;
@@ -3375,7 +3512,8 @@ void applySnapshot() {
     Session &a = prevCards[i];
     bool changed = a.active != b.active ||
                    (b.active && (strcmp(a.id, b.id) != 0 || a.state != b.state ||
-                                 strcmp(a.name, b.name) != 0 || a.mb != b.mb));
+                                 strcmp(a.name, b.name) != 0 || a.mb != b.mb ||
+                                 a.role != b.role || strcmp(a.ag, b.ag) != 0));
     sessions[i] = b;
     sessions[i].poke = poke;
     sessions[i].born = born;

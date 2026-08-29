@@ -179,6 +179,56 @@ class Session:
     reg_name: str | None = None       # имя сессии по версии Claude Code (справочно)
     transcript: str = ""              # путь к файлу транскрипта (из конверта хука)
     size_mb: float = 0.0              # его размер: «вес» сессии, копоть на карточке
+    role: int = 0                     # роль в мета-оркестрации, см. ROLE_*
+
+
+# --- Мета-оркестрация (MetaJetCore) -------------------------------------------
+# Оркестратор открывает рядом с собой ОТДЕЛЬНЫЕ сессии Claude Code — имплементера,
+# ресерчера, ревьювера — и раздаёт им задачи. Для моста это обычные сессии с хуками,
+# поэтому вся разница только в двух вещах: знать роль и знать, чья это команда.
+#
+# Роль приезжает готовой: плагин ставит агенту CLAUDE_CODE_AGENT, Claude Code пишет
+# её в реестр полем `agent`, а хук видит ту же переменную в своём окружении.
+# Принадлежность к команде мост выводит ЭВРИСТИКОЙ: общий префикс имени (`mjc-orc`
+# и `mjc-impl-be` → `mjc`) плюс общий каталог. Точной связи «родитель→агент» нигде
+# нет: `spawn_agent(parent=...)` использует имя родителя только чтобы открыть вкладку
+# рядом, и никуда его не сохраняет. Одна переменная окружения от плагина сделала бы
+# связь точной; пока — префикс.
+ROLE_NONE, ROLE_ORC, ROLE_IMPL, ROLE_RSRCH, ROLE_REV = 0, 1, 2, 3, 4
+ROLE_BY_ID = {"orchestrator": ROLE_ORC, "implementer": ROLE_IMPL,
+              "researcher": ROLE_RSRCH, "reviewer": ROLE_REV}
+# Короткие имена из нейминга MetaJetCore: <префикс>-<роль>[-<домен>].
+ROLE_BY_SHORT = {"orc": ROLE_ORC, "impl": ROLE_IMPL, "rsrch": ROLE_RSRCH, "rev": ROLE_REV}
+# Буква роли для строки `ag` в снэпшоте. Оркестратор в свите не бывает — он и есть
+# карточка, поэтому его буквы тут нет.
+ROLE_LETTER = {ROLE_IMPL: "i", ROLE_RSRCH: "r", ROLE_REV: "v"}
+AG_MAX = 9                 # столько агентов влезает в буфер прошивки (ag[24])
+
+
+def role_of(agent: str | None, name: str | None) -> int:
+    """Роль сессии: сперва по метке реестра, потом по имени.
+
+    Имя — не роскошь, а единственный признак ОРКЕСТРАТОРА: роль ему никто не ставит
+    (`/orchestrate` — это скилл, а не флаг `--agent`), метки в реестре у него нет,
+    и опознать его можно только по имени `<префикс>-orc`, которое даёт плагин.
+    """
+    by_id = ROLE_BY_ID.get((agent or "").strip().lower())
+    if by_id:
+        return by_id
+    parts = (name or "").strip().lower().split("-")
+    for i, part in enumerate(parts):
+        if i == 0:
+            continue                      # первый сегмент — префикс проекта, не роль
+        role = ROLE_BY_SHORT.get(part)
+        if role:
+            return role
+    return ROLE_NONE
+
+
+def team_key(name: str | None) -> str:
+    """Ключ команды — префикс имени сессии до первого дефиса (`mjc-impl-be` → `mjc`)."""
+    head = (name or "").strip().lower().split("-", 1)[0]
+    return head
 
 
 def basename_of(cwd: str) -> str:
@@ -590,11 +640,14 @@ def proc_start_ticks(pid: int) -> str | None:
 
 
 def _entry(session_id, *, pid=None, cwd="", kind="", name=None,
-           status=None, status_ms=0.0, started_ms=None, proc_start=None) -> dict:
+           status=None, status_ms=0.0, started_ms=None, proc_start=None, agent=None) -> dict:
     return {
         "session_id": session_id, "pid": pid, "cwd": cwd, "kind": kind, "name": name,
         "status": status, "status_ms": status_ms, "started_ms": started_ms,
         "proc_start": proc_start,
+        # роль агента мета-оркестрации: её кладёт в реестр сам Claude Code по
+        # CLAUDE_CODE_AGENT, который выставляет плагин при спавне
+        "agent": agent,
     }
 
 
@@ -632,6 +685,7 @@ def read_session_registry(root: str = "", *, lister=None, reader=None) -> list[d
             status_ms=float(d.get("statusUpdatedAt") or d.get("updatedAt") or 0),
             started_ms=float(d["startedAt"]) if d.get("startedAt") else None,
             proc_start=str(d["procStart"]) if d.get("procStart") else None,
+            agent=str(d.get("agent") or "") or None,
         )
 
     # 2) фоновые воркеры: daemon/roster.json (настоящий PID воркера — у фоновых
@@ -1043,10 +1097,23 @@ class Bridge:
         except (TypeError, ValueError):
             subs = None
 
+        # Роль приезжает и хуком: обёртка читает CLAUDE_CODE_AGENT прямо в окружении
+        # агента — это быстрее сверки с реестром (та раз в 10 секунд) и работает,
+        # даже если реестр выключен.
+        hook_role = role_of(data.get("agent"), data.get("sess_name"))
+        hook_name = str(data.get("sess_name") or "")[:64] or None
+
         with self.lock:
             sess = self.sessions.get(session_id)
             if sess is not None:
                 self._note_transcript(sess, transcript)
+                if hook_role and sess.role != hook_role:
+                    sess.role = hook_role
+                # Имя сессии из окружения: пока сверка с реестром не прошла, это
+                # единственный способ узнать, что карточка называется «mjc-impl-be»,
+                # а не именем каталога — а по нему же собирается команда.
+                if hook_name and not sess.reg_name:
+                    sess.reg_name = hook_name
 
             if event == "end":
                 if self.sessions.pop(session_id, None) is not None:
@@ -1056,7 +1123,7 @@ class Bridge:
 
             if event == "start":
                 if sess is None:
-                    sess = Session(session_id, name, IDLE, pid, now, now, last_active_ms=now_ms)
+                    sess = Session(session_id, name, IDLE, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name)
                     self.sessions[session_id] = sess
                     self._note_transcript(sess, transcript)
                     self.log.info("start: %s (%s) pid=%s", session_id, name, pid)
@@ -1075,7 +1142,7 @@ class Bridge:
             if event in ("subagent", "subagent_done"):
                 if sess is None:
                     # спавн суб-агента у незнакомой сессии → создаём (родитель активен)
-                    sess = Session(session_id, name, WORKING, pid, now, now, last_active_ms=now_ms)
+                    sess = Session(session_id, name, WORKING, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name)
                     self.sessions[session_id] = sess
                     self._note_transcript(sess, transcript)
                 if event == "subagent":
@@ -1098,7 +1165,7 @@ class Bridge:
 
             if sess is None:
                 # событие для незнакомой сессии — создаём на лету (мост мог рестартнуть)
-                sess = Session(session_id, name, new_state, pid, now, now, last_active_ms=now_ms)
+                sess = Session(session_id, name, new_state, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name)
                 self.sessions[session_id] = sess
                 self._note_transcript(sess, transcript)
                 self.log.info("создана на лету: %s (%s) state=%d", session_id, name, new_state)
@@ -1223,6 +1290,7 @@ class Bridge:
                     started_ms=entry.get("started_ms"),
                     source="registry",
                     reg_name=entry.get("name"),
+                    role=role_of(entry.get("agent"), entry.get("name")),
                 )
                 changed = True
                 self.log.info(
@@ -1240,6 +1308,10 @@ class Bridge:
             sess.started_ms = entry["started_ms"]
         if entry.get("name"):
             sess.reg_name = entry["name"]
+        role = role_of(entry.get("agent"), entry.get("name"))
+        if role and role != sess.role:
+            sess.role = role
+            changed = True
         if sess.pid is None and entry.get("pid") is not None:
             sess.pid = entry["pid"]         # даёт liveness сессии, чей PID хук не нашёл
         # Статус: правда за самым свежим сигналом. Хуки обычно свежее (реагируют
@@ -1304,6 +1376,54 @@ class Bridge:
             return sess.started_ms
         return now_ms - (now - sess.first_seen) * 1000
 
+    # -- мета-оркестрация ------------------------------------------------------
+    def teams(self, sessions: list[Session]) -> dict[str, list[Session]]:
+        """Кто чьей команды: {session_id оркестратора: [его агенты]}.
+
+        Агенты и оркестратор связываются по общему префиксу имени и общему каталогу
+        (`mjc-orc` ↔ `mjc-impl-be`). Точной связи нет нигде: плагин MetaJetCore знает
+        родителя только в момент спавна и никуда его не пишет. Если оркестратора в
+        составе нет — агенты остаются обычными карточками, ничего не прячем.
+        """
+        orcs = {}
+        for s in sessions:
+            if s.role == ROLE_ORC:
+                orcs.setdefault((team_key(s.reg_name or s.name), s.name), s)
+        out: dict[str, list[Session]] = {o.session_id: [] for o in orcs.values()}
+        if not orcs:
+            return out
+        for s in sessions:
+            if s.role in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV):
+                key = team_key(s.reg_name or s.name)
+                for (okey, oname), orc in orcs.items():
+                    if okey == key and oname == s.name:
+                        out[orc.session_id].append(s)
+                        break
+        for agents in out.values():
+            agents.sort(key=lambda a: (a.role, a.reg_name or ""))
+        return out
+
+    def team_of(self, sess: Session) -> list[Session]:
+        with self.lock:
+            all_sessions = list(self.sessions.values())
+        return self.teams(all_sessions).get(sess.session_id, [])
+
+    def agents_field(self, agents: list[Session]) -> str:
+        """Свита строкой: буква роли + цифра состояния на агента (`i0r0v1`).
+
+        Строкой, а не массивом объектов: у прошивки арена ArduinoJson всего 2 КБ,
+        и каждый вложенный узел стоит дороже, чем весь этот текст.
+        """
+        return "".join(ROLE_LETTER.get(a.role, "i") + str(a.state) for a in agents[:AG_MAX])
+
+    def team_alarm(self, agents: list[Session]) -> tuple[Session | None, int]:
+        """Кто из свиты требует человека: упавший важнее ждущего. И сколько таких."""
+        for want in (ERROR, WAITING):
+            hits = [a for a in agents if a.state == want]
+            if hits:
+                return hits[0], len(hits)
+        return None, 0
+
     def paginate(self) -> tuple[list[list[Session]], list[tuple[Session, str]]]:
         """Все живые сессии, разложенные по страницам, и скрытые как брошенные.
 
@@ -1315,12 +1435,29 @@ class Bridge:
         with self.lock:
             all_sessions = list(self.sessions.values())
 
+        # Команда сворачивается в ОДНУ карточку: агенты видны свитой на карточке
+        # оркестратора и своих слотов не занимают. Пятеро агентов иначе съедали всю
+        # страницу из шести, и аквариум превращался в одну команду.
+        teams = self.teams(all_sessions)
+        in_team = {a.session_id: orc_id for orc_id, agents in teams.items() for a in agents}
+
         fresh, stale = [], []
         for s in all_sessions:
+            if s.session_id in in_team:
+                continue                          # он на карточке своего оркестратора
             reason = self.stale_reason(s, now_ms)
             (stale if reason else fresh).append((s, reason))
 
-        fresh.sort(key=lambda p: (self._PRIO.get(p[0].state, 9), -p[0].last_active_ms))
+        # Приоритет оркестратора — по САМОМУ ТРЕВОЖНОМУ в команде: сам он почти всегда
+        # в WAITING (ждёт агентов), а WAITING сортируется третьим — и карточка с упавшим
+        # агентом уезжала бы на вторую страницу вместе со всей командой.
+        def rank(sess: Session) -> int:
+            best = self._PRIO.get(sess.state, 9)
+            for agent in teams.get(sess.session_id, ()):
+                best = min(best, self._PRIO.get(agent.state, 9))
+            return best
+
+        fresh.sort(key=lambda p: (rank(p[0]), -p[0].last_active_ms))
         ranked = [p[0] for p in fresh]
 
         limit = max(1, self.cfg.max_sessions)
@@ -2105,6 +2242,8 @@ class Bridge:
     def _disambiguate(self, visible: list[Session]) -> list[dict]:
         """Готовит карточки; при совпадении имён (несколько сессий в одном репо/
         worktree) добавляет короткий суффикс из session_id, чтобы различать."""
+        with self.lock:                      # состав читаем под тем же локом, что и всё
+            teams = self.teams(list(self.sessions.values()))
         names = [self.card_name(s) for s in visible]
         dups = {n for n in names if names.count(n) > 1}
         short = self.short_ids(visible)
@@ -2115,7 +2254,23 @@ class Bridge:
                 suffix = "#" + s.session_id[:4]
                 base = shorten_middle(name, max(1, self.cfg.name_max - len(suffix)))
                 name = base + suffix
+            agents = teams.get(s.session_id, [])
+            if agents:
+                # Имя вставшего агента ВМЕСТО имени оркестратора: «кто-то встал» видно
+                # и по свите, а вот в какую вкладку идти — только по имени. Роль этого
+                # не скажет: ревьюверов может быть трое.
+                who, n = self.team_alarm(agents)
+                if who is not None:
+                    mark = "!" if who.state == ERROR else "?"
+                    tail = f" +{n - 1} {mark}" if n > 1 else f" {mark}"
+                    label = (who.reg_name or who.name)
+                    room = max(1, self.cfg.name_max - len(tail))
+                    name = (label if len(label) <= room else label[:room - 1] + "~") + tail
             item = {"id": short[s.session_id], "name": name, "state": s.state}
+            if s.role:
+                item["r"] = s.role
+            if agents:
+                item["ag"] = self.agents_field(agents)
             if s.subagents:
                 item["sub"] = min(s.subagents, 5)   # число суб-агентов (кап под экран)
             if s.size_mb >= 1:
@@ -2225,6 +2380,14 @@ class Bridge:
                 "places_fit": self.places_fit(),
                 "places_rev": places_rev(self.places),
                 "places_sent": self._places_sent,
+                # мета-оркестрация: кто чьей команды и что мост о ролях знает
+                "teams": {
+                    (self.sessions[oid].reg_name or self.sessions[oid].name): [
+                        (a.reg_name or a.name) for a in agents
+                    ]
+                    for oid, agents in self.teams(list(self.sessions.values())).items()
+                    if oid in self.sessions
+                },
                 "roulette_mode": self.roul_mode,
                 "roulette_esp": dict(self.esp_roul),   # состояние барабана глазами платы
                 "roulette_out": sorted(self.places[i] for i in self.roul_out

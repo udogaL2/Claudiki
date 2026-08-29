@@ -952,7 +952,7 @@ def test_read_registry_interactive_sessions():
     assert entries == [{
         "session_id": "sid-a", "pid": 100, "cwd": "/work/proj", "kind": "interactive",
         "name": "proj-a1", "status": "busy", "status_ms": 1700.0, "started_ms": 1000.0,
-        "proc_start": "777",
+        "proc_start": "777", "agent": None,
     }]
 
 
@@ -2887,3 +2887,90 @@ def test_manual_lunch_actions_do_not_wipe_points(tmp_path):
         again.load_points()
         assert again.points == 133 and again.pts_earned == 132, \
             "ручное действие с журналом обнулило баллы"
+
+
+# --- мета-оркестрация: роли и свита -------------------------------------------
+# Агенты MetaJetCore — это обычные сессии Claude Code, поэтому мост видит их хуками
+# как все остальные. Вся разница в двух вещах: знать роль и знать, чья это команда.
+
+def test_role_from_registry_label_and_from_name():
+    assert b.role_of("implementer", None) == b.ROLE_IMPL
+    assert b.role_of("REVIEWER", None) == b.ROLE_REV
+    # у оркестратора метки в реестре НЕТ (/orchestrate — скилл, а не --agent),
+    # опознаётся только по имени, которое даёт плагин
+    assert b.role_of(None, "mjc-orc") == b.ROLE_ORC
+    assert b.role_of(None, "mjc-rev-sec") == b.ROLE_REV
+    assert b.role_of(None, "mjc-impl-be") == b.ROLE_IMPL
+    # префикс проекта ролью не считается, иначе проект «rev-tools» стал бы ревьювером
+    assert b.role_of(None, "rev-tools") == b.ROLE_NONE
+    assert b.role_of(None, "octodash") == b.ROLE_NONE
+
+
+def test_team_collapses_into_one_card(bridge):
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    for sid, name, agent, ev in (("a1", "mjc-impl-be", "implementer", "working"),
+                                 ("a2", "mjc-rsrch", "researcher", "working"),
+                                 ("a3", "mjc-rev-sec", "reviewer", "waiting")):
+        br.handle_event({"event": ev, "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": name, "agent": agent})
+    cards = br.build_snapshot()["sessions"]
+    assert len(cards) == 1, "агенты обязаны свернуться в карточку оркестратора"
+    card = cards[0]
+    assert card["r"] == b.ROLE_ORC
+    assert card["ag"] == "i0r0v1", "свита: буква роли + цифра состояния на агента"
+    # имя вставшего агента ВМЕСТО имени оркестратора — иначе непонятно, куда идти
+    assert card["name"].startswith("mjc-rev-sec") and card["name"].endswith("?")
+
+
+def test_team_without_orchestrator_stays_separate_cards(bridge):
+    br = bridge
+    for sid, name, agent in (("a1", "mjc-impl-be", "implementer"),
+                             ("a2", "mjc-rsrch", "researcher")):
+        br.handle_event({"event": "working", "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": name, "agent": agent})
+    cards = br.build_snapshot()["sessions"]
+    assert len(cards) == 2, "прятать агентов некуда: оркестратора на экране нет"
+    assert all("ag" not in c for c in cards)
+
+
+def test_team_priority_follows_worst_agent(clock, liveness, sink):
+    """Оркестратор сам почти всегда в WAITING (он ждёт агентов), а WAITING в отборе
+    третий. Без учёта команды карточка с УПАВШИМ агентом стоит наравне с любой другой
+    ждущей и уезжает ниже той, что просто свежее.
+
+    Проверяем именно ОТБОР, а не раскладку: внутри страницы карточки всё равно
+    сортируются по времени старта, поэтому порядок на странице тут ничего не докажет.
+    Слот один — кто в него попал, тот и выиграл отбор."""
+    br = make_bridge(b.Config(max_sessions=1), clock, liveness, sink)
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    br.handle_event({"event": "error", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer"})
+    clock.advance(60)                     # чужая ждущая сессия СВЕЖЕЕ оркестратора
+    br.handle_event({"event": "waiting", "session_id": "other", "cwd": "/w/other"})
+    shown = [c["name"] for c in br.build_snapshot()["sessions"]]
+    assert shown == ["mjc-impl-be !"],         f"в единственный слот попала не команда с упавшим агентом, а {shown}"
+
+
+def test_crew_field_is_capped_for_firmware_buffer(bridge):
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    for i in range(14):
+        br.handle_event({"event": "working", "session_id": f"a{i}", "cwd": "/w/mjc",
+                         "sess_name": f"mjc-rev-{i}", "agent": "reviewer"})
+    ag = br.build_snapshot()["sessions"][0]["ag"]
+    assert len(ag) == b.AG_MAX * 2, "свита обязана резаться: у прошивки буфер ag[24]"
+
+
+def test_alarm_name_counts_the_rest(bridge):
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    for sid, name in (("a1", "mjc-rev-sec"), ("a2", "mjc-rev-arch")):
+        br.handle_event({"event": "waiting", "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": name, "agent": "reviewer"})
+    name = br.build_snapshot()["sessions"][0]["name"]
+    assert "+1" in name and name.endswith("?"), "встали двое — счётчик обязан это сказать"

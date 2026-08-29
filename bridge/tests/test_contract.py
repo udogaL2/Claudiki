@@ -49,6 +49,13 @@ class Snap:
                                   "cwd": f"/work/p{i}", "pid": 100 + i,
                                   "transcript": f"/t/{i}.jsonl"})
             self.br.handle_event({"event": "subagent", "session_id": f"s{i}"})
+        # команда мета-оркестратора: у её карточки есть роль и свита, и контракт
+        # обязан покрывать эти поля — иначе свита молча не доедет до платы
+        self.br.handle_event({"event": "waiting", "session_id": "orc",
+                              "cwd": "/work/mjc", "sess_name": "mjc-orc"})
+        self.br.handle_event({"event": "waiting", "session_id": "rev",
+                              "cwd": "/work/mjc", "sess_name": "mjc-rev-sec",
+                              "agent": "reviewer"})
         # ночь: чтобы поле nl появилось
         self.br.cafe_now = lambda: (0, 22 * 60)
         self.aquarium = self.br.build_snapshot()
@@ -118,7 +125,10 @@ def test_bridge_top_level_keys_are_understood(sketch, snap):
 
 def test_session_card_fields_match(sketch, snap):
     read = keys_read_from(sketch, "s")
-    card = snap.aquarium["sessions"][0]
+    # карточка команды: на ней есть ВСЕ поля разом — роль, свита, вес, субагенты
+    card = {}
+    for c in snap.aquarium["sessions"]:
+        card.update(c)
     assert read, "в скетче не нашлось чтения полей карточки — регулярка устарела?"
     missing = read - set(card)
     assert not missing, f"в карточке не хватает полей: {sorted(missing)}"
@@ -554,3 +564,52 @@ def test_bridge_spin_animates_the_drum_in_both_modes(sketch):
         "ответ моста без нашей раскрутки не двигает барабан в рулетке"
     assert "roulSpSynced" in roulette, \
         "первый снэпшот после включения крутанёт барабан сам — нужен признак синхронизации"
+
+
+def test_crew_is_drawn_from_the_ag_string(sketch):
+    """Свита мета-оркестратора: строку `ag` прошивка обязана разбирать и рисовать.
+
+    Поля контракт уже сверяет, но поле можно принять и не нарисовать — а свита это
+    единственное, ради чего вся затея. Поэтому проверяем и разбор пар, и то, что
+    фигуры зовутся из осьминога."""
+    assert "void drawCrew(" in sketch, "прошивка не рисует свиту"
+    body = sketch[sketch.index("void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt) {"):]
+    body = body[:body.index(chr(10) + "}")]
+    assert "p += 2" in body, "строка свиты разбирается не парами «роль+состояние»"
+    for letter in ("'i'", "'r'", "'v'"):
+        assert letter in body, f"прошивка не знает букву роли {letter}"
+    # rindex, а не index: первым в файле идёт ПРОТОТИП, тело — последним
+    octo = sketch[sketch.rindex("void drawOctopus("):]
+    octo = octo[:octo.index(chr(10) + "}")]
+    assert "drawCrew(" in octo, "свита не вызывается при отрисовке карточки"
+    assert "ROLE_ORC" in octo, "свиту рисуем не только у оркестратора?"
+    # Буква роли на мосту и в прошивке — один алфавит, иначе свита молча пуста
+    letters = set(b.ROLE_LETTER.values())
+    assert letters == {"i", "r", "v"}, f"мост шлёт другие буквы: {sorted(letters)}"
+
+
+def test_crew_string_fits_firmware_buffer(sketch):
+    """`ag` обязан влезать в буфер прошивки: обрезка была бы молчаливой."""
+    m = re.search(r"char\s+ag\[(\d+)\]", sketch)
+    assert m, "в карточке прошивки нет буфера свиты"
+    assert b.AG_MAX * 2 + 1 <= int(m.group(1)),         f"мост шлёт до {b.AG_MAX * 2} байт свиты при буфере {m.group(1)}"
+
+
+def test_crew_marks_waiting_without_hiding_the_creature(sketch):
+    """Ждущий агент обязан МИГАТЬ КОЛЬЦОМ, а не пропадать целиком: пропажа читается
+    как «агент исчез из состава», то есть как другая беда."""
+    fn = sketch[sketch.rindex("void crewOcto("):]
+    fn = fn[:fn.index(chr(10) + "}")]
+    assert "drawCircle" in fn, "у ждущего агента нет кольца тревоги"
+    ring = fn[fn.index("state == WAITING"):]
+    assert "return" not in ring.split("if (state == ERR)")[0],         "зверёк прячется целиком вместо мигания кольцом"
+
+
+def test_crew_change_triggers_cell_redraw(sketch):
+    """Свита меняется КАЖДЫМ снэпшотом (агент начал работать, агент встал), а рисуется
+    в статике ячейки. Если diff её не видит, карточка стоит со старой свитой до
+    следующей смены имени или статуса — и экран врёт, ничем этого не показывая."""
+    diff = sketch[sketch.index("bool changed = a.active != b.active"):]
+    diff = diff[:diff.index(";")]
+    assert "a.role != b.role" in diff, "смена роли не перерисовывает карточку"
+    assert "strcmp(a.ag, b.ag)" in diff, "смена свиты не перерисовывает карточку"
