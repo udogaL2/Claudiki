@@ -170,21 +170,38 @@ def test_hook_start_carries_pid_and_transcript(hook, monkeypatch):
 def test_hook_carries_meta_orchestration_env(hook, monkeypatch):
     """Роль, имя сессии и родителя хук берёт ИЗ ОКРУЖЕНИЯ агента.
 
-    Другого способа нет: `MJC_PARENT` кладёт плагин MetaJetCore во вкладку, и в реестре
-    Claude Code этого поля не существует вовсе — без хука связь «агент → оркестратор»
-    мосту взять неоткуда."""
+    Другого способа нет: обе переменные кладёт плагин MetaJetCore во вкладку, и в
+    реестре Claude Code таких полей не существует вовсе — без хука связь
+    «агент → оркестратор» мосту взять неоткуда. Ключ связи — `MJC_PARENT_SESSION`
+    (`sessionId`), имя едет рядом справочно."""
+    sid = "0ba88519-c94c-4bc1-a95b-365fa61baa08"
     monkeypatch.setenv("CLAUDE_CODE_AGENT", "reviewer")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_NAME", "mjc-rev-sec")
     monkeypatch.setenv("MJC_PARENT", "mjc-orc")
+    monkeypatch.setenv("MJC_PARENT_SESSION", sid)
     sent = run_hook(hook, monkeypatch, {"hook_event_name": "Stop", "session_id": "s1", "cwd": "/w"})
     assert sent["agent"] == "reviewer"
     assert sent["sess_name"] == "mjc-rev-sec"
     assert sent["parent"] == "mjc-orc"
+    assert sent["parent_sid"] == sid, "sessionId родителя обязан доехать целиком"
+
+
+def test_hook_omits_parent_sid_when_plugin_could_not_resolve_it(hook, monkeypatch):
+    """Плагин не смог опознать родителя однозначно → переменной нет вовсе.
+
+    Это значит «связь неизвестна», а не «свяжи по имени»: достраивание по имени
+    вернуло бы ровно ту ошибку, ради которой ключом сделали `sessionId`."""
+    monkeypatch.setenv("CLAUDE_CODE_AGENT", "implementer")
+    monkeypatch.setenv("MJC_PARENT", "слитие мастера")
+    monkeypatch.delenv("MJC_PARENT_SESSION", raising=False)
+    sent = run_hook(hook, monkeypatch, {"hook_event_name": "Stop", "session_id": "s1", "cwd": "/w"})
+    assert sent["parent"] == "слитие мастера" and "parent_sid" not in sent
 
 
 def test_hook_omits_meta_keys_outside_orchestration(hook, monkeypatch):
     """Обычная сессия — обычный конверт: пустых ключей мост не должен разбирать."""
-    for var in ("CLAUDE_CODE_AGENT", "CLAUDE_CODE_SESSION_NAME", "MJC_PARENT"):
+    for var in ("CLAUDE_CODE_AGENT", "CLAUDE_CODE_SESSION_NAME", "MJC_PARENT",
+                "MJC_PARENT_SESSION"):
         monkeypatch.delenv(var, raising=False)
     sent = run_hook(hook, monkeypatch, {"hook_event_name": "Stop", "session_id": "s1", "cwd": "/w"})
-    assert not ({"agent", "sess_name", "parent"} & set(sent))
+    assert not ({"agent", "sess_name", "parent", "parent_sid"} & set(sent))

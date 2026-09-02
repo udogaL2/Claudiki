@@ -3061,3 +3061,136 @@ def test_agent_named_as_parent_does_not_become_orchestrator(bridge):
     assert teams == {}, "имплементер не может быть чьим-то оркестратором"
     names = sorted(c["name"] for c in br.build_snapshot()["sessions"])
     assert names == ["mjc-impl-be", "mjc-rev-sec"], "обе сессии остаются своими карточками"
+
+
+def test_parent_sid_beats_name(bridge):
+    """Тёзки-оркестраторы: агент уходит к тому, чей `sessionId` ему назвали.
+
+    Имя ключом быть не может — его задаёт человек, и ничто не мешает двум разным
+    оркестраторам называться одинаково (на живом стенде видели три записи реестра
+    «слитие мастера»). `sessionId` уникален, и мост знает его без всякого поиска:
+    это ключ его же словаря сессий."""
+    br = bridge
+    for sid in ("o1", "o2"):
+        br.handle_event({"event": "waiting", "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": "слитие мастера"})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent": "слитие мастера", "parent_sid": "o2"})
+    teams = br.teams(list(br.sessions.values()))
+    assert [a.reg_name for a in teams["o2"]] == ["mjc-impl-be"], "агент ушёл не к тому тёзке"
+    assert teams["o1"] == [], "первому тёзке агент не принадлежит"
+
+
+def test_parent_sid_survives_rename(bridge):
+    """`/rename` посреди работы не должен разгонять команду.
+
+    По имени связь рвётся мгновенно: реестр отдаёт уже новое имя, а у агента в
+    окружении навсегда осталось старое. `sessionId` переименование не трогает."""
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent": "mjc-orc", "parent_sid": "orc"})
+    br.sessions["orc"].reg_name = "слитие мастера"      # человек переименовал сессию
+    teams = br.teams(list(br.sessions.values()))
+    assert [a.reg_name for a in teams["orc"]] == ["mjc-impl-be"], \
+        "переименование оркестратора не должно ронять свиту"
+
+
+def test_parent_sid_pointing_nowhere_is_not_adopted(bridge):
+    """Родитель назван точно, но его на экране нет — агент остаётся своей карточкой.
+
+    Скатываться к эвристике по префиксу тут нельзя: агент из соседнего окна IDE (тот
+    же проект, тот же префикс) свернулся бы в чужую команду и пропал бы с глаз."""
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent_sid": "оркестратор-в-другом-окне"})
+    teams = br.teams(list(br.sessions.values()))
+    assert teams["orc"] == [], "чужого агента команда не усыновляет"
+    names = sorted(c["name"] for c in br.build_snapshot()["sessions"])
+    assert names == ["mjc-impl-be", "mjc-orc"], "агент обязан остаться своей карточкой"
+
+
+def test_session_referenced_by_sid_becomes_orchestrator(bridge):
+    """`/orchestrate` — это скилл: ни имени, ни окружения, ни реестра он не меняет,
+    метки «я оркестратор» у такой сессии нет и взяться ей неоткуда.
+
+    Зато её узнаёт первый же собственный агент — он привозит её `sessionId`. Карточка
+    становится командной ровно тогда, когда появляется команда."""
+    br = bridge
+    br.handle_event({"event": "working", "session_id": "s1", "cwd": "/w/proj",
+                     "sess_name": "какая-то-сессия"})
+    card = br.build_snapshot()["sessions"][0]
+    assert "r" not in card and "ag" not in card, "команды ещё нет — и показывать нечего"
+
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/proj",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent_sid": "s1"})
+    cards = br.build_snapshot()["sessions"]
+    assert len(cards) == 1, "агент обязан свернуться в карточку своего оркестратора"
+    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i0"
+
+
+def test_name_path_still_works_without_sid(bridge):
+    """Агент от плагина ПРОШЛОЙ версии `parent_sid` не привозит — собираемся по имени.
+
+    Правка аддитивная: обновлять плагин и мост можно в любом порядке, а уже
+    запущенные агенты новую переменную не получат никогда."""
+    br = bridge
+    for sid, name in (("o1", "mjc-orc"), ("o2", "mjc-orc-2")):
+        br.handle_event({"event": "waiting", "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": name})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent": "mjc-orc-2"})
+    teams = br.teams(list(br.sessions.values()))
+    assert [a.reg_name for a in teams["o2"]] == ["mjc-impl-be"]
+    assert teams["o1"] == []
+
+
+def test_two_teams_with_the_same_orchestrator_name(bridge):
+    """Ради чего всё и затевалось: две команды с ОДНОИМЁННЫМИ оркестраторами.
+
+    По имени такие команды склеиваются в одну (и вторая карточка вовсе исчезает с
+    экрана), по `sessionId` — расходятся."""
+    br = bridge
+    for sid in ("o1", "o2"):
+        br.handle_event({"event": "waiting", "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": "слитие мастера"})
+    for sid, name, orc in (("a1", "mjc-impl-be", "o1"), ("a2", "mjc-rev-sec", "o1"),
+                           ("a3", "mjc-impl-ui", "o2")):
+        role = "reviewer" if "rev" in name else "implementer"
+        br.handle_event({"event": "working", "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": name, "agent": role,
+                         "parent": "слитие мастера", "parent_sid": orc})
+    teams = br.teams(list(br.sessions.values()))
+    assert sorted(a.reg_name for a in teams["o1"]) == ["mjc-impl-be", "mjc-rev-sec"]
+    assert [a.reg_name for a in teams["o2"]] == ["mjc-impl-ui"]
+    cards = br.build_snapshot()["sessions"]
+    assert len(cards) == 2, "две команды — две карточки, а не одна на всех"
+
+
+def test_agent_referenced_by_sid_stays_its_own_card(bridge):
+    """На агента сослались как на родителя — своей свиты он всё равно не собирает.
+
+    Свернуть карточку в карточку прошивка не умеет: агент, который одновременно и
+    чья-то свита, и чей-то оркестратор, пропал бы с экрана целиком вместе с
+    подчинённым. Ссылка делает его командной карточкой, но сам он в чужую свиту
+    больше не уезжает."""
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    br.handle_event({"event": "working", "session_id": "a1", "cwd": "/w/mjc",
+                     "sess_name": "mjc-impl-be", "agent": "implementer",
+                     "parent_sid": "orc"})
+    br.handle_event({"event": "working", "session_id": "a2", "cwd": "/w/mjc",
+                     "sess_name": "mjc-rev-sec", "agent": "reviewer",
+                     "parent_sid": "a1"})
+    teams = br.teams(list(br.sessions.values()))
+    assert teams["orc"] == [], "имплементер стал карточкой — в свиту он не идёт"
+    assert [a.reg_name for a in teams["a1"]] == ["mjc-rev-sec"]

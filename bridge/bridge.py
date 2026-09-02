@@ -180,7 +180,10 @@ class Session:
     transcript: str = ""              # путь к файлу транскрипта (из конверта хука)
     size_mb: float = 0.0              # его размер: «вес» сессии, копоть на карточке
     role: int = 0                     # роль в мета-оркестрации, см. ROLE_*
-    parent: str = ""                  # имя оркестратора (MJC_PARENT), если плагин его дал
+    # Оркестратор, который завёл этого агента: sessionId — ключ связи
+    # (MJC_PARENT_SESSION), имя — справочно (MJC_PARENT). См. блок ниже и teams().
+    parent_sid: str = ""
+    parent: str = ""
 
 
 # --- Мета-оркестрация (MetaJetCore) -------------------------------------------
@@ -190,11 +193,15 @@ class Session:
 #
 # Роль приезжает готовой: плагин ставит агенту CLAUDE_CODE_AGENT, Claude Code пишет
 # её в реестр полем `agent`, а хук видит ту же переменную в своём окружении.
-# Принадлежность к команде мост выводит ЭВРИСТИКОЙ: общий префикс имени (`mjc-orc`
-# и `mjc-impl-be` → `mjc`) плюс общий каталог. Точной связи «родитель→агент» нигде
-# нет: `spawn_agent(parent=...)` использует имя родителя только чтобы открыть вкладку
-# рядом, и никуда его не сохраняет. Одна переменная окружения от плагина сделала бы
-# связь точной; пока — префикс.
+# Принадлежность к команде — ТОЧНАЯ, и ключ у неё `sessionId`: плагин кладёт агенту
+# в окружение MJC_PARENT_SESSION (sessionId оркестратора, который его завёл), хук
+# привозит его мосту, а мост берёт по этому ключу свою же сессию — `session_id` из
+# конверта хука это и есть ключ `Bridge.sessions`. Имя (MJC_PARENT) приезжает рядом,
+# но только справочно: оно не уникально (видели три записи реестра «слитие мастера»,
+# у всех один sessionId), меняется /rename и переиспользуется после смерти сессии.
+# Путь по имени остаётся ЗАПАСНЫМ — для агентов от плагина прошлой версии, а совсем
+# без родителя работает эвристика: общий префикс имени (`mjc-orc` и `mjc-impl-be` →
+# `mjc`) плюс общий каталог.
 ROLE_NONE, ROLE_ORC, ROLE_IMPL, ROLE_RSRCH, ROLE_REV = 0, 1, 2, 3, 4
 ROLE_BY_ID = {"orchestrator": ROLE_ORC, "implementer": ROLE_IMPL,
               "researcher": ROLE_RSRCH, "reviewer": ROLE_REV}
@@ -1104,6 +1111,9 @@ class Bridge:
         hook_role = role_of(data.get("agent"), data.get("sess_name"))
         hook_name = str(data.get("sess_name") or "")[:64] or None
         hook_parent = str(data.get("parent") or "")[:64]
+        # Ключ связи с командой. Обрезка щедрая: это UUID (36 символов), но резать
+        # его нельзя вовсе — обрубок совпал бы не с той сессией или ни с одной.
+        hook_parent_sid = str(data.get("parent_sid") or "")[:128]
 
         with self.lock:
             sess = self.sessions.get(session_id)
@@ -1118,6 +1128,8 @@ class Bridge:
                     sess.reg_name = hook_name
                 if hook_parent:
                     sess.parent = hook_parent
+                if hook_parent_sid:
+                    sess.parent_sid = hook_parent_sid
 
             if event == "end":
                 if self.sessions.pop(session_id, None) is not None:
@@ -1127,7 +1139,7 @@ class Bridge:
 
             if event == "start":
                 if sess is None:
-                    sess = Session(session_id, name, IDLE, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent)
+                    sess = Session(session_id, name, IDLE, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent, parent_sid=hook_parent_sid)
                     self.sessions[session_id] = sess
                     self._note_transcript(sess, transcript)
                     self.log.info("start: %s (%s) pid=%s", session_id, name, pid)
@@ -1146,7 +1158,7 @@ class Bridge:
             if event in ("subagent", "subagent_done"):
                 if sess is None:
                     # спавн суб-агента у незнакомой сессии → создаём (родитель активен)
-                    sess = Session(session_id, name, WORKING, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent)
+                    sess = Session(session_id, name, WORKING, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent, parent_sid=hook_parent_sid)
                     self.sessions[session_id] = sess
                     self._note_transcript(sess, transcript)
                 if event == "subagent":
@@ -1169,7 +1181,7 @@ class Bridge:
 
             if sess is None:
                 # событие для незнакомой сессии — создаём на лету (мост мог рестартнуть)
-                sess = Session(session_id, name, new_state, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent)
+                sess = Session(session_id, name, new_state, pid, now, now, last_active_ms=now_ms, role=hook_role, reg_name=hook_name, parent=hook_parent, parent_sid=hook_parent_sid)
                 self.sessions[session_id] = sess
                 self._note_transcript(sess, transcript)
                 self.log.info("создана на лету: %s (%s) state=%d", session_id, name, new_state)
@@ -1384,25 +1396,37 @@ class Bridge:
     def teams(self, sessions: list[Session]) -> dict[str, list[Session]]:
         """Кто чьей команды: {session_id оркестратора: [его агенты]}.
 
-        Связь берётся ТОЧНАЯ, если она есть: плагин MetaJetCore кладёт агенту в
-        окружение `MJC_PARENT` — имя оркестратора, который его завёл, — и хук привозит
-        это имя мосту. Тогда две команды с одним префиксом в одном проекте не склеятся.
+        Сопоставление идёт от точного к приблизительному:
 
-        Если родителя не назвали (агента запустили руками, плагин старой версии), в дело
-        идёт эвристика: общий префикс имени и общий каталог (`mjc-orc` ↔ `mjc-impl-be`).
-        Она же остаётся единственным вариантом для оркестратора, поднятого не через
-        действие плагина. Оркестратора на экране нет — агенты остаются обычными
-        карточками, ничего не прячем.
+        1. `parent_sid` — `sessionId` оркестратора (`MJC_PARENT_SESSION` от плагина).
+           Это прямое обращение по ключу: `sessionId` уникален, не меняется от
+           `/rename` и переживает resume. Совпало — дальше не смотрим.
+        2. `parent` — имя оркестратора (`MJC_PARENT`), для агентов от плагина прошлой
+           версии. Имя — ключ плохой: тёзки, переименования, переиспользование после
+           смерти сессии, — поэтому только запасной путь.
+        3. префикс имени плюс общий каталог (`mjc-orc` ↔ `mjc-impl-be`) — для агентов,
+           запущенных руками.
+
+        Родитель НАЗВАН, но его на экране нет — агент остаётся своей карточкой, к
+        эвристике не скатываемся: иначе агент из соседнего окна IDE свернулся бы в
+        чужую команду и пропал бы с глаз.
         """
         # Оркестратором сессию делает СКИЛЛ `/orchestrate`, а он не меняет ни имени, ни
         # окружения, ни реестра — по метке такую сессию не узнать вовсе. Зато её узнают
-        # собственные агенты: каждый привозит `MJC_PARENT` с её именем. Показание агента
-        # сильнее любой эвристики по имени, поэтому названный родитель считается
-        # оркестратором, даже если сам о себе ничего не сообщил. Ровно поэтому карточка
-        # превращается в команду в тот момент, когда команда появляется.
+        # собственные агенты: каждый привозит sessionId (а старый плагин — имя) своего
+        # родителя. Показание агента сильнее любой эвристики, поэтому названный родитель
+        # считается оркестратором, даже если сам о себе ничего не сообщил. Ровно поэтому
+        # карточка превращается в команду в тот момент, когда команда появляется.
+        #
+        # Для sid-пути проверка «названный родитель не должен сам быть агентом» не
+        # нужна: она защищала от переиспользования ИМЕНИ, а `sessionId` не
+        # переиспользуется. По имени она обязана остаться — путь 2 никуда не делся.
+        named_sids = {s.parent_sid for s in sessions
+                      if s.parent_sid and s.parent_sid != s.session_id}
         named = {s.parent.strip().lower() for s in sessions if s.parent}
         orcs = [s for s in sessions
                 if s.role == ROLE_ORC
+                or s.session_id in named_sids
                 or ((s.reg_name or "").strip().lower() in named
                     and s.role not in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV))]
         out: dict[str, list[Session]] = {o.session_id: [] for o in orcs}
@@ -1412,9 +1436,15 @@ class Bridge:
         for s in sessions:
             if s.role not in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV):
                 continue
-            named = by_name.get(s.parent.strip().lower()) if s.parent else None
-            if named is not None:
-                out[named.session_id].append(s)
+            if s.session_id in out:
+                continue     # на него самого сослались — он карточка, а не свита
+            if s.parent_sid:
+                if s.parent_sid in out:
+                    out[s.parent_sid].append(s)
+                continue     # точный родитель: либо он, либо своя карточка
+            orc = by_name.get(s.parent.strip().lower()) if s.parent else None
+            if orc is not None:
+                out[orc.session_id].append(s)
                 continue
             if s.parent:
                 continue     # родитель назван, но его нет на глазах — чужая команда
@@ -2407,8 +2437,11 @@ class Bridge:
                 "places_rev": places_rev(self.places),
                 "places_sent": self._places_sent,
                 # мета-оркестрация: кто чьей команды и что мост о ролях знает
+                # ключ — имя И id: тёзки-оркестраторы это норма (имя задаёт человек),
+                # по одному имени команды слиплись бы прямо в диагностике
                 "teams": {
-                    (self.sessions[oid].reg_name or self.sessions[oid].name): [
+                    "{} [{}]".format(self.sessions[oid].reg_name or self.sessions[oid].name,
+                                     oid[:8]): [
                         (a.reg_name or a.name) for a in agents
                     ]
                     for oid, agents in self.teams(list(self.sessions.values())).items()
