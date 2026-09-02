@@ -205,3 +205,28 @@ def test_hook_omits_meta_keys_outside_orchestration(hook, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     sent = run_hook(hook, monkeypatch, {"hook_event_name": "Stop", "session_id": "s1", "cwd": "/w"})
     assert not ({"agent", "sess_name", "parent", "parent_sid"} & set(sent))
+
+
+def test_hook_counts_teammates_as_subagents(hook, monkeypatch):
+    """Субагент, запущенный как внутрисессионный сотрудник, — тоже субагент.
+
+    Claude Code отдаёт в `background_tasks` ПУБЛИЧНОЕ имя типа: `local_agent` едет
+    как «subagent», а `in_process_teammate` — как «teammate». Считая только
+    «subagent», хук слал `subs: 0` на `Stop`, и мост обнулял счётчик, пока в сессии
+    работали двенадцать агентов — карточка стояла без единого пузырька (поймали на
+    живом мосту, сессия «слитие мастера»). Свой фоновый shell в зачёт по-прежнему не
+    идёт: вечный ложный пузырёк от dev-сервера — ровно то, ради чего фильтр заведён."""
+    sent = run_hook(hook, monkeypatch, {
+        "hook_event_name": "Stop", "session_id": "s1", "cwd": "/w",
+        "background_tasks": [
+            {"id": "1", "type": "teammate", "status": "running"},
+            {"id": "2", "type": "teammate", "status": "pending"},
+            {"id": "3", "type": "subagent", "status": "running"},
+            {"id": "4", "type": "cloud session", "status": "running"},
+            {"id": "5", "type": "shell", "status": "running"},
+            {"id": "6", "type": "monitor", "status": "running"},
+            {"id": "7", "type": "MCP task", "status": "running"},
+            {"id": "8", "type": "teammate", "status": "completed"},
+        ],
+    })
+    assert sent["subs"] == 4, "агенты — teammate/subagent/cloud session; shell и монитор — нет"

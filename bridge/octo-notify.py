@@ -34,6 +34,19 @@ HOOK_TO_EVENT = {
     "SubagentStop": "subagent_done",   # суб-агент (Task) завершился → −1
 }
 
+# Типы фоновых задач из `background_tasks`, которые считаются «работой подчинённого»
+# и дают пузырёк на карточке. Claude Code отдаёт ПУБЛИЧНОЕ имя типа, а не внутреннее:
+# local_agent → "subagent", in_process_teammate → "teammate", remote_agent →
+# "cloud session". Одного "subagent" мало: субагент, запущенный как внутрисессионный
+# сотрудник (`in_process_teammate`), приезжает типом "teammate" — считая только
+# "subagent", мы обнуляли счётчик, когда работали 12 агентов (ловили на живом мосту).
+# Остальные типы (shell, monitor, workflow, MCP task, dream, auto-mode scan) —
+# намеренно НЕ агенты: собственный фоновый shell сессии (dev-сервер) давал бы вечный
+# ложный пузырёк, ради чего фильтр по типу и заведён.
+AGENT_TASK_TYPES = ("subagent", "teammate", "cloud session")
+# «Работает» и «вот-вот начнёт» для пузырька одно и то же: работа роздана.
+AGENT_TASK_STATES = ("running", "pending")
+
 HOST = os.environ.get("OCTO_BRIDGE_HOST", "127.0.0.1")
 PORT = os.environ.get("OCTO_BRIDGE_PORT", "8787")
 TIMEOUT = float(os.environ.get("OCTO_HOOK_TIMEOUT", "0.5"))
@@ -150,10 +163,10 @@ def main() -> None:
     # сессии. Шлём абсолютное число работающих субагентов для синхронизации
     # счётчика в мосте: SubagentStop срабатывает на каждую остановку субагента
     # (в т.ч. промежуточную), поэтому чистый ±1 занижает счётчик.
-    # Считаем строго type=="subagent": активно работающий субагент в списке есть.
-    # Известный трейд-офф: субагент, приостановленный с живым фоновым процессом,
-    # из списка исчезает (остаётся его дочерний shell) — его пузырёк погаснет до
-    # резюма. Считать все running-задачи нельзя: собственный фоновый shell сессии
+    # Считаем задачи-агенты (AGENT_TASK_TYPES): в списке они и есть подчинённая
+    # работа сессии. Известный трейд-офф: субагент, приостановленный с живым фоновым
+    # процессом, из списка исчезает (остаётся его дочерний shell) — его пузырёк
+    # погаснет до резюма. Считать ВСЕ задачи нельзя: собственный фоновый shell сессии
     # (dev-сервер и т.п.) давал бы вечный ложный пузырёк.
     if hook_name in ("Stop", "SubagentStop"):
         tasks = envelope.get("background_tasks")
@@ -161,8 +174,8 @@ def main() -> None:
             payload["subs"] = sum(
                 1 for t in tasks
                 if isinstance(t, dict)
-                and t.get("type") == "subagent"
-                and t.get("status") == "running"
+                and t.get("type") in AGENT_TASK_TYPES
+                and t.get("status") in AGENT_TASK_STATES
             )
 
     try:
