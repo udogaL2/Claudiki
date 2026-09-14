@@ -73,7 +73,9 @@ ESP пойдут 5 В, а они не пятивольтотолерантны.
 ### Шаг 5. Заливка
 
 Arduino IDE, плата **LOLIN(WEMOS) D1 R2 & mini**, скорость загрузки 921600.
-Библиотеки из менеджера: `Adafruit GFX`, `Adafruit ILI9341`, `ArduinoJson` (версия 6).
+Библиотеки из менеджера: `Adafruit GFX`, `Adafruit ILI9341`, `ArduinoJson` (версия **7**:
+скетч подсовывает разбору свой аллокатор через `ArduinoJson::Allocator`, которого в
+шестой ветке нет).
 
 Перед заливкой подними `FW_VER` в скетче — номер виден в диаг-логе, и сразу понятно,
 что на плате действительно свежая прошивка, а не прошлая.
@@ -95,6 +97,51 @@ BUILD="$TEMP/octo-cli-build"                  # кэш сборки: повто�
 `arduino-cli` берёт ядра из `%LOCALAPPDATA%\Arduino15`, а библиотеки — из
 `~/Documents/Arduino/libraries`, то есть ровно то же, что видит IDE: разойтись версиям
 неоткуда. Порт узнаётся из `octoctl debug` (поле `sink.resolved`).
+
+#### Тулчейн на Linux, когда IDE нет
+
+Здесь `arduino-cli` ставится сам, и через корпоративный прокси часть загрузок не
+проходит. Что именно нужно обойти (проверено на этой машине):
+
+```bash
+# 1. сам CLI — качается нормально
+curl -fsSL https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz \
+  | tar xz -C ~/.local/bin arduino-cli
+
+# 2. ядро ESP8266 — тоже нормально
+arduino-cli config add board_manager.additional_urls \
+  https://arduino.esp8266.com/stable/package_esp8266com_index.json
+arduino-cli core install esp8266:esp8266
+```
+
+Дальше начинаются грабли, и каждая выглядит как «команда не найдена», а не как отказ
+сети:
+
+- **Индексы `*.tar.bz2` отдают 403.** Из-за этого не работают ни `core update-index`,
+  ни `lib install`. Обход: скачать `https://downloads.arduino.cc/packages/package_index.json`
+  (несжатый — он проходит) прямо в `~/.arduino15/`.
+- **`library_index.json` недоступен вовсе**, поэтому библиотеки ставятся руками в
+  `~/Arduino/libraries/`: `ArduinoJson` (ветка `7.x` — скетч на API v7,
+  `ArduinoJson::Allocator`), `Adafruit-GFX-Library`, `Adafruit_ILI9341`,
+  `Adafruit_BusIO`. Архивы с `codeload.github.com` проходят.
+- **Нет встроенных инструментов** `ctags`, `serial-discovery`, `mdns-discovery` — они
+  живут в том же недоступном индексе. Без `ctags` сборка падает с
+  `fork/exec {runtime.tools.ctags.path}/ctags: no such file or directory`. Ссылки на них
+  есть в скачанном `package_index.json`; распаковать в
+  `~/.arduino15/packages/builtin/tools/<имя>/<версия>/`.
+
+После этого `compile` и `upload` работают штатно:
+
+```bash
+BUILD=/tmp/octo-cli-build
+arduino-cli compile --fqbn esp8266:esp8266:d1_mini --build-path "$BUILD" firmware/octodash
+systemctl --user stop octodash        # мост держит порт, см. ниже
+arduino-cli upload -p /dev/ttyUSB0 --fqbn esp8266:esp8266:d1_mini \
+  --input-dir "$BUILD" firmware/octodash
+systemctl --user start octodash
+```
+
+Права на порт дают членством в группе `dialout` — оно уже есть, `sudo` не нужен.
 
 **Порт занят мостом.** Мост держит serial открытым, и `esptool` получит
 `PermissionError(13)`. Перед заливкой мост нужно остановить (`Stop-Process -Id <pid>`,
