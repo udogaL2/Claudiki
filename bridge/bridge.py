@@ -1601,6 +1601,18 @@ class Bridge:
             # Отчёт о принятом списке мест: сколько имён плата уместила в память.
             self.note_places_fit(d.get("rev") or 0, d.get("n") or 0)
             return True
+        if kind == "badjson":
+            # Плата не смогла разобрать нашу строку и молча её выбросила. Логируем
+            # ВСЕГДА и предупреждением: беззвучный отказ однажды уже выглядел как
+            # «на экран с аквариумом невозможно переключиться» — снэпшот не влезал в
+            # арену ArduinoJson, а в логах не было ни следа. Плата шлёт не чаще раза
+            # в пять секунд, спама не будет.
+            self.esp["badjson"] = self.esp.get("badjson", 0) + 1
+            self.log.warning("плата не разобрала строку: %s, длина %s, арена %s "
+                             "(всего отказов: %d)",
+                             d.get("why"), d.get("len"), d.get("arena"),
+                             self.esp["badjson"])
+            return True
         if kind not in ("boot", "life"):
             return False
         now_ms = int(self._wall() * 1000)
