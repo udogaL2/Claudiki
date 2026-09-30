@@ -42,7 +42,8 @@ class Snap:
         self.br = b.Bridge(cfg, sink=None, clock=lambda: 1000.0,
                            is_alive=lambda pid: True, wall_clock=lambda: 1_700_000_000.0,
                            registry_probe=lambda: None,
-                           size_probe=lambda path: 17.0)
+                           size_probe=lambda path: 17.0,
+                           color_probe=lambda path, off, color: (off, 8))
         # две сессии с полным набором признаков: субагенты и вес
         for i in range(2):
             self.br.handle_event({"event": "start", "session_id": f"s{i}",
@@ -56,6 +57,7 @@ class Snap:
         self.br.handle_event({"event": "waiting", "session_id": "rev",
                               "cwd": "/work/mjc", "sess_name": "mjc-rev-sec",
                               "agent": "reviewer"})
+        self.br.refresh_sizes()          # цвет вкладки находится в такт сверке
         # ночь: чтобы поле nl появилось
         self.br.cafe_now = lambda: (0, 22 * 60)
         self.aquarium = self.br.build_snapshot()
@@ -236,7 +238,8 @@ def test_snapshot_line_fits_serial_buffer(sketch, snap):
     cfg = b.Config(max_sessions=6, name_max=16)
     br = b.Bridge(cfg, sink=None, clock=lambda: 1.0, is_alive=lambda p: True,
                   wall_clock=lambda: 1_700_000_000.0, registry_probe=lambda: None,
-                  size_probe=lambda p: 199.0)
+                  size_probe=lambda p: 199.0,
+                  color_probe=lambda path, off, color: (off, 8))
     for i in range(6):                                  # худший случай: всё заполнено
         sid = f"session-{i}-{'x' * 12}"
         # имя кириллицей — оно вдвое тяжелее латиницы в UTF-8, это и есть худший случай
@@ -245,7 +248,9 @@ def test_snapshot_line_fits_serial_buffer(sketch, snap):
                          "transcript": "/t/x.jsonl"})
         for _ in range(5):
             br.handle_event({"event": "subagent", "session_id": sid})
+    br.refresh_sizes()
     line = br.snapshot_line()
+    assert '"c":8' in line, "худший случай обязан везти и цвет вкладки"
     assert len(line) < line_max, f"снэпшот {len(line)} байт при LINE_MAX={line_max}"
     assert len(line) * 2 < doc_size, (
         f"снэпшот {len(line)} байт: StaticJsonDocument<{doc_size}> может не хватить")
@@ -613,3 +618,21 @@ def test_crew_change_triggers_cell_redraw(sketch):
     diff = diff[:diff.index(";")]
     assert "a.role != b.role" in diff, "смена роли не перерисовывает карточку"
     assert "strcmp(a.ag, b.ag)" in diff, "смена свиты не перерисовывает карточку"
+
+
+def test_session_palette_matches_firmware(sketch):
+    """Код цвета — индекс в палитре прошивки. Разъедется число цветов — сессия
+    окажется не того цвета, что её вкладка, и никто этого не заметит."""
+    body = re.search(r"SESSION_RGB\[\]\s*=\s*\{([^}]*)\}", sketch)
+    assert body, "в скетче нет палитры цветов сессий SESSION_RGB"
+    entries = [x for x in body.group(1).split(",") if x.strip()]
+    # нулевой элемент — «цвета нет», дальше ровно палитра /color в порядке моста
+    assert len(entries) == len(b.SESSION_COLORS) + 1
+
+
+def test_color_change_triggers_cell_redraw(sketch):
+    """Цвет рисуется в статике ячейки (рамка, подложка имени): diff обязан его
+    видеть, иначе /color доедет до платы, а экран не изменится."""
+    diff = sketch[sketch.index("bool changed = a.active != b.active"):]
+    diff = diff[:diff.index(";")]
+    assert "a.color != b.color" in diff

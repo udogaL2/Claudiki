@@ -294,6 +294,10 @@
         <button data-w="edge" class="on">копоть по краям</button>
         <button data-w="off">без копоти</button>
       </div>
+      <div class="btns" id="cbtns">
+        <button data-c="on" class="on">цвета вкладок</button>
+        <button data-c="off">без /color</button>
+      </div>
       <p class="note" id="evnote">Событие происходит в <b>первой карточке страницы</b>.</p>
       <p class="note">
         Дым — <b>вес транскрипта</b>, а не контекст: процент и так на экране, а вес растёт
@@ -790,6 +794,7 @@
   const NAMES = ["bitrixpet","worktree-4","core","feature-~tion-v2","Claudiki#99ce","Claudiki#8d7d",
                  "octodash","b24-mcp","sandbox","docs-site","infra-tf","hotfix-9x","rest-api","cli-tools",
                  "landing","billing","pg-migrate","scratch"];
+  const SEED_COLOR = [1,7,0,3,6,2,4,0,8,5,1,0,3,7,2,6,0,4];   // 0 — /color не задан
   const SEED_STATE = [W,A,I,W,A,E,W,I,I,A,I,W,A,I,I,E,I,W];
   const SEED_SUB   = [2,0,0,3,0,0,1,0,0,0,0,4,0,0,0,0,0,2];
   // Вес транскрипта в МБ: то, чего не видно нигде. Контекст держит автокомпакт, а файл
@@ -821,6 +826,7 @@
       state:SEED_STATE[i%SEED_STATE.length], sub:SEED_SUB[i%SEED_SUB.length],
       started: i*137, last: 1000 - i*13,      // «время старта» и свежесть, условные единицы
       mb: SEED_MB[i%SEED_MB.length]*mbScale,
+      color: SEED_COLOR[i%SEED_COLOR.length],
       seed: hash32(id), cmpUntil: 0, bornAt: 0,
     };
   });
@@ -1030,6 +1036,14 @@
   // должен оставаться читаемым, статус важнее атмосферы. На 0.55 он превращался в чёрный
   // силуэт — красиво ровно до момента, когда надо понять, что происходит.
   let weightStyle="edge";                        // копоть по краям карточки
+  // Цвет вкладки из /color (поле `c` снэпшота). Рамка — цвет вкладки, пока статус
+  // спокойный; WAITING и ERROR забирают рамку себе, WAITING ещё и мигает ею.
+  // Подложка имени — всегда цвет вкладки, буквы на ней чёрные. 1:1 с cardFrame().
+  let tabColors=true;
+  const SESSION_RGB=[0, 0xD924, 0x6CD9, 0x1509, 0xCC40, 0x83F7, 0xDBAA, 0xC330, 0x0C96];
+  const colorOf = card => tabColors ? (card.color||0) : 0;
+  const cardFrameColor = card => colorOf(card) && card.state!==A && card.state!==E
+    ? SESSION_RGB[colorOf(card)] : frameColor(card.state);
   let nightK=0, nightOn=true;
   const NIGHT_MAX=0.3;
   const nk = () => (nightOn ? nightK : 0) * NIGHT_MAX;
@@ -1092,8 +1106,19 @@
   const coveredCells = (r, n) => { const s=new Set(); for(let i=0;i<n;i++) if(hit(cellRect(i),r)) s.add(i); return s; };
 
   function drawFrame(i, card){
-    g.drawRect(cellX(i)+2, cellY(i)+2, cw-4, ch-4, frameColor(card.state));
+    g.drawRect(cellX(i)+2, cellY(i)+2, cw-4, ch-4, cardFrameColor(card));
     spi(2*(cw-4) + 2*(ch-4));
+    namePlate(i, card);
+  }
+  // подложка имени цвета вкладки: поля по 3px, но не по рамке
+  function namePlate(i, card){
+    const c = colorOf(card);
+    if(!c) return;
+    const x0=cellX(i)+2, y0=cellY(i)+2, bw=cw-4, bh=ch-4;
+    const nw=cardLabel(card).text.length*6, nx=x0+(bw>>1)-(nw>>1);
+    const px0=Math.max(nx-3, x0+1), px1=Math.min(nx+nw+2, x0+bw-2);
+    g.fillRect(px0, y0+bh-11, px1-px0+1, 10, SESSION_RGB[c]);
+    spi((px1-px0+1)*10);
   }
 
   // Копоть вползает от КРАЁВ карточки внутрь и никогда не касается осьминога:
@@ -1154,6 +1179,10 @@
     const blink = card.state!==A || (Math.floor(tt*3)&1);
     g.fillRect(cellX(i)+5, cellY(i)+5, 3, 3, blink ? frameColor(card.state) : BG);
     spi(9);
+    if(colorOf(card) && card.state===A){          // ждёт: рамка мигает жёлтым ↔ цвет вкладки
+      g.drawRect(cellX(i)+2, cellY(i)+2, cw-4, ch-4, blink ? C_WAIT : SESSION_RGB[colorOf(card)]);
+      spi(2*(cw-4) + 2*(ch-4));
+    }
   }
   // hole — прямоугольник плашки. Имена рисуются везде, КРОМЕ него: на железе плашка
   // просто легла сверху, значит скрыто ровно то, что под ней. Прятать подпись целой
@@ -1170,7 +1199,7 @@
     dctx.font="600 22px ui-monospace,Consolas,monospace";
     cards.forEach((card,i)=>{
       const lb = cardLabel(card);
-      dctx.fillStyle=css565(lb.alarm===E ? C_ERR : lb.alarm===A ? C_WAIT : frameColor(card.state));
+      dctx.fillStyle=css565(colorOf(card) ? BG : lb.alarm===E ? C_ERR : lb.alarm===A ? C_WAIT : frameColor(card.state));
       dctx.fillText(lb.text, (cellX(i)+cw/2)*3, (cellY(i)+ch-8)*3);
     });
     dctx.restore();
@@ -1185,9 +1214,10 @@
     cards.forEach((card,i)=>{
       const x0=cellX(i)+2, y0=cellY(i)+2, bw=cw-4, bh=ch-4, st=card.state;
       const shake = st===E ? Math.round(Math.sin(tt*22)) : 0;
-      let col = frameColor(st);
-      if(st===A && Math.floor(tt*1.6)%2===0) col=BG;
+      let col = cardFrameColor(card);
+      if(st===A && Math.floor(tt*1.6)%2===0) col = colorOf(card) ? SESSION_RGB[colorOf(card)] : BG;
       g.drawRect(x0+shake,y0,bw,bh,col);
+      namePlate(i, card);
       if(weightStyle!=="off") cardSmog(i, smokeOf(card));
       roleMarks(i, card, tt);
       octo(octoCX(i)+shake, octoCY(i), tt, card);
@@ -1264,7 +1294,7 @@
     const cards=currentPage(), pn=pageCount(), p=Math.min(page,pn-1);
     // вес входит в ключ огрублённо: копоть по краям — статика, её надо пересобрать
     // при заметном изменении веса, но не на каждый мегабайт
-    const key=cards.map(c=>`${c.id}:${c.name}:${c.state}:${Math.round(smokeOf(c)*8)}`).join("|")+`#${p}#${weightStyle}`;
+    const key=cards.map(c=>`${c.id}:${c.name}:${c.state}:${colorOf(c)}:${Math.round(smokeOf(c)*8)}`).join("|")+`#${p}#${weightStyle}`;
     if(key!==espKey){ espKey=key; furniture(cards); popupCur=null; }   // = redrawAll() по diff'у
 
     const now=performance.now();
@@ -3222,6 +3252,7 @@
   });
   pick("#restbtns button", b=>{ restoreMode=b.dataset.rest; });
   pick("#wbtns button", b=>{ weightStyle=b.dataset.w; espKey=""; });
+  pick("#cbtns button", b=>{ tabColors=b.dataset.c==="on"; espKey=""; });
   pick("#livebtns button", b=>{
     cafeLive = b.dataset.live!=="off";
     cafeSpeed = b.dataset.live==="60" ? 1 : 1/60;   // минут модели в секунду

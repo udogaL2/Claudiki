@@ -1912,6 +1912,142 @@ def test_refresh_sizes_skips_sessions_without_transcript(clock, liveness, sink):
     assert "mb" not in br.build_snapshot()["sessions"][0]
 
 
+# ---------------------------------------------------------------- цвет сессии
+# /color пишет цвет в транскрипт строкой agent-color, «последняя побеждает».
+# Повторяется она редко (между повторами бывает по 5 МБ), поэтому мост читает
+# файл один раз целиком, а дальше — только прирост.
+
+def _color_line(color, sid="a"):
+    return json.dumps({"type": "agent-color", "agentColor": color,
+                       "sessionId": sid}, separators=(",", ":")) + "\n"
+
+
+def _msg_line(text="x"):
+    return json.dumps({"type": "user", "message": {"content": text}}) + "\n"
+
+
+def test_scan_color_takes_the_last_line(tmp_path):
+    t = tmp_path / "a.jsonl"
+    t.write_text(_msg_line() + _color_line("red") + _msg_line() + _color_line("cyan")
+                 + _msg_line(), encoding="utf-8")
+    off, color = b.scan_agent_color(str(t), 0, 0)
+    assert color == b.COLOR_CODE["cyan"]
+    assert off == t.stat().st_size
+
+
+def test_scan_color_first_line_of_file_counts(tmp_path):
+    t = tmp_path / "a.jsonl"
+    t.write_text(_color_line("pink") + _msg_line(), encoding="utf-8")
+    assert b.scan_agent_color(str(t), 0, 0)[1] == b.COLOR_CODE["pink"]
+
+
+def test_scan_color_ignores_quoted_mentions(tmp_path):
+    # в выводе инструментов строка цвета лежит экранированной внутри JSON-строки —
+    # это разговор о цвете, а не цвет
+    t = tmp_path / "a.jsonl"
+    t.write_text(_msg_line(_color_line("red")) + _msg_line('{"type":"agent-color"'),
+                 encoding="utf-8")
+    assert b.scan_agent_color(str(t), 0, 0)[1] == 0
+
+
+def test_scan_color_is_incremental_and_keeps_color(tmp_path):
+    t = tmp_path / "a.jsonl"
+    t.write_text(_color_line("green") + _msg_line(), encoding="utf-8")
+    off, color = b.scan_agent_color(str(t), 0, 0)
+    with open(t, "a", encoding="utf-8") as f:
+        f.write(_msg_line() * 3)                 # цвет не менялся — строки нет
+    off2, color2 = b.scan_agent_color(str(t), off, color)
+    assert color2 == b.COLOR_CODE["green"] and off2 > off
+    with open(t, "a", encoding="utf-8") as f:
+        f.write(_color_line("default"))           # /color default — сброс
+    assert b.scan_agent_color(str(t), off2, color2)[1] == 0
+
+
+def test_scan_color_waits_for_whole_line(tmp_path):
+    t = tmp_path / "a.jsonl"
+    whole = _color_line("blue")
+    t.write_bytes(_msg_line().encode() + whole[:10].encode())   # строка недописана
+    off, color = b.scan_agent_color(str(t), 0, 0)
+    assert color == 0 and off == len(_msg_line().encode())
+    with open(t, "ab") as f:
+        f.write(whole[10:].encode())
+    assert b.scan_agent_color(str(t), off, color)[1] == b.COLOR_CODE["blue"]
+
+
+def test_scan_color_across_chunks(tmp_path, monkeypatch):
+    monkeypatch.setattr(b, "_COLOR_CHUNK", 64)
+    t = tmp_path / "a.jsonl"
+    t.write_text(_msg_line("y" * 100) + _color_line("orange") + _msg_line("z" * 150),
+                 encoding="utf-8")
+    assert b.scan_agent_color(str(t), 0, 0)[1] == b.COLOR_CODE["orange"]
+
+
+def test_scan_color_rescans_truncated_file(tmp_path):
+    t = tmp_path / "a.jsonl"
+    t.write_text(_color_line("red") + _msg_line() * 20, encoding="utf-8")
+    off, color = b.scan_agent_color(str(t), 0, 0)
+    t.write_text(_color_line("yellow"), encoding="utf-8")       # файл перезаписан
+    assert b.scan_agent_color(str(t), off, color)[1] == b.COLOR_CODE["yellow"]
+
+
+def test_scan_color_survives_missing_file_and_bad_json(tmp_path):
+    assert b.scan_agent_color(str(tmp_path / "nope.jsonl"), 5, 3) == (5, 3)
+    assert b.scan_agent_color("", 0, 2) == (0, 2)
+    t = tmp_path / "a.jsonl"
+    t.write_text('{"type":"agent-color",broken\n', encoding="utf-8")
+    assert b.scan_agent_color(str(t), 0, 4)[1] == 4
+
+
+def test_unknown_color_name_means_no_color(tmp_path):
+    t = tmp_path / "a.jsonl"
+    t.write_text(_color_line("red") + _color_line("chartreuse"), encoding="utf-8")
+    assert b.scan_agent_color(str(t), 0, 0)[1] == 0
+
+
+def test_color_reaches_snapshot_and_debug(clock, liveness, sink, tmp_path):
+    t = tmp_path / "a.jsonl"
+    t.write_text(_msg_line() + _color_line("purple"), encoding="utf-8")
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a",
+                     "transcript": str(t)})
+    assert "c" not in br.build_snapshot()["sessions"][0]   # до сверки цвета не знаем
+    br._dirty.clear()
+    assert br.refresh_sizes() is True and br._dirty.is_set()
+    assert br.build_snapshot()["sessions"][0]["c"] == b.COLOR_CODE["purple"]
+    assert br.build_debug()["sessions"][0]["color"] == "purple"
+    br._dirty.clear()
+    assert br.refresh_sizes() is False                     # ничего не поменялось
+    with open(t, "a", encoding="utf-8") as f:
+        f.write(_color_line("default"))
+    assert br.refresh_sizes() is True
+    assert "c" not in br.build_snapshot()["sessions"][0]
+
+
+def test_new_transcript_path_rescans_color(clock, liveness, sink, tmp_path):
+    t1, t2 = tmp_path / "1.jsonl", tmp_path / "2.jsonl"
+    t1.write_text(_color_line("red") + _msg_line() * 50, encoding="utf-8")
+    t2.write_text(_color_line("cyan"), encoding="utf-8")   # короче t1: offset бы соврал
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a",
+                     "transcript": str(t1)})
+    br.refresh_sizes()
+    br.handle_event({"event": "working", "session_id": "a", "transcript": str(t2)})
+    assert br.sessions["a"].color_off == 0
+    br.refresh_sizes()
+    assert br.sessions["a"].color == b.COLOR_CODE["cyan"]
+
+
+def test_discovered_transcript_rescans_color(clock, liveness, sink, tmp_path):
+    t = tmp_path / "a.jsonl"
+    t.write_text(_color_line("green"), encoding="utf-8")
+    br = make_bridge(b.Config(), clock, liveness, sink)
+    br._transcript_probe = lambda sid: str(t)
+    br.handle_event({"event": "start", "session_id": "a", "cwd": "/w/a"})
+    br.sessions["a"].color_off = 999              # остаток от прежнего файла
+    br.refresh_sizes()
+    assert br.sessions["a"].color == b.COLOR_CODE["green"]
+
+
 # ---------------------------------------------------------------- снимок экрана
 # Сборщик разбирает поток от платы, где ассистент не может ничего проверить
 # глазами: плитки приходят вперемешку с диагностикой, а ошибка сборки даст

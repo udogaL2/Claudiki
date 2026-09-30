@@ -179,6 +179,8 @@ class Session:
     reg_name: str | None = None       # имя сессии по версии Claude Code (справочно)
     transcript: str = ""              # путь к файлу транскрипта (из конверта хука)
     size_mb: float = 0.0              # его размер: «вес» сессии, копоть на карточке
+    color: int = 0                    # цвет вкладки из /color, код SESSION_COLORS (0 — нет)
+    color_off: int = 0                # докуда транскрипт уже просмотрен в поисках цвета
     role: int = 0                     # роль в мета-оркестрации, см. ROLE_*
     # Оркестратор, который завёл этого агента: sessionId — ключ связи
     # (MJC_PARENT_SESSION), имя — справочно (MJC_PARENT). См. блок ниже и teams().
@@ -543,6 +545,74 @@ def transcript_size_mb(path: str, stat_fn: Callable[[str], object] | None = None
     except OSError:
         return 0.0
     return round(size / (1024 * 1024), 2)
+
+
+# --- Цвет сессии (/color) -------------------------------------------------------
+# Claude Code хранит цвет вкладки не в реестре, а в транскрипте — строкой
+# {"type":"agent-color","agentColor":"cyan",...}, и правило у неё «последняя
+# побеждает». /color default пишет "default", то есть сброс. Порядок кодов —
+# контракт с прошивкой (палитра SESSION_RGB там), 0 зарезервирован под «нет цвета».
+SESSION_COLORS = ("red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan")
+COLOR_CODE = {name: i + 1 for i, name in enumerate(SESSION_COLORS)}
+_COLOR_MARK = b'{"type":"agent-color"'
+_COLOR_CHUNK = 1 << 20
+
+
+def _last_color(buf: bytes, at_line_start: bool) -> int | None:
+    """Код последней строки agent-color в куске целых строк; None — такой нет."""
+    pos = buf.rfind(b"\n" + _COLOR_MARK)
+    if pos >= 0:
+        pos += 1
+    elif at_line_start and buf.startswith(_COLOR_MARK):
+        pos = 0
+    else:
+        return None
+    end = buf.find(b"\n", pos)
+    try:
+        rec = json.loads(buf[pos:end if end >= 0 else len(buf)])
+    except ValueError:
+        return None
+    return COLOR_CODE.get(str(rec.get("agentColor") or "").lower(), 0)
+
+
+def scan_agent_color(path: str, offset: int, color: int,
+                     open_fn: Callable[..., object] = open) -> tuple[int, int]:
+    """Дочитывает транскрипт с offset и возвращает (новый offset, цвет).
+
+    Хвоста мало: Claude Code повторяет строку цвета не на каждом сообщении, и
+    между повторами в живых транскриптах бывает по 5 МБ. Поэтому первый проход
+    читает файл целиком (раз на сессию, в такт сверке, не в хуке), а дальше —
+    только прирост. Разбираются лишь целые строки: недописанную дочитаем в
+    следующий раз. Файл стал короче (перезаписан) — смотрим заново с нуля.
+    """
+    if not path:
+        return offset, color
+    try:
+        with open_fn(path, "rb") as fh:                 # type: ignore[attr-defined]
+            fh.seek(0, os.SEEK_END)
+            if fh.tell() < offset:
+                offset, color = 0, 0
+            fh.seek(offset)
+            carry = b""
+            at_start = True
+            while True:
+                chunk = fh.read(_COLOR_CHUNK)
+                if not chunk:
+                    break
+                buf = carry + chunk
+                cut = buf.rfind(b"\n")
+                if cut < 0:
+                    carry = buf
+                    continue
+                found = _last_color(buf[:cut], at_start)
+                if found is not None:
+                    color = found
+                offset += cut + 1
+                carry = buf[cut + 1:]
+                at_start = True
+    except OSError:
+        pass
+    return offset, color
 
 
 def coerce_pid(value: object) -> int | None:
@@ -982,6 +1052,7 @@ class Bridge:
         registry_probe: Callable[[], list[dict] | None] | None = None,
         size_probe: Callable[[str], float] = transcript_size_mb,
         transcript_probe: Callable[[str], str] | None = None,
+        color_probe: Callable[[str, int, int], tuple[int, int]] = scan_agent_color,
         rng: random.Random | None = None,
     ):
         self.cfg = cfg
@@ -994,6 +1065,7 @@ class Bridge:
         self._registry_probe = registry_probe or (
             lambda: read_session_registry(self.cfg.registry_root))
         self._size_probe = size_probe
+        self._color_probe = color_probe
         # Случайность внедряется: иначе выбор победителя рулетки нечем проверить.
         self._rng = rng or random.Random()
         self._transcript_probe = transcript_probe or (
@@ -1213,15 +1285,19 @@ class Bridge:
         (старая обёртка) — тогда его найдёт refresh_sizes по session_id.
         """
         if path:
+            if path != sess.transcript:
+                sess.color_off = 0          # другой файл — цвет ищем в нём с начала
             sess.transcript = path
         if sess.transcript:
             sess.size_mb = self._size_probe(sess.transcript)
 
     def refresh_sizes(self) -> bool:
-        """Пересчитывает вес всех сессий и сам находит транскрипты без пути.
+        """Пересчитывает вес и цвет всех сессий, сам находит транскрипты без пути.
 
         Дёргается в такт сверке с реестром. Грязным помечаем только при смене
         ЦЕЛЫХ мегабайт — снэпшот всё равно везёт целые, а лишние пуши не нужны.
+        Цвет ищется тут же, а не в хуке: /color — локальная команда, хука она не
+        шлёт, а первый проход по большому транскрипту — не для обработчика хука.
         """
         with self.lock:
             sessions = list(self.sessions.values())
@@ -1233,8 +1309,14 @@ class Bridge:
             mb = self._size_probe(path)
             if int(round(mb)) != int(round(sess.size_mb)):
                 changed = True
+            if path != sess.transcript:
+                sess.color_off = 0
+            off, color = self._color_probe(path, sess.color_off, sess.color)
+            if color != sess.color:
+                changed = True
             sess.transcript = path
             sess.size_mb = mb
+            sess.color_off, sess.color = off, color
         if changed:
             self.mark_dirty()
         return changed
@@ -2341,6 +2423,8 @@ class Bridge:
                 item["ag"] = self.agents_field(agents)
             if s.subagents:
                 item["sub"] = min(s.subagents, 5)   # число суб-агентов (кап под экран)
+            if s.color:
+                item["c"] = s.color                  # цвет вкладки: рамка и подложка имени
             if s.size_mb >= 1:
                 # вес в целых МБ: копоть по краям карточки квантуется всё равно грубо,
                 # а на ESP каждый байт снэпшота — это RAM под JSON-документ
@@ -2405,6 +2489,7 @@ class Bridge:
                 "pid_alive": self._is_alive(sess.pid) if sess.pid is not None else None,
                 "subagents": sess.subagents,
                 "size_mb": sess.size_mb,
+                "color": SESSION_COLORS[sess.color - 1] if sess.color else None,
                 "transcript": sess.transcript,
                 "source": sess.source,
                 "muted": bool(sess.muted_ms and sess.last_active_ms <= sess.muted_ms),

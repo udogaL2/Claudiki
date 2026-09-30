@@ -357,6 +357,7 @@ struct Session {
   char  ag[24];
   int   sub;          // активных суб-агентов
   int   mb;           // вес транскрипта, МБ — копоть по краям карточки
+  uint8_t color;      // цвет вкладки из /color: индекс SESSION_RGB, 0 — не задан
   uint32_t seed;      // хеш id: характер (темп, размах, фаза, моргание)
   unsigned long poke; // до какого millis() «вздрагивает» после промпта
   unsigned long born; // когда карточка появилась (всплытие после /clear)
@@ -433,6 +434,7 @@ void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right
 void sendShot();
 void redrawCell(int i);
 void cardFrame(Adafruit_GFX &g, int col, int row, Session &s);
+uint16_t stateColor(State s);
 void smogRow(PixelSink &sink, const SmogP &p, int y);
 void octoWindow(int col, int row, int &wx, int &wy, int &wcx, int &wcy);
 void updateOctopusArea(int col, int row, Session &s, float tt);
@@ -580,6 +582,23 @@ uint32_t hash32(const char *s) {
   uint32_t h = 2166136261UL;
   for (; *s; ++s) { h ^= (uint8_t)*s; h *= 16777619UL; }
   return h;
+}
+
+// Цвета вкладок /color в порядке моста (SESSION_COLORS), нулевой — «не задан».
+// Значения — из тёмной темы Claude Code: карточка того же цвета, что вкладка.
+const uint16_t SESSION_RGB[] = {
+  0x0000,
+  0xD924, 0x6CD9, 0x1509, 0xCC40, 0x83F7, 0xDBAA, 0xC330, 0x0C96,
+};
+const int N_SESSION_RGB = sizeof(SESSION_RGB) / sizeof(SESSION_RGB[0]);
+
+// Рамка карточки. В спокойных статусах она цвета вкладки: статус и так виден по
+// анимации (курит, спит). Тревожные — WAITING и ERROR — забирают рамку себе: их
+// ловят боковым зрением через весь стол, а какую вкладку открывать, подскажет
+// подложка имени. WAITING вдобавок мигает — это делает кадр анимации.
+uint16_t frameColor(Session &s) {
+  if (s.color && s.state != WAITING && s.state != ERR) return SESSION_RGB[s.color];
+  return stateColor(s.state);
 }
 
 uint16_t stateColor(State s) {
@@ -1222,7 +1241,7 @@ void composeGrid(Adafruit_GFX &g) {
 void cardFrame(Adafruit_GFX &g, int col, int row, Session &s) {
   int bw = cellW - 4, bh = cellH - 4;
   int x0 = col * cellW + 2, y0 = row * cellH + 2;
-  g.drawRect(x0, y0, bw, bh, stateColor(s.state));
+  g.drawRect(x0, y0, bw, bh, frameColor(s));
   // Имя с ФОНОМ: у тяжёлой сессии нижний слой копоти доходит до строки имени и
   // оно тонуло в решете. Фон даёт каждой букве чистую клетку, а копоть вокруг
   // остаётся — шкала веса не страдает.
@@ -1234,8 +1253,17 @@ void cardFrame(Adafruit_GFX &g, int col, int row, Session &s) {
   // фон сам (setTextColor с двумя цветами), свой — рисует только сами пиксели.
   int nw = textWidthRu(s.name, 1);
   int nx = x0 + bw / 2 - nw / 2;
-  g.fillRect(nx - 1, y0 + bh - 11, nw + 2, 10, BG);
-  drawTextRu(g, nx, y0 + bh - 10, s.name, 0xCE79, 1);
+  // С цветом вкладки подложка становится плашкой этого цвета, а буквы — чёрными:
+  // все восемь цветов темы средней яркости, чёрный на каждом даёт контраст ≥5:1.
+  if (s.color) {
+    // поля по 3px, но не по рамке: имя в 16 букв шириной почти во всю карточку
+    int px0 = max(nx - 3, x0 + 1), px1 = min(nx + nw + 2, x0 + bw - 2);
+    g.fillRect(px0, y0 + bh - 11, px1 - px0 + 1, 10, SESSION_RGB[s.color]);
+    drawTextRu(g, nx, y0 + bh - 10, s.name, BG, 1);
+  } else {
+    g.fillRect(nx - 1, y0 + bh - 11, nw + 2, 10, BG);
+    drawTextRu(g, nx, y0 + bh - 10, s.name, 0xCE79, 1);
+  }
 }
 
 // Копоть = вес транскрипта. Ползёт от КРАЁВ внутрь и никогда не касается окна
@@ -1350,6 +1378,10 @@ void updateOctopusArea(int col, int row, Session &s, float tt) {
 
   bool blink = (s.state != WAITING) || (((int)(tt * 3)) & 1);
   tft.fillRect(x0 + 3, y0 + 3, 3, 3, blink ? stateColor(s.state) : BG);
+  // Ждущая карточка с цветом вкладки мигает РАМКОЙ: жёлтый ↔ цвет вкладки. Без
+  // цвета рамка и так жёлтая, мигать нечем. Четыре линии в такт кадру — дёшево.
+  if (s.color && s.state == WAITING)
+    tft.drawRect(x0, y0, bw, bh, blink ? C_WAITING : SESSION_RGB[s.color]);
 }
 
 
@@ -3531,6 +3563,8 @@ void handleLine(const char *line) {
     c.state = (State)(int)(s["state"] | (int)IDLE);
     c.sub = s["sub"] | 0;
     c.mb  = s["mb"] | 0;
+    int col = s["c"] | 0;
+    c.color = (col > 0 && col < N_SESSION_RGB) ? col : 0;
     c.role = s["r"] | 0;
     strlcpy(c.ag, s["ag"] | "", sizeof(c.ag));
     c.seed = hash32(c.id);
@@ -3579,7 +3613,8 @@ void applySnapshot() {
     bool changed = a.active != b.active ||
                    (b.active && (strcmp(a.id, b.id) != 0 || a.state != b.state ||
                                  strcmp(a.name, b.name) != 0 || a.mb != b.mb ||
-                                 a.role != b.role || strcmp(a.ag, b.ag) != 0));
+                                 a.role != b.role || strcmp(a.ag, b.ag) != 0 ||
+                                 a.color != b.color));
     sessions[i] = b;
     sessions[i].poke = poke;
     sessions[i].born = born;
