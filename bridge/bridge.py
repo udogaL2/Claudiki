@@ -425,6 +425,33 @@ SLOT_PAY_PAIR = 2.0           # два одинаковых — ставка в�
 # источником отдачи. Доля разорившихся падает вдвое, до 45%.
 
 
+# --- краш на баллы ------------------------------------------------------------
+# Пятый экран. Реактивный осьминог взлетает, множитель растёт, и надо успеть забрать
+# выигрыш до взрыва. Точку взрыва бросает МОСТ в момент пуска — как и у автомата,
+# исход это состояние, — а растит множитель плата по своим часам: круг через мост
+# на каждый кадр дал бы рваный счётчик. Поэтому точка уезжает на плату сразу, а
+# «забрал» приходит с множителем, который плата показывала в миг нажатия.
+#
+# P(взрыв не раньше m) = CRASH_EDGE / m — у любой стратегии одно матожидание, 0.99:
+# ждать x2 и ждать x50 одинаково честно, разница только в нервах. Взрыв на старте
+# (x1.00) — ~2% раундов, это и есть цена удовольствия.
+CRASH_EDGE = 99               # в сотых: 0.99
+CRASH_CAP = 10000             # x100 — «долетел до Луны», выплата без нажатия
+CRASH_HIST = 8                # столько прошлых взрывов в полоске истории
+CRASH_BETS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+CRASH_ALLIN = -1              # ставка «ва-банк»: весь счёт на момент пуска
+# Состояние раунда на проводе. «Полёт» мост не отличает от «ждём взрыва»: времени
+# он не знает, взрыв ему сообщает плата (`bust`), а молчаливый раунд закрывает
+# следующий пуск.
+CR_NONE, CR_FLY, CR_CASHED, CR_REFUSED, CR_BUST = 0, 1, 2, 3, 4
+
+
+def crash_point(u: float) -> int:
+    """Точка взрыва в сотых из равномерного u ∈ [0, 1)."""
+    x = int(CRASH_EDGE / (1.0 - u) + 1e-9) if u < 1.0 else CRASH_CAP   # 99/0.01 это 9900, а не 9899
+    return max(100, min(CRASH_CAP, x))
+
+
 
 # --- расписание кофейни -------------------------------------------------------
 # Второй экран гаджета. Расписание и статус считает МОСТ: он один знает время и
@@ -1089,7 +1116,7 @@ class Bridge:
         # Что сейчас на экране. Страницу и экран держит МОСТ, а не прошивка: ESP
         # присылает только событие энкодера и получает готовый снэпшот.
         self.page = 0
-        self.screen = 0                       # 0 — аквариум, 1 — кофейня, 2 — рулетка
+        self.screen = 0                       # 0 — аквариум, 1 — кофейня, 2 — рулетка, …
         self.sleeping = False
         self._last_activity = self._clock()
         self._enc_n = 0                       # диагностика: сколько событий пришло с ручки
@@ -1152,6 +1179,20 @@ class Bridge:
         self.slot_reels = [0, 0, 0]           # что должно выпасть на текущем спине
         self.slot_win = 0                     # выигрыш этого спина, баллов
         self.slot_sp = 0                      # номер спина, тоже переживает рестарт
+        # Краш: раунд целиком — состояние, а не анимация. Ставка списана в момент
+        # пуска, и перезапуск моста посреди полёта не должен её ни вернуть, ни
+        # потерять выигрыш, поэтому раунд лежит в points.json вместе со счётом.
+        self.crash_sp = 0                     # номер раунда: по нему плата видит новый
+        self.crash_x = 0                      # точка взрыва раунда, в сотых
+        self.crash_bet = 0                    # ставка раунда, баллов
+        self.crash_pick = 10                  # что выбрано ручкой (CRASH_ALLIN = ва-банк)
+        self.crash_st = CR_NONE
+        self.crash_cm = 0                     # на каком множителе забрали, в сотых
+        self.crash_win = 0
+        self.crash_hist: list[int] = []       # прошлые взрывы, свежий первым
+        self.crash_rounds = 0
+        self.crash_best_m = 0                 # лучший забранный множитель
+        self.crash_best_win = 0
         self._points_loaded = False
 
     # -- обработка события от хука; возвращает True, если снэпшот стал грязным --
@@ -1616,7 +1657,7 @@ class Bridge:
         return chosen, hidden + stale
 
     # -- энкодер и сон ---------------------------------------------------------
-    SCREENS = 4       # 0 — аквариум, 1 — кофейня, 2 — рулетка, 3 — автомат
+    SCREENS = 5       # 0 — аквариум, 1 — кофейня, 2 — рулетка, 3 — автомат, 4 — краш
 
     def touch_activity(self, wake: bool = False) -> None:
         """Признак жизни: сдвигает точку отсчёта автосна, при wake — будит экран."""
@@ -1716,13 +1757,15 @@ class Bridge:
         self.esp["seen_ms"] = now_ms
         return True
 
-    def handle_encoder(self, event: str, held: bool = False) -> bool:
+    def handle_encoder(self, event: str, held: bool = False, arg: dict | None = None) -> bool:
         """Событие с ручки. Вращение — страницы, нажатие — экран, удержание — сон.
 
         Первый щелчок из сна ТОЛЬКО будит и ничего не листает: иначе спросонья
-        улетаешь не на ту страницу.
+        улетаешь не на ту страницу. `arg` — числа события краша (ставка, номер
+        раунда, множитель).
         """
         event = str(event or "").lower()
+        arg = arg or {}
         if event == "places":
             # Плата увидела чужую ревизию списка мест и просит его целиком. Это не
             # жест человека: ни будить экран, ни считаться активностью не должно —
@@ -1761,6 +1804,15 @@ class Bridge:
             # проверяем: событие приходит только с этого экрана.
             self.spin_slot()
             return True
+        elif event == "go":
+            # Пуск ракеты. Ответ пушится и при отказе: плата уже начала отсчёт
+            # и ждёт либо точку взрыва, либо «не хватает».
+            self.crash_go(arg.get("b", self.crash_pick))
+            return True
+        elif event == "cash":
+            return self.crash_cash(arg.get("sp"), arg.get("m"))
+        elif event == "bust":
+            return self.crash_bust(arg.get("sp"))
         elif event == "spin":
             # Прошивка накопила скорость барабана и просит результат. Экран не
             # проверяем: событие приходит только с экрана рулетки, а мост мог
@@ -1804,6 +1856,22 @@ class Bridge:
         self._work_sec = max(0.0, float(data.get("work_sec", 0) or 0))
         self.slot_sp = max(self.slot_sp, int(data.get("slot_sp", 0) or 0))
         self.roul_spin = max(self.roul_spin, int(data.get("roul_sp", 0) or 0))
+        crash = data.get("crash")
+        if isinstance(crash, dict):
+            try:
+                self.crash_sp = max(self.crash_sp, int(crash.get("sp", 0) or 0))
+                self.crash_x = int(crash.get("x", 0) or 0)
+                self.crash_bet = max(0, int(crash.get("bet", 0) or 0))
+                self.crash_pick = int(crash.get("pick", self.crash_pick) or 0) or self.crash_pick
+                self.crash_st = int(crash.get("st", CR_NONE) or 0)
+                self.crash_cm = int(crash.get("cm", 0) or 0)
+                self.crash_win = int(crash.get("win", 0) or 0)
+                self.crash_hist = [int(v) for v in (crash.get("h") or [])][:CRASH_HIST]
+                self.crash_rounds = max(0, int(crash.get("rounds", 0) or 0))
+                self.crash_best_m = max(0, int(crash.get("best_m", 0) or 0))
+                self.crash_best_win = max(0, int(crash.get("best_win", 0) or 0))
+            except (TypeError, ValueError):
+                pass                          # битый блок краша — играем с чистого листа
         lunch = data.get("lunch")
         if isinstance(lunch, dict):
             self.visit_log = [str(x) for x in (lunch.get("visited") or []) if str(x)]
@@ -1823,6 +1891,12 @@ class Bridge:
                 "work_sec": round(self._work_sec, 1),
                 # счётчики ответов — состояние протокола, а не статистика
                 "slot_sp": self.slot_sp, "roul_sp": self.roul_spin,
+                # раунд краша: ставка списана при пуске, выигрыш обязан дожить до ответа
+                "crash": {"sp": self.crash_sp, "x": self.crash_x, "bet": self.crash_bet,
+                          "pick": self.crash_pick, "st": self.crash_st,
+                          "cm": self.crash_cm, "win": self.crash_win,
+                          "h": list(self.crash_hist), "rounds": self.crash_rounds,
+                          "best_m": self.crash_best_m, "best_win": self.crash_best_win},
                 # журнал обедов: состояние, а не настройка, поэтому здесь, а не в
                 # lunch-places.json — тот файл правит человек, и мост в него не пишет
                 "lunch": {"visited": list(self.visit_log),
@@ -1933,6 +2007,113 @@ class Bridge:
                 "rec": self.pts_peak, "eta": eta,
                 # сколько осталось до следующего балла, в процентах — видно, что копится
                 "prg": int(min(99, self._work_sec / need * 100))}
+
+    # -- краш ------------------------------------------------------------------
+    def _crash_close(self, st: int) -> None:
+        """Закрывает открытый раунд: в историю уходит точка взрыва."""
+        self.crash_st = st
+        self.crash_hist = ([self.crash_x] + self.crash_hist)[:CRASH_HIST]
+
+    def crash_go(self, pick) -> bool:
+        """Пуск: списывает ставку и бросает точку взрыва.
+
+        Раунд, который плата так и не закрыла (взрыв потерялся, плата перезагрузилась),
+        считается проигранным: ставка за него уже списана, а выплата без нажатия
+        означала бы выигрыш за ничего.
+        """
+        if not self._points_loaded:
+            self.load_points()
+        self._touch_peak()
+        if self.crash_st == CR_FLY:
+            self._crash_close(CR_BUST)
+        try:
+            pick = int(pick)
+        except (TypeError, ValueError):
+            pick = self.crash_pick
+        if pick != CRASH_ALLIN:
+            pick = max(1, min(CRASH_BETS[-1], pick))
+        self.crash_pick = pick
+        bet = self.points if pick == CRASH_ALLIN else pick
+        self.crash_sp += 1
+        self.crash_cm = self.crash_win = 0
+        if bet < 1 or self.points < bet:
+            self.crash_st = CR_REFUSED        # отказ тоже новый номер: экран обязан ответить
+            self.log.info("краш: не хватает баллов (%d из %d)", self.points, bet)
+            self.save_points()
+            self.mark_dirty()
+            return False
+        self.points -= bet
+        self.crash_bet = bet
+        self.crash_x = crash_point(self._rng.random())
+        self.crash_st = CR_FLY
+        self.crash_rounds += 1
+        self.log.info("краш #%d: ставка %d%s, баллов %d", self.crash_sp, bet,
+                      " (ва-банк)" if pick == CRASH_ALLIN else "", self.points)
+        self.save_points()
+        self.mark_dirty()
+        return True
+
+    def crash_cash(self, sp, m) -> bool:
+        """«Забрал» на множителе m (сотые), который плата показывала при нажатии.
+
+        Принимается, только если ракета на нём ещё летела: m строго ниже точки взрыва.
+        Исключение — Луна: долетевший до потолка получает выплату и без нажатия,
+        плата сама присылает cash на CRASH_CAP.
+        """
+        try:
+            sp, m = int(sp), int(m)
+        except (TypeError, ValueError):
+            return False
+        if self.crash_st != CR_FLY or sp != self.crash_sp:
+            return False                      # чужой или уже закрытый раунд
+        m = max(100, m)
+        moon = self.crash_x >= CRASH_CAP and m >= CRASH_CAP
+        if m >= self.crash_x and not moon:
+            self.log.info("краш #%d: опоздал — x%.2f при взрыве на x%.2f",
+                          sp, m / 100, self.crash_x / 100)
+            self._crash_close(CR_BUST)
+            self.save_points()
+            self.mark_dirty()
+            return True
+        m = min(m, CRASH_CAP)
+        win = self.crash_bet * m // 100
+        self.points += win
+        self.crash_cm, self.crash_win = m, win
+        self.crash_best_m = max(self.crash_best_m, m)
+        self.crash_best_win = max(self.crash_best_win, win)
+        self._touch_peak()
+        self._crash_close(CR_CASHED)
+        self.log.info("краш #%d: забрал на x%.2f (+%d), взрыв был бы на x%.2f, баллов %d",
+                      sp, m / 100, win - self.crash_bet, self.crash_x / 100, self.points)
+        self.save_points()
+        self.mark_dirty()
+        return True
+
+    def crash_bust(self, sp) -> bool:
+        """Плата досмотрела взрыв: раунд проигран, ставка остаётся у дома."""
+        try:
+            sp = int(sp)
+        except (TypeError, ValueError):
+            return False
+        if self.crash_st != CR_FLY or sp != self.crash_sp:
+            return False
+        self.log.info("краш #%d: взрыв на x%.2f, -%d", sp, self.crash_x / 100, self.crash_bet)
+        self._crash_close(CR_BUST)
+        self.save_points()
+        self.mark_dirty()
+        return True
+
+    def build_crash(self) -> dict:
+        if not self._points_loaded:
+            self.load_points()
+        self._touch_peak()
+        # История строкой, а не массивом: каждый узел ArduinoJson стоит дороже текста.
+        # bet — что выбрано ручкой (может быть ва-банк), rb — чем рискует раунд в
+        # баллах: раунд, запущенный не с ручки, иначе показывал бы чужую ставку.
+        return {"pts": self.points, "bet": self.crash_pick, "rb": self.crash_bet,
+                "sp": self.crash_sp, "x": self.crash_x, "st": self.crash_st, "cm": self.crash_cm,
+                "win": self.crash_win, "rec": self.pts_peak,
+                "h": ",".join(str(v) for v in self.crash_hist)}
 
     # -- экран рулетки ---------------------------------------------------------
     def places_path(self) -> str:
@@ -2329,6 +2510,8 @@ class Bridge:
             return {"v": 1, "scr": 2, "roul": self.build_roulette()}
         if self.screen == 3:
             return {"v": 1, "scr": 3, "slot": self.build_slot()}
+        if self.screen == 4:
+            return {"v": 1, "scr": 4, "crash": self.build_crash()}
         visible, hidden = self.select_visible()
         # heartbeat строит снэпшот раз в 5с — логируем только смену состава скрытых,
         # иначе лог заплывёт одинаковыми строками
@@ -2562,6 +2745,15 @@ class Bridge:
                 "slot_spins": self.pts_spins,
                 "slot_best": self.pts_best,
                 "points_peak": self.pts_peak,
+                # краш: точка взрыва открытого раунда здесь видна — это отладка, не игра
+                "crash_round": self.crash_sp,
+                "crash_state": self.crash_st,
+                "crash_x": self.crash_x / 100,
+                "crash_bet": self.crash_bet,
+                "crash_rounds": self.crash_rounds,
+                "crash_best_x": self.crash_best_m / 100,
+                "crash_best_win": self.crash_best_win,
+                "crash_history": [v / 100 for v in self.crash_hist],
                 # Здоровье платы и самого моста — то, по чему судят о сутках работы.
                 "esp": dict(self.esp),
                 "rss_mb": self._rss_mb(),
@@ -2908,11 +3100,16 @@ class Handler(BaseHTTPRequestHandler):
             # ни воспроизвести, ни снять на скриншот, не стоя у платы с ручкой в руке.
             # places — запрос списка мест: тем же путём его можно передать в плату
             # руками, не дожидаясь, пока она заметит смену ревизии.
-            if ev not in ("cw", "ccw", "key", "dbl", "hold", "spin", "slot", "places"):
+            # go/cash/bust — раунд краша теми же словами, что шлёт плата: так его
+            # можно сыграть и снять на снимок без рук на ручке.
+            if ev not in ("cw", "ccw", "key", "dbl", "hold", "spin", "slot", "places",
+                          "go", "cash", "bust"):
                 self._respond(400, {"ok": False,
-                                    "error": "enc: cw|ccw|key|dbl|hold|spin|slot|places"})
+                                    "error": "enc: cw|ccw|key|dbl|hold|spin|slot|places"
+                                             "|go|cash|bust"})
                 return
-            self.bridge.handle_encoder(ev, held=bool(data.get("held") or data.get("k")))
+            arg = {k: data[k] for k in CRASH_ARGS if isinstance(data.get(k), int)}
+            self.bridge.handle_encoder(ev, held=bool(data.get("held") or data.get("k")), arg=arg)
             self._respond(200, {"ok": True, "screen": self.bridge.screen,
                                 "page": self.bridge.page,
                                 "pages": self.bridge.page_count(),
@@ -3173,6 +3370,9 @@ class ShotCollector:
         return write_png(path, self.width, self.height, self.pixels)
 
 
+CRASH_ARGS = ("b", "sp", "m")
+
+
 def parse_esp_line(line: str) -> dict | None:
     """Разбирает строку обратного канала. Возвращает событие энкодера или None.
 
@@ -3192,7 +3392,14 @@ def parse_esp_line(line: str) -> dict | None:
     enc = data.get("enc")
     if not isinstance(enc, str):
         return None
-    return {"enc": enc.lower(), "held": bool(data.get("k"))}
+    cmd = {"enc": enc.lower(), "held": bool(data.get("k"))}
+    # Числа краша (ставка, номер раунда, множитель) — только целые и только эти:
+    # остальное в строке события (скорость барабана и т.п.) мосту не нужно.
+    arg = {k: data[k] for k in CRASH_ARGS
+           if isinstance(data.get(k), int) and not isinstance(data.get(k), bool)}
+    if arg:
+        cmd["arg"] = arg
+    return cmd
 
 
 def esp_reader_loop(sink: SerialSink, stop: threading.Event, bridge: "Bridge | None" = None,
@@ -3216,7 +3423,8 @@ def esp_reader_loop(sink: SerialSink, stop: threading.Event, bridge: "Bridge | N
                     log.info("← ESP: %s", line)
                 continue
             log.info("← ESP: %s%s", cmd["enc"], " (с кнопкой)" if cmd["held"] else "")
-            if bridge is not None and bridge.handle_encoder(cmd["enc"], cmd["held"]):
+            if bridge is not None and bridge.handle_encoder(cmd["enc"], cmd["held"],
+                                                            cmd.get("arg")):
                 bridge.push("encoder")
 
 

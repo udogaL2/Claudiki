@@ -8,9 +8,11 @@
 // Снэпшот (полный, одна строка + '\n'):
 //   {"v":1,"scr":0,"p":2,"pn":3,"nl":40,"sessions":[{"id","name","state","sub","mb"}]}
 //   {"v":1,"scr":1,"cafe":{"st","nm","dow","till","om","cm","net","br":[[от,до,тип]]}}
+//   {"v":1,"scr":4,"crash":{"pts","bet","rb","sp","x","st","cm","win","rec","h"}}
 //   {"v":1,"slp":1}                                   — экран спит
 // Обратно (событие ручки):
-//   {"enc":"cw"} {"enc":"ccw"} {"enc":"key"} {"enc":"hold"} {"enc":"cw","k":1}
+//   {"enc":"cw"} {"enc":"ccw"} {"enc":"key"} {"enc":"dbl"} {"enc":"cw","k":1}
+//   краш: {"enc":"go","b":N} {"enc":"cash","sp":N,"m":M} {"enc":"bust","sp":N}
 //
 // Зависимости: Adafruit GFX, Adafruit ILI9341, ArduinoJson (v6).
 
@@ -27,7 +29,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   95 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   96 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -451,6 +453,13 @@ void cafeTime(int minutes, char *out);
 void composeRoulette(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
 void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
 void slotKick();
+void composeCrash(OffsetCanvas &g, int top, int bot, int left, int right, float tt);
+void crashInit();
+void crashPhysics(unsigned long now);
+void crashRotate(int dir);
+void crashPressDown();
+void crashPress();
+void crashApply(JsonObject cr);
 void slotPhysics(unsigned long now);
 bool slotHot(int i);
 void roulKick();
@@ -672,11 +681,17 @@ void pollEncoder() {
   if (down != swDown && now - swChanged > SW_DEBOUNCE) {
     swChanged = now;
     swDown = down;
-    if (down) { swSince = now; swHandled = false; }
+    if (down) {
+      swSince = now; swHandled = false;
+      if (curScreen == 4) crashPressDown();
+    }
     else if (!swHandled) {
       // Пока барабан крутится, кнопка не работает вовсе: и режим, и сброс меняют
       // состав круга, а барабан уже летит к результату прежнего.
-      if (curScreen == 2 && roulBusy()) clickAt = 0;
+      // Краш не ждёт окна двойного клика: «забрать» на 320мс позже — это уже
+      // другой множитель, а двойного жеста на этом экране нет.
+      if (curScreen == 4) { clickAt = 0; crashPress(); }
+      else if (curScreen == 2 && roulBusy()) clickAt = 0;
       else if (clickAt && now - clickAt < SW_DOUBLE) { clickAt = 0; sendEnc("dbl", false); }
       else                       clickAt = now;      // ждём: вдруг это первый из двух
     }
@@ -734,6 +749,7 @@ void pollEncoder() {
       // Мосту уйдёт одно событие "spin", когда порог будет перевален.
       if (curScreen == 2 && !swDown) roulKick();
       else if (curScreen == 3 && !swDown) slotKick();
+      else if (curScreen == 4 && !swDown) crashRotate(steps > 0 ? 1 : -1);   // ставка — локально
       else sendEnc(steps > 0 ? "cw" : "ccw", swDown);
     }
     if (swDown) swHandled = true;   // это было «крутить с зажатой» — не слать key
@@ -2631,6 +2647,663 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
   }
 }
 
+// =============================================================================
+// Экран 5: ОКТОКРАШ — осьминог-ракета на баллы
+// =============================================================================
+// Краш-игра: множитель растёт, пока ракета летит, и в случайный миг она взрывается.
+// Нажал раньше — забрал ставку на множитель, не успел — слив. Точку взрыва бросает
+// МОСТ в момент пуска (исход — состояние, как у автомата), а множитель растит плата
+// по своим часам: m(t) = e^(K·t). Круг через мост на каждый кадр дал бы рваный счётчик.
+//
+// Поле перерисовывается каждый кадр целиком: оси графика растягиваются за ракетой, и
+// любая «статика» на поле отклеилась бы при рескейле. Всё, что движется, считает
+// физика ровно раз за кадр — таблицу кривой, героя, звёзды; рисование только читает.
+#define CR_K         0.14f   // x2 за 5с, x10 за 16с, x100 за 33с
+#define CR_CAP       10000   // = CRASH_CAP моста: Луна, выплата без нажатия
+#define CR_ALLIN     (-1)    // ставка «ва-банк»: весь счёт на момент пуска
+#define CR_FY0       34      // поле полёта
+#define CR_FY1       199
+#define CR_FH        (CR_FY1 - CR_FY0 + 1)
+#define CR_STATUS_Y  204     // строка подсказки — перерисовывается целиком
+#define CR_BOT_Y     216     // низ: ставка / «на кону»
+#define CR_GX0       30      // оси графика
+#define CR_GX1       300
+#define CR_GY0       186
+#define CR_GY1       48
+#define CR_COUNT_MS  1200    // отсчёт 3-2-1
+#define CR_WAIT_MS   3000    // сверх отсчёта ждём ответ моста, потом отмена
+#define CR_FAST      4       // после «забрал» время летит вчетверо: досмотреть взрыв
+#define CR_FRAME_MS  50
+#define CR_NSTARS    46
+#define CR_NDEBRIS   14
+#define CR_HIST      8
+#define CR_CHUTE_R   18
+#define CR_SPACE_TOP 0x0022
+#define CR_SPACE_LOW 0x1866
+#define CR_PLANET    0x2AEF
+#define CR_PLANET_DK 0x1168
+#define CR_ATMO      0x5E5C
+#define CR_GOLD      0xFE45
+#define CR_HOT       0xFAD9
+#define CR_HELMET    0x96FF
+#define CR_FLAME0    0xFA22
+#define CR_FLAME1    0xFD03
+#define CR_FLAME2    0xFF92
+#define CR_MOON      0xDEB7
+#define CR_MOON_DK   0x946F
+#define CR_HEAD_BG   0x1845
+#define CR_BOT_BG    0x0823
+#define CR_PLASMA0   0x3ADF   // с x10 пламя уходит в синюю плазму
+#define CR_PLASMA1   0x7E5F
+#define CR_PLASMA2   0xEFDF
+#define CR_COIN      0xFEA7
+#define CR_COIN_DK   0xBC02
+
+static const int CR_BETS[] = {1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000};
+#define CR_NBETS ((int)(sizeof(CR_BETS) / sizeof(CR_BETS[0])))
+static const uint16_t CR_FLAME[3] = {CR_FLAME0, CR_FLAME1, CR_FLAME2};
+static const uint16_t CR_PLASMA[3] = {CR_PLASMA0, CR_PLASMA1, CR_PLASMA2};
+
+enum CrashState { CRS_IDLE, CRS_COUNT, CRS_FLY, CRS_CASHED, CRS_BUST, CRS_REFUSED };
+
+CrashState crSt = CRS_IDLE;
+int  crPts = 0, crRec = 0, crPick = 10;
+// Что ПОКАЗАНО в шапке — заморожено на полёт, как у автомата: мост закрывает раунд
+// по нажатию и сразу присылает счёт и историю, а в истории лежит точка взрыва.
+// Покажи её раньше времени — и «а могло быть» превращается в спойлер.
+int  crPtsView = 0, crRecView = 0;
+int  crHist[CR_HIST], crHistN = 0;          // показанная история
+int  crHistIn[CR_HIST], crHistInN = 0;      // присланная — проявляется после раунда
+bool crPickSynced = false, crSynced = false;
+int  crSp = 0, crX = 0, crBet = 0, crCashM = 0, crWin = 0;
+int  crPressM = 0;                          // множитель в миг, когда кнопку продавили
+bool crAnswered = false;
+unsigned long crT0 = 0, crLast = 0, crBustAt = 0, crRefusedAt = 0;
+// «Забрал»: из осьминога брызжет фонтан монет, и над ним всплывает выигрыш
+unsigned long crCashAt = 0;
+int  crCoinX = 0, crCoinY = 0;
+float crT = 0;            // @phase время полёта, с
+int   crM = 100;          // @phase множитель, сотые
+float crScroll = 0;       // @phase скролл звёзд
+int   crHeroX = CR_GX0 + 12;   // @phase герой: позицию ведёт физика
+int   crHeroY = CR_GY0 - 30;   // @phase
+int   crLift = 0;         // @phase на сколько ушла вниз планета
+int   crCurveEnd = CR_GX0;     // @phase последний столбец кривой
+float crTMax = 6;         // оси графика текущего кадра
+int   crMMax = 180;
+int   crBustX = 0, crBustY = 0;
+int   crFlagX = 0, crFlagY = 0;
+int   crGridM[8], crGridY[8], crGridN = 0;
+uint8_t crCurveY[W];
+// Ярус цвета кривой не таблицей на столбец: множитель вдоль кривой только растёт,
+// поэтому хватает трёх столбцов, где он переваливает x2, x10 и x50. Каждый байт
+// здесь — байт кучи, из которой живут список мест обеда и разбор снэпшота.
+int crTierX[3] = {W, W, W};
+bool crDirty = true, crHeadDirty = false;
+unsigned long crBgPhys = 0;
+// Таблицы считаются один раз: звёзды (позиция и глубина из ЛКГ — та же
+// последовательность, что в эмуляторе), купол парашюта, разлёт обломков (×64).
+// Дуга горизонта и градиент неба — на лету целыми: таблицы под них стоили 650 байт.
+uint16_t crStarX[CR_NSTARS];
+uint8_t  crStarY[CR_NSTARS], crStarD[CR_NSTARS];
+uint8_t  crChuteH[2 * CR_CHUTE_R + 1];
+int8_t   crDebDX[CR_NDEBRIS], crDebDY[CR_NDEBRIS];
+uint8_t  crDebV[CR_NDEBRIS];
+uint16_t crTierCol[4], crTierFill[5];
+
+void crashInit() {
+  uint32_t r = 12345;
+  for (int i = 0; i < CR_NSTARS; i++) {
+    r = (r * 1103515245u + 12345u) & 0x7fffffffu; crStarX[i] = (r >> 16) % W;
+    r = (r * 1103515245u + 12345u) & 0x7fffffffu; crStarY[i] = (r >> 16) % CR_FH;
+    r = (r * 1103515245u + 12345u) & 0x7fffffffu; crStarD[i] = 1 + (r >> 16) % 3;
+  }
+  for (int dx = -CR_CHUTE_R; dx <= CR_CHUTE_R; dx++)
+    crChuteH[dx + CR_CHUTE_R] = (uint8_t)iround(sqrtf((float)(CR_CHUTE_R * CR_CHUTE_R - dx * dx)) * 0.7f);
+  for (int i = 0; i < CR_NDEBRIS; i++) {
+    float a = i * 0.449f + 0.3f;
+    crDebDX[i] = (int8_t)iround(cosf(a) * 64); crDebDY[i] = (int8_t)iround(sinf(a) * 64);
+    crDebV[i] = 60 + (i * 37) % 50;
+  }
+  crTierCol[0] = CREAMC; crTierCol[1] = C_WORKING; crTierCol[2] = CR_GOLD; crTierCol[3] = CR_HOT;
+  for (int i = 0; i < 4; i++) crTierFill[i] = lerp565(crTierCol[i], BG, 0.78f);
+  crTierFill[4] = lerp565(C_ERROR, BG, 0.78f);
+}
+
+// Насколько край планеты опускается от центра экрана: (d²·14), d = (x-160)/160
+static inline int crArc(int x) { int d = x - 160; return (d * d * 14 + 12800) / 25600; }
+static inline int crTierAt(int x) { return x >= crTierX[2] ? 3 : x >= crTierX[1] ? 2 : x >= crTierX[0] ? 1 : 0; }
+static inline int crTier(int m) { return m >= 5000 ? 3 : m >= 1000 ? 2 : m >= 200 ? 1 : 0; }
+static inline bool crFlying() { return crSt == CRS_FLY || crSt == CRS_CASHED; }
+static inline bool crInRound() { return crSt == CRS_COUNT || crFlying(); }
+
+int crMult(float t) {
+  float m = 100.0f * expf(CR_K * t) + 1e-3f;
+  return m >= CR_CAP ? CR_CAP : (int)m;
+}
+float crTimeOf(int m) { return logf(m / 100.0f) / CR_K; }
+// Линейная ось множителя: на логарифмической экспонента была бы прямой, и кривая не
+// «загибалась бы в небо». А загиб тут и есть главный аттракцион.
+int crYOf(int m) { return CR_GY0 - iround((float)(m - 100) / (crMMax - 100) * (CR_GY0 - CR_GY1)); }
+int crXOf(float t) { return CR_GX0 + iround(t / crTMax * (CR_GX1 - CR_GX0)); }
+
+// Множитель — целые сотые с УСЕЧЕНИЕМ: показанное не может быть больше настоящего.
+void crFmt(char *out, size_t n, int m) {
+  if (m >= 10000)     snprintf(out, n, "X%d", m / 100);
+  else if (m >= 1000) snprintf(out, n, "X%d.%d", m / 100, (m / 10) % 10);
+  else                snprintf(out, n, "X%d.%02d", m / 100, m % 100);
+}
+int crBetVal() { return crPick == CR_ALLIN ? crPts : crPick; }
+
+void crSendCash(int m) {
+  Serial.print(F("{\"enc\":\"cash\",\"sp\":")); Serial.print(crSp);
+  Serial.print(F(",\"m\":"));                    Serial.print(m);
+  Serial.println(F("}"));
+}
+
+// Выбор ставки — локальный: щелчок отзывается сразу, а мосту уходит только пуск.
+// Лестница отфильтрована по счёту: ставку, которую не оплатить, не предлагаем.
+void crashRotate(int dir) {
+  if (crInRound()) return;                  // в полёте ставку не меняют
+  int list[CR_NBETS + 1], n = 0;
+  for (int i = 0; i < CR_NBETS; i++) if (CR_BETS[i] <= crPts) list[n++] = CR_BETS[i];
+  list[n++] = CR_ALLIN;
+  int i = -1;
+  for (int k = 0; k < n; k++) if (list[k] == crPick) { i = k; break; }
+  if (i < 0) { i = 0; while (i < n - 2 && list[i + 1] <= crPick) i++; }
+  i += dir;
+  if (i < 0) i = 0;
+  if (i > n - 1) i = n - 1;
+  crPick = list[i];
+}
+
+// Нажатие ловит множитель на ПРОДАВЛИВАНИИ, а решение уходит на отпускании: вращение
+// с зажатой кнопкой листает экраны, и до отпускания это ещё не клик. Без фиксации
+// «забрал» опаздывал бы на длину нажатия — на x20 это уже заметные баллы.
+void crashPressDown() { crPressM = crFlying() ? crM : 0; }
+
+void crashPress() {
+  unsigned long now = millis();
+  if (crSt == CRS_FLY) {
+    int m = (crPressM && crPressM < crM) ? crPressM : crM;
+    crPressM = 0;
+    crCashM = m;
+    crWin = (int)((long long)crBet * m / 100);
+    crSendCash(m);
+    crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
+    crPtsView += crWin;
+    if (crPtsView > crRecView) crRecView = crPtsView;
+    crSt = CRS_CASHED;
+    crHeadDirty = true;
+    return;
+  }
+  if (crSt == CRS_CASHED) { crT = crTimeOf(crX); return; }   // досмотреть взрыв сразу
+  if (crSt == CRS_COUNT) return;
+  int bet = crBetVal();
+  if (bet < 1 || crPts < bet) { crSt = CRS_REFUSED; crRefusedAt = now; return; }
+  Serial.print(F("{\"enc\":\"go\",\"b\":")); Serial.print(crPick); Serial.println(F("}"));
+  crSt = CRS_COUNT; crT0 = now; crAnswered = false;
+  crT = 0; crM = 100; crCashM = crWin = 0;
+  crBet = bet;
+  crPtsView = crPts - bet;                  // ставка и правда уплачена
+  crHeadDirty = true;
+}
+
+void crHistApply() {
+  bool same = crHistN == crHistInN;
+  for (int i = 0; same && i < crHistN; i++) same = crHist[i] == crHistIn[i];
+  if (same) return;
+  memcpy(crHist, crHistIn, sizeof(crHist));
+  crHistN = crHistInN;
+  crHeadDirty = true;
+}
+
+void crashApply(JsonObject cr) {
+  int pts = cr["pts"] | 0, rec = cr["rec"] | 0, bet = cr["bet"] | 10, rb = cr["rb"] | 0;
+  int sp = cr["sp"] | 0, x = cr["x"] | 0, st = cr["st"] | 0;
+  int cm = cr["cm"] | 0, win = cr["win"] | 0;
+  const char *h = cr["h"] | "";
+  crPts = pts; crRec = rec;
+  // Ставку с моста берём только при старте: дальше её крутит ручка, и heartbeat
+  // раз в 5с иначе откатывал бы выбор, пока до него идёт щелчок.
+  if (!crPickSynced) { crPickSynced = true; crPick = bet; }
+  crHistInN = 0;
+  for (const char *p = h; *p && crHistInN < CR_HIST;) {
+    crHistIn[crHistInN++] = atoi(p);
+    while (*p && *p != ',') p++;
+    if (*p == ',') p++;
+  }
+  if (!crSynced) {                          // первый снэпшот после загрузки: только номер
+    crSynced = true;
+    crSp = sp;
+  } else if (sp != crSp) {
+    crSp = sp;
+    if (st == 3) {
+      if (crSt == CRS_COUNT) { crSt = CRS_REFUSED; crRefusedAt = millis(); }
+    } else if (st == 1) {
+      crX = x; crBet = rb;
+      if (crSt == CRS_COUNT) crAnswered = true;
+      else if (!crInRound()) {
+        // Пуск не с ручки (POST /enc go): раунд всё равно обязан сыграться на экране,
+        // иначе проверить краш можно только рукой на энкодере.
+        crSt = CRS_COUNT; crT0 = millis(); crAnswered = true;
+        crT = 0; crM = 100; crCashM = crWin = 0;
+        crPtsView = pts; crHeadDirty = true;
+      }
+    }
+  } else if (st == 2 && crSt == CRS_FLY && cm > 0) {
+    crCashM = cm; crWin = win; crSt = CRS_CASHED;   // забрали не с ручки
+    crCashAt = millis(); crCoinX = crHeroX; crCoinY = crHeroY;
+  }
+  if (!crInRound()) {
+    if (pts != crPtsView || rec != crRecView) crHeadDirty = true;
+    crPtsView = pts; crRecView = rec;
+    crHistApply();
+  }
+}
+
+void crashPhysics(unsigned long now) {
+  float dt = crLast ? (now - crLast) / 1000.0f : 0.016f;
+  if (dt > 0.1f) dt = 0.1f;
+  crLast = now;
+  if (crSt == CRS_REFUSED && now - crRefusedAt > 1600) crSt = CRS_IDLE;
+  if (crSt == CRS_COUNT) {
+    unsigned long age = now - crT0;
+    if (age >= CR_COUNT_MS && crAnswered) { crSt = CRS_FLY; crT = 0; }
+    else if (age >= CR_COUNT_MS + CR_WAIT_MS) {       // мост молчит — отмена, ставку вернуть в показ
+      crSt = CRS_IDLE; crPtsView = crPts; crHeadDirty = true;
+    }
+  }
+  if (crFlying()) {
+    crT += dt * (crSt == CRS_CASHED ? CR_FAST : 1);
+    crM = crMult(crT);
+    if (crM >= crX) {
+      crM = crX; crT = crTimeOf(crX);
+      if (crX >= CR_CAP && crSt == CRS_FLY) {          // Луна: выплата без нажатия
+        crCashM = CR_CAP;
+        crWin = (int)((long long)crBet * CR_CAP / 100);
+        crSendCash(CR_CAP);
+        crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
+        crPtsView += crWin;
+        if (crPtsView > crRecView) crRecView = crPtsView;
+      } else if (crSt == CRS_FLY) {
+        Serial.print(F("{\"enc\":\"bust\",\"sp\":")); Serial.print(crSp); Serial.println(F("}"));
+      }
+      // История: точка взрыва проявляется сразу, мост пришлёт ту же самую
+      memmove(crHist + 1, crHist, sizeof(int) * (CR_HIST - 1));
+      crHist[0] = crX;
+      if (crHistN < CR_HIST) crHistN++;
+      crSt = CRS_BUST; crBustAt = now; crBustX = crHeroX; crBustY = crHeroY;
+      crHeadDirty = true;
+    }
+  }
+  bool flying = crFlying();
+  float lnm = logf(crM / 100.0f);
+  // скорость звёзд растёт с высотой: на x10 они уже тянутся полосами
+  float speed = flying ? (10 + 34 * min(4.6f, lnm)) * (crSt == CRS_CASHED ? 2 : 1)
+                       : (crSt == CRS_COUNT ? 4 : 2);
+  crScroll += dt * speed;
+  if (crScroll >= CR_FH) crScroll -= CR_FH * (int)(crScroll / CR_FH);   // все слои целые
+  crLift = (flying || crSt == CRS_BUST) ? min(80, iround(60 * lnm / 0.405465f)) : 0;
+
+  // Оси растягиваются так, чтобы вершина кривой стояла у правого верха: ракета
+  // упирается в угол, а мир едет навстречу.
+  crTMax = max(6.0f, crT * 1.15f);
+  crMMax = max(180, (int)(crM * 1.15f));
+  crCurveEnd = CR_GX0;
+  crGridN = 0;
+  if (flying || crSt == CRS_BUST) {
+    crCurveEnd = min(W - 1, crXOf(crT));
+    // Кривая — табличкой: экспонента на столбец на КАЖДУЮ полосу стоила бы тысячи
+    // expf за кадр. Одна expf на шаг, дальше умножение.
+    float r = expf(CR_K * crTMax / (CR_GX1 - CR_GX0)), mf = 1.0f;
+    crCurveY[CR_GX0] = CR_GY0;
+    crTierX[0] = crTierX[1] = crTierX[2] = W;
+    for (int x = CR_GX0 + 1; x <= crCurveEnd; x++) {
+      mf *= r;
+      int m = (int)(100 * mf + 1e-3f);
+      if (m > CR_CAP) m = CR_CAP;
+      crCurveY[x] = (uint8_t)crYOf(m);
+      for (int k = crTier(m) - 1; k >= 0 && crTierX[k] == W; k--) crTierX[k] = x;
+    }
+    static const int marks[8] = {150, 200, 300, 500, 1000, 2000, 5000, 10000};
+    int last = 999;
+    for (int i = 0; i < 8; i++) {
+      int y = crYOf(marks[i]);
+      if (y - 9 < CR_FY0 + 2) break;          // подпись не лезет под шапку
+      if (last - y < 14) continue;            // подписи не слипаются
+      last = y;
+      crGridM[crGridN] = marks[i]; crGridY[crGridN] = y; crGridN++;
+    }
+    if (crCashM) { crFlagX = crXOf(crTimeOf(crCashM)); crFlagY = crYOf(crCashM); }
+  }
+  if (flying) {
+    int tx = crCurveEnd, ty = crCurveY[crCurveEnd];
+    crHeroX = max(40, min(W - 34, tx));
+    crHeroY = max(CR_FY0 + 26, min(CR_GY0 - 30, ty - 30));
+    // С x5 ракету потряхивает, с x20 — вдвое сильнее: перегрузка видна телом
+    if (crSt == CRS_FLY && crM >= 500) {
+      int a = crM >= 2000 ? 2 : 1;
+      crHeroX += ((now / 40) & 1) ? a : -a;
+      crHeroY += ((now / 70) & 1) ? a : 0;
+    }
+  } else if (crSt != CRS_BUST) {
+    crHeroX = CR_GX0 + 12;
+    crHeroY = CR_GY0 - 30 - (crSt == CRS_COUNT ? (int)((now / 60) & 1) : 0);
+  }
+}
+
+void crSpace(OffsetCanvas &g, int ct, int cb) {
+  // В миг взрыва небо на пару кадров озаряется — удар читается всем полем
+  bool flash = crSt == CRS_BUST && crCashM < CR_CAP && millis() - crBustAt < 90;
+  for (int y = ct; y <= cb; y++) {
+    uint16_t c = lerp565q(CR_SPACE_TOP, CR_SPACE_LOW, (y - CR_FY0) * 256 / CR_FH);
+    g.drawFastHLine(0, y, W, flash ? lerp565q(c, CR_FLAME2, 150) : c);
+  }
+  float streak = crFlying() ? min(10.0f, logf(crM / 100.0f) * 3) : 0;
+  static const uint16_t starCol[4] = {0, 0x6C1F, 0x9CD3, 0xFFFF};   // по глубине 1..3
+  for (int i = 0; i < CR_NSTARS; i++) {
+    int d = crStarD[i];
+    int y = CR_FY0 + (crStarY[i] + (int)(crScroll * d)) % CR_FH;
+    int len = (int)(streak * d / 3);
+    if (y < ct || y - len > cb) continue;
+    uint16_t c = starCol[d];
+    if (len > 1) g.drawFastVLine(crStarX[i], y - len, len, lerp565(c, BG, 0.5f));
+    g.drawPixel(crStarX[i], y, c);
+  }
+  // После x30 вдали проступает Луна и растёт — тизер джекпота x100
+  if (crFlying() && crM >= 3000) {
+    int r = 4 + (crM - 3000) * 14 / 7000, mx = 214, my = CR_FY0 + 26;
+    g.fillCircle(mx, my, r, lerp565(CR_MOON, BG, 0.25f));
+    if (r > 8) g.fillCircle(mx - r / 3, my - r / 4, r / 4, lerp565(CR_MOON_DK, BG, 0.25f));
+  }
+  // горизонт планеты: на взлёте уходит вниз и пропадает
+  int topY = CR_GY0 - 2 + crLift;
+  if (topY > CR_FY1 + 14 || topY - 3 > cb) return;
+  const uint16_t a1 = lerp565(CR_ATMO, BG, 0.7f), a2 = lerp565(CR_ATMO, BG, 0.35f);
+  const uint16_t pMid = lerp565(CR_PLANET, CR_PLANET_DK, 0.5f);
+  for (int x = 0; x < W; x++) {
+    int y = topY + crArc(x);
+    if (y > CR_FY1) continue;
+    g.drawPixel(x, y - 2, a1);
+    g.drawPixel(x, y - 1, a2);
+    g.drawFastVLine(x, y, CR_FY1 - y + 1, (((x >> 4) + (y >> 3)) & 1) ? CR_PLANET : pMid);
+  }
+  int py = topY + crArc(CR_GX0 + 12);                 // стартовый стол
+  g.fillRect(CR_GX0 - 4, py - 3, 33, 3, lerp565(C_IDLE, BG, 0.2f));
+  g.drawFastHLine(CR_GX0 - 4, py - 3, 33, C_IDLE);
+}
+
+void crGrid(OffsetCanvas &g, int ct, int cb) {
+  const uint16_t lc = lerp565(CREAMC, BG, 0.8f), tc = lerp565(CREAMC, BG, 0.55f);
+  for (int i = 0; i < crGridN; i++) {
+    int y = crGridY[i], m = crGridM[i];
+    if (y < ct || y - 9 > cb) continue;
+    for (int x = CR_GX0; x < W - 4; x += 6) g.drawFastHLine(x, y, 2, lc);
+    char lab[12];
+    if (m % 100) snprintf(lab, sizeof(lab), "X%d.%d", m / 100, (m % 100) / 10);
+    else         snprintf(lab, sizeof(lab), "X%d", m / 100);
+    drawTextRu(g, 2, y - 9, lab, tc, 1);
+  }
+}
+
+void crCurve(OffsetCanvas &g, int ct, int cb) {
+  bool lost = crSt == CRS_BUST && !crCashM;           // слив — вся траектория красная
+  int px = CR_GX0, py = CR_GY0;
+  for (int x = CR_GX0 + 1; x <= crCurveEnd; x++) {
+    int y = crCurveY[x], tier = crTierAt(x);
+    if (min(y, py) - 1 <= cb && CR_GY0 >= ct) {
+      uint16_t c = lost ? C_ERROR : crTierCol[tier];
+      if ((x & 3) == 0) g.drawFastVLine(x, y + 2, CR_GY0 - y - 1, crTierFill[lost ? 4 : tier]);
+      g.drawLine(px, py, x, y, c);
+      g.drawLine(px, py - 1, x, y - 1, c);
+    }
+    px = x; py = y;
+  }
+  if (crCashM) {                                      // флажок «забрал» на траектории
+    int fx = crFlagX, fy = crFlagY;
+    g.drawFastVLine(fx, fy - 16, 16, CREAMC);
+    g.fillTriangle(fx + 1, fy - 16, fx + 1, fy - 8, fx + 10, fy - 12, C_WORKING);
+    g.fillCircle(fx, fy, 2, C_WORKING);
+  }
+}
+
+void crBig(OffsetCanvas &g, unsigned long now) {
+  const int cx = 104, cy = 76;   // левый верх: ракета туда не залетает никогда
+  if (crSt == CRS_COUNT) {
+    long left = (long)CR_COUNT_MS - (long)(now - crT0);
+    char s[4];
+    if (left > 0) snprintf(s, sizeof(s), "%ld", (left + 399) / 400);
+    else          strlcpy(s, "...", sizeof(s));
+    int sc = left > 0 ? 7 - min(2L, (left % 400) / 120) : 4;
+    int x = cx - (textWidthRu(s, sc) >> 1);
+    drawTextRu(g, x + 3, cy - 4 * sc + 3, s, BG, sc);
+    drawTextRu(g, x, cy - 4 * sc, s, CR_GOLD, sc);
+    return;
+  }
+  if (!crFlying() && crSt != CRS_BUST) return;
+  bool bust = crSt == CRS_BUST, moon = bust && crCashM >= CR_CAP;
+  char s[12];
+  crFmt(s, sizeof(s), crM);
+  uint16_t tierC = crTierCol[crTier(crM)];
+  uint16_t col = moon ? CR_GOLD : bust ? C_ERROR
+                 : crSt == CRS_CASHED ? lerp565(tierC, BG, 0.45f) : tierC;
+  int x = cx - (textWidthRu(s, 4) >> 1), y = cy - 16;
+  drawTextRu(g, x + 2, y + 2, s, BG, 4);
+  drawTextRu(g, x, y, s, col, 4);
+  const char *tag = "";
+  if (bust)                    tag = moon ? "ЛУНА!" : "КРАШ";
+  else if (crSt == CRS_CASHED) tag = "А МОГЛО БЫТЬ";
+  else if (crM >= 1000)        tag = ((now / 180) & 1) ? "ЗАНОС" : "";
+  else if (crM >= 500)         tag = "ЖАРА";
+  if (*tag)
+    drawTextRu(g, cx - (textWidthRu(tag, 2) >> 1), y - 20, tag,
+               bust ? (moon ? CR_GOLD : C_ERROR) : CREAMC, 2);
+}
+
+// Шлем-пузырь вокруг тела и струя из-под щупалец.
+void crHero(OffsetCanvas &g, int cx, int cy, float tt, unsigned long now) {
+  bool flying = crFlying();
+  float thrust = flying ? min(1.0f, 0.4f + logf(crM / 100.0f) / 3) : (crSt == CRS_COUNT ? 0.25f : 0);
+  if (thrust > 0) {
+    int fl = (now / 45) & 3;
+    int len = 10 + iround(thrust * 18) + fl * 2, fy = cy + 30;
+    const uint16_t *f = (flying && crM >= 1000) ? CR_PLASMA : CR_FLAME;
+    if (flying && crM >= 1000) len += 6;
+    g.fillTriangle(cx - 8, fy, cx + 8, fy, cx, fy + len, f[0]);
+    g.fillTriangle(cx - 5, fy, cx + 5, fy, cx, fy + len * 2 / 3, f[1]);
+    g.fillTriangle(cx - 2, fy, cx + 2, fy, cx, fy + len / 3, f[2]);
+  }
+  tentacles(g, cx, cy, 1, tt, 2 + thrust * 8, 0.6f + thrust * 0.8f);
+  sphereBody(g, cx, cy);
+  drawEyes(g, cx, cy - 5, flying && crM >= 1000 ? WAITING : WORKING, tt, flying && crM >= 300, 3.4f);
+  g.drawCircle(cx, cy, 22, CR_HELMET);
+  g.drawCircle(cx, cy, 23, lerp565(CR_HELMET, BG, 0.6f));
+  g.drawLine(cx - 15, cy - 12, cx - 11, cy - 16, 0xFFFF);
+  g.drawLine(cx - 16, cy - 9, cx - 15, cy - 11, lerp565(0xFFFF, BG, 0.3f));
+}
+
+// Луна — не взрыв, а главный выигрыш: осьминог садится на неё.
+void crMoon(OffsetCanvas &g, unsigned long now, float tt) {
+  float age = (now - crBustAt) / 1000.0f;
+  int mx = W - 60, my = CR_FY0 + 84 + max(0, iround((1 - age) * 70));
+  g.fillCircle(mx, my, 34, CR_MOON);
+  g.fillCircle(mx - 12, my - 8, 7, CR_MOON_DK);
+  g.fillCircle(mx + 13, my + 6, 5, CR_MOON_DK);
+  g.fillCircle(mx - 2, my + 18, 4, CR_MOON_DK);
+  g.drawCircle(mx, my, 36, lerp565(CR_GOLD, BG, 0.5f + 0.3f * fastSin(age * 5)));
+  float k = min(1.0f, age / 0.8f);
+  int hx = crBustX + iround((mx - crBustX) * k), hy = crBustY + iround((my - 46 - crBustY) * k);
+  tentacles(g, hx, hy, 1, tt, 3, 2.5f);
+  sphereBody(g, hx, hy);
+  g.drawLine(hx - 9, hy - 5, hx - 6, hy - 8, EYE_DARK); g.drawLine(hx - 6, hy - 8, hx - 3, hy - 5, EYE_DARK);
+  g.drawLine(hx + 3, hy - 5, hx + 6, hy - 8, EYE_DARK); g.drawLine(hx + 6, hy - 8, hx + 9, hy - 5, EYE_DARK);
+  g.drawCircle(hx, hy, 22, CR_HELMET);
+}
+
+// После взрыва: кольца и обломки, потом осьминог с глазами-крестиками на парашюте.
+// Обломки летят по таблице — взрыв всегда одной формы, и снимок совпадает с глазом.
+void crExplosion(OffsetCanvas &g, unsigned long now, float tt) {
+  if (crCashM >= CR_CAP) { crMoon(g, now, tt); return; }
+  float age = (now - crBustAt) / 1000.0f;
+  if (age < 0.7f) {
+    int r = 6 + iround(age * 110);
+    g.drawCircle(crBustX, crBustY, r, age < 0.2f ? 0xFFFF : CR_FLAME1);
+    g.drawCircle(crBustX, crBustY, max(1, r - 4), CR_FLAME0);
+    if (age < 0.25f) g.fillCircle(crBustX, crBustY, 20 - iround(age * 40), CR_FLAME2);
+  }
+  if (age < 1.6f) {
+    for (int i = 0; i < CR_NDEBRIS; i++) {
+      float v = crDebV[i];
+      int x = crBustX + iround(crDebDX[i] * v * age / 64);
+      int y = crBustY + iround(crDebDY[i] * v * age / 64 + 60 * age * age);
+      g.fillRect(x, y, 3, 3, (i & 1) ? CR_FLAME[i % 3] : lerp565(C_IDLE, BG, age / 2));
+    }
+  }
+  if (age > 0.5f) {
+    float pa = age - 0.5f;
+    int px = crBustX + iround(fastSin(pa * 1.8f) * 6);
+    int py = min(CR_FY1 - 26, crBustY + iround(pa * 14));
+    const int R = CR_CHUTE_R, top = py - 44;
+    for (int dx = -R; dx <= R; dx++) {
+      int h = crChuteH[dx + R];
+      g.drawFastVLine(px + dx, top - h, h + 1, (((dx + R) / 6) & 1) ? C_ERROR : CREAMC);
+    }
+    uint16_t line = lerp565(CREAMC, BG, 0.3f);
+    g.drawLine(px - R, top, px - 10, py - 12, line);
+    g.drawLine(px + R, top, px + 10, py - 12, line);
+    g.drawLine(px, top, px, py - 17, line);
+    tentacles(g, px, py, 1, tt, 1.6f, 2.2f);
+    sphereBody(g, px, py);
+    drawEyes(g, px, py - 5, crCashM ? IDLE : ERR, tt, false, 99);
+  }
+}
+
+// Фонтан монет из точки «забрал» и выигрыш, всплывающий над ним.
+void crCoins(OffsetCanvas &g, unsigned long now) {
+  if (!crCashM || crCashM >= CR_CAP || now - crCashAt > 1400) return;
+  float age = (now - crCashAt) / 1000.0f;
+  for (int i = 0; i < CR_NDEBRIS; i++) {
+    float v = crDebV[i];
+    int x = crCoinX + iround(crDebDX[i] * v * age * 1.3f / 64);
+    int y = crCoinY + iround((crDebDY[i] * v / 64.0f - 40) * age + 140 * age * age);
+    bool edge = ((now / 80) + i) & 1;                   // монета вертится: ребро ↔ аверс
+    if (edge) g.fillRect(x, y - 2, 2, 5, CR_COIN_DK);
+    else { g.fillCircle(x, y, 2, CR_COIN); g.drawPixel(x - 1, y - 1, 0xFFFF); }
+  }
+  char s[16];
+  snprintf(s, sizeof(s), "+%d", crWin);
+  // всплывает, но не под шапку: поле обрезано по CR_FY0, и надпись ушла бы целиком
+  // Слева от шлема и вверх: над головой надпись налезала на осьминога
+  int w = textWidthRu(s, 2), x = max(4, crCoinX - 30 - w);
+  int y = max(CR_FY0 + 4, crCoinY - 8 - iround(age * 24));
+  drawTextRu(g, x + 2, y + 2, s, BG, 2);
+  drawTextRu(g, x, y, s, ((now / 100) & 1) ? 0xFFFF : CR_COIN, 2);
+}
+
+void crHeader(OffsetCanvas &g) {
+  g.fillRect(0, 0, W, 18, CR_HEAD_BG);
+  g.drawFastHLine(0, 18, W, lerp565(CR_HOT, BG, 0.4f));
+  drawTextRu(g, 8, 5, "ОКТОКРАШ", CR_HOT, 1);
+  char head[40];
+  snprintf(head, sizeof(head), "%d Б  РЕКОРД %d", crPtsView, crRecView);
+  drawTextRu(g, W - 8 - textWidthRu(head, 1), 5, head, lerp565(CREAMC, BG, 0.2f), 1);
+  // полоска истории: свежий взрыв слева
+  int x = 4;
+  for (int i = 0; i < crHistN; i++) {
+    int m = crHist[i];
+    char s[8];
+    if (m >= 1000) snprintf(s, sizeof(s), "%d", m / 100);     // 12.4 → 12: место на счету
+    else           snprintf(s, sizeof(s), "%d.%02d", m / 100, m % 100);
+    int w = textWidthRu(s, 1) + 6;
+    if (x + w > W - 2) break;
+    uint16_t c = m >= 1000 ? CR_GOLD : m >= 200 ? C_WORKING : C_ERROR;
+    g.fillRect(x, 21, w, 10, lerp565(c, BG, 0.55f));
+    g.drawFastHLine(x + 1, 21, w - 2, c);
+    drawTextRu(g, x + 3, 22, s, lerp565(c, 0xFFFF, 0.5f), 1);
+    x += w + 3;
+  }
+}
+
+void crStatus(OffsetCanvas &g, unsigned long now) {
+  char t[80], a[12], b[12];
+  uint16_t c = lerp565(CREAMC, BG, 0.4f);
+  bool flash = ((now / 150) & 1) == 0;
+  if (crSt == CRS_REFUSED) {
+    strlcpy(t, "БАЛЛОВ НЕ ХВАТАЕТ, ИДИ РАБОТАЙ", sizeof(t));
+    c = flash ? C_ERROR : lerp565(C_ERROR, BG, 0.4f);
+  } else if (crSt == CRS_COUNT) {
+    strlcpy(t, now - crT0 > CR_COUNT_MS ? "СВЯЗЬ С БАЗОЙ..." : "ПРИСТЕГНИСЬ", sizeof(t));
+  } else if (crSt == CRS_FLY) {
+    snprintf(t, sizeof(t), "ЖМИ: ЗАБРАТЬ +%d", (int)((long long)crBet * crM / 100));
+    c = flash ? 0xFFFF : crTierCol[crTier(crM)];
+  } else if (crSt == CRS_CASHED) {
+    crFmt(a, sizeof(a), crCashM);
+    snprintf(t, sizeof(t), "ЗАБРАЛ +%d НА %s  ЖМИ: ДАЛЬШЕ", crWin, a);
+    c = C_WORKING;
+  } else if (crSt == CRS_BUST && crCashM >= CR_CAP) {
+    snprintf(t, sizeof(t), "ЛУНА! +%d БАЛЛОВ", crWin);
+    c = flash ? 0xFFFF : CR_GOLD;
+  } else if (crSt == CRS_BUST) {
+    crFmt(b, sizeof(b), crX);
+    if (crCashM) { snprintf(t, sizeof(t), "ЗАБРАЛ +%d, КРАШ НА %s", crWin, b); c = C_WORKING; }
+    else         { snprintf(t, sizeof(t), "СЛИВ -%d, КРАШ НА %s", crBet, b);   c = C_ERROR; }
+  } else {
+    strlcpy(t, "ЖМИ: ПОЕХАЛИ   КРУТИ: СТАВКА", sizeof(t));
+  }
+  drawTextRu(g, (W - textWidthRu(t, 1)) >> 1, CR_STATUS_Y, t, c, 1);
+}
+
+void crBottom(OffsetCanvas &g, unsigned long now) {
+  g.fillRect(0, CR_BOT_Y - 2, W, H - CR_BOT_Y + 2, CR_BOT_BG);
+  g.drawFastHLine(0, CR_BOT_Y - 2, W, lerp565(CR_HOT, BG, 0.6f));
+  char s[24];
+  if (crFlying()) {
+    int live = crSt == CRS_FLY ? (int)((long long)crBet * crM / 100) : crWin;
+    snprintf(s, sizeof(s), crSt == CRS_FLY ? "НА КОНУ %d" : "ЗАБРАЛ %d", live);
+    drawTextRu(g, (W - textWidthRu(s, 2)) >> 1, CR_BOT_Y + 5, s,
+               crSt == CRS_FLY ? crTierCol[crTier(crM)] : C_WORKING, 2);
+    return;
+  }
+  if (crPick == CR_ALLIN) strlcpy(s, "ВА-БАНК", sizeof(s));
+  else                    snprintf(s, sizeof(s), "СТАВКА %d", crPick);
+  bool low = crBetVal() > crPts || crBetVal() < 1;
+  int w = textWidthRu(s, 2), x = (W - w) >> 1, y = CR_BOT_Y + 5;
+  uint16_t c = low ? (((now / 300) & 1) ? C_ERROR : lerp565(C_ERROR, BG, 0.45f))
+               : crPick == CR_ALLIN ? CR_HOT : CREAMC;
+  drawTextRu(g, x, y, s, c, 2);
+  if (crSt != CRS_COUNT) {
+    uint16_t ac = lerp565(CREAMC, BG, 0.5f);
+    g.fillTriangle(x - 18, y + 7, x - 10, y + 1, x - 10, y + 13, ac);
+    g.fillTriangle(x + w + 16, y + 7, x + w + 8, y + 1, x + w + 8, y + 13, ac);
+  }
+}
+
+void composeCrash(OffsetCanvas &g, int top, int bot, int left, int right, float tt) {
+  unsigned long now = millis();
+  if (top < CR_FY0) crHeader(g);
+  if (bot >= CR_FY0 && top <= CR_FY1) {
+    int ct = max(top, CR_FY0), cb = min(bot, CR_FY1);
+    g.clipTo(g.baseL, max((int)g.baseT, CR_FY0), g.baseR, min((int)g.baseB, CR_FY1));
+    // тряска поля в первые полсекунды после взрыва
+    int shk = (crSt == CRS_BUST && crCashM < CR_CAP && now - crBustAt < 450)
+              ? (((now / 30) & 1) ? 3 : -3) : 0;
+    g.originAt(shk, (-shk) >> 1);
+    crSpace(g, ct, cb);
+    if (crFlying() || crSt == CRS_BUST) { crGrid(g, ct, cb); crCurve(g, ct, cb); }
+    crBig(g, now);
+    if (crSt == CRS_BUST) crExplosion(g, now, tt);
+    else if (crHeroY - 26 <= cb && crHeroY + 76 >= ct) crHero(g, crHeroX, crHeroY, tt, now);
+    crCoins(g, now);
+    g.originReset();
+    g.clipOff();
+  }
+  if (bot >= CR_STATUS_Y - 3) {
+    if (top <= CR_STATUS_Y + 9) crStatus(g, now);
+    if (bot >= CR_BOT_Y - 2) crBottom(g, now);
+  }
+}
+
 // ЕДИНСТВЕННЫЙ путь отрисовки. Любая перерисовка — это прямоугольник, собранный
 // полосами в буфер и вылитый блитом: весь экран, одна карточка, место всплывашки.
 // Отдельных путей нет намеренно — раньше каждый рисовал по-своему (сетка отдельно,
@@ -3206,6 +3879,7 @@ void composeCurrentScreen(OffsetCanvas &g, int top, int bot, int left, int right
   if (curScreen == 1) { composeCafe(g); composeCafeScene(g, tt); return; }
   if (curScreen == 2) { composeRoulette(g, top, bot, left, right, tt); return; }
   if (curScreen == 3) { composeSlots(g, top, bot, left, right, tt); return; }
+  if (curScreen == 4) { composeCrash(g, top, bot, left, right, tt); return; }
   composeGrid(g);
   CanvasSink sink(g);
   for (int i = 0; i < MAX_SESSIONS; i++) {
@@ -3401,6 +4075,7 @@ void handleLine(const char *line) {
     if (strcmp(cmd, "kick") == 0) {
       if (curScreen == 2) roulKick();
       else if (curScreen == 3) slotKick();
+      else if (curScreen == 4) crashPress();   // клик: пуск или «забрать»
     }
     return;
   }
@@ -3433,6 +4108,13 @@ void handleLine(const char *line) {
     cafeDirty = true;
     roulDirty = true;
     slotDirty = true;
+    crDirty = true;
+  }
+
+  if (scr == 4) {
+    JsonObject cr = doc["crash"];
+    if (!cr.isNull()) crashApply(cr);
+    return;
   }
 
   if (scr == 3) {
@@ -3668,6 +4350,7 @@ void setup() {
   buildSin();
   buildSmogNoise();
   buildSphere(0);
+  crashInit();
   for (int i = 0; i < MAX_SESSIONS; i++) sessions[i].active = false;
   redrawAll();
 }
@@ -3704,6 +4387,32 @@ void loop() {
   if (sleeping) return;              // спим: ни кадров, ни SPI
 
   unsigned long now = millis();
+
+  // Раунд краша доигрывается и с чужого экрана: ракета не ждёт, пока на неё
+  // смотрят, а мосту нужен честный взрыв, а не раунд, висящий до следующего пуска.
+  if (curScreen != 4 && crInRound() && now - crBgPhys >= CR_FRAME_MS) {
+    crBgPhys = now;
+    crashPhysics(now);
+  }
+
+  if (curScreen == 4) {
+    if (crDirty) { crDirty = false; crHeadDirty = false; redrawAll(); }
+    unsigned long frame = now / CR_FRAME_MS;
+    if (frame != lastFrame) {
+      lastFrame = frame;
+      crashPhysics(now);
+      if (crHeadDirty) { crHeadDirty = false; redrawRect(0, 0, W, CR_FY0); }
+      // В покое звёзды ползут еле-еле — хватит половины частоты. В раунде поле
+      // перерисовывается каждый кадр целиком: оси едут, статики на нём нет.
+      if (crSt != CRS_IDLE || (frame & 1) == 0) {
+        redrawRect(0, CR_FY0, W, CR_FH);
+        // Подсказка и ставка — ВО ВСЮ ШИРИНУ и целиком: строка мигает, а мигающее
+        // по кускам в разных кадрах оказывается в разных фазах.
+        redrawRect(0, CR_STATUS_Y - 3, W, H - (CR_STATUS_Y - 3));
+      }
+    }
+    return;
+  }
 
   if (curScreen == 3) {
     if (slotDirty) { slotDirty = false; slotStatusShown = -1; redrawAll(); }

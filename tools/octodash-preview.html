@@ -185,6 +185,7 @@
           крути — <b>страницы</b><br>
           <kbd>Shift</kbd>+крути — <b>экран</b><br>
           клик — <b>режим обеда</b>, два клика — <b>сброс</b><br>
+          краш: крути — <b>ставка</b>, клик — <b>пуск / забрать</b><br>
           <kbd>←</kbd><kbd>→</kbd> · <kbd>Space</kbd>
         </p>
       </div>
@@ -416,7 +417,7 @@
   const COLS = 3, ROWS = 2, DW = 320, DH = 240;
   const PER_PAGE = COLS * ROWS;
   const cw = (DW/COLS)|0, ch = (DH/ROWS)|0;
-  const SCREENS = ["AQUARIUM", "COFFEE", "ROULETTE", "SLOTS"];
+  const SCREENS = ["AQUARIUM", "COFFEE", "ROULETTE", "SLOTS", "CRASH"];
 
   // ---- RGB565 helpers ----
   const rgb = (r,g,b) => (((r>>3)<<11)|((g>>2)<<5)|(b>>3)) & 0xffff;
@@ -442,10 +443,45 @@
     // ox/oy — начало координат канвы: позволяет рисовать сцену в АБСОЛЮТНЫХ
     // координатах экрана, а канва сама клипует всё, что за её пределами —
     // ровно как GFXcanvas16 в прошивке.
-    constructor(w,h){ this.W=w; this.H=h; this.b=new Uint16Array(w*h); this.px=0; this.ox=0; this.oy=0; }
+    constructor(w,h){ this.W=w; this.H=h; this.b=new Uint16Array(w*h); this.px=0; this.ox=0; this.oy=0;
+      this.clipOff(); }
+    // Обрезка по прямоугольнику экрана — как OffsetCanvas::clipTo в прошивке: объект
+    // не смеет рисоваться за пределами окна, которое его перерисовывает.
+    clipTo(l,t,r,b){ this.cl=l; this.ct=t; this.cr=r; this.cb=b; }
+    clipOff(){ this.clipTo(-1e9,-1e9,1e9,1e9); }
     fillScreen(c){ this.b.fill(c); this.px+=this.b.length; }
-    drawPixel(x,y,c){ x=(x|0)+this.ox; y=(y|0)+this.oy;
+    drawPixel(x,y,c){ x=(x|0); y=(y|0);
+      if(x<this.cl||x>this.cr||y<this.ct||y>this.cb) return;
+      x+=this.ox; y+=this.oy;
       if(x<0||y<0||x>=this.W||y>=this.H)return; this.b[y*this.W+x]=c; this.px++; }
+    // 1:1 с Adafruit_GFX::fillTriangle — целочисленное деление с отсечением к нулю
+    fillTriangle(x0,y0,x1,y1,x2,y2,c){
+      x0|=0;y0|=0;x1|=0;y1|=0;x2|=0;y2|=0;
+      let t;
+      if(y0>y1){ t=y0;y0=y1;y1=t; t=x0;x0=x1;x1=t; }
+      if(y1>y2){ t=y2;y2=y1;y1=t; t=x2;x2=x1;x1=t; }
+      if(y0>y1){ t=y0;y0=y1;y1=t; t=x0;x0=x1;x1=t; }
+      if(y0===y2){
+        let a=x0, b=x0;
+        if(x1<a) a=x1; else if(x1>b) b=x1;
+        if(x2<a) a=x2; else if(x2>b) b=x2;
+        this.drawFastHLine(a,y0,b-a+1,c); return;
+      }
+      const dx01=x1-x0, dy01=y1-y0, dx02=x2-x0, dy02=y2-y0, dx12=x2-x1, dy12=y2-y1;
+      let sa=0, sb=0, y, a, b;
+      const last = (y1===y2) ? y1 : y1-1;
+      for(y=y0;y<=last;y++){
+        a=x0+Math.trunc(sa/dy01); b=x0+Math.trunc(sb/dy02); sa+=dx01; sb+=dx02;
+        if(a>b){ t=a;a=b;b=t; }
+        this.drawFastHLine(a,y,b-a+1,c);
+      }
+      sa=dx12*(y-y1); sb=dx02*(y-y0);
+      for(;y<=y2;y++){
+        a=x1+Math.trunc(sa/dy12); b=x0+Math.trunc(sb/dy02); sa+=dx12; sb+=dx02;
+        if(a>b){ t=a;a=b;b=t; }
+        this.drawFastHLine(a,y,b-a+1,c);
+      }
+    }
     drawFastHLine(x,y,w,c){ for(let i=0;i<w;i++) this.drawPixel(x+i,y,c); }
     drawFastVLine(x,y,h,c){ for(let i=0;i<h;i++) this.drawPixel(x,y+i,c); }
     fillRect(x,y,w,h,c){ for(let j=0;j<h;j++) this.drawFastHLine(x,y+j,w,c); }
@@ -1831,6 +1867,461 @@
   }
 
   // ==========================================================================
+  // Экран 5: ОКТОКРАШ — осьминог-ракета на баллы
+  // ==========================================================================
+  // Краш-игра: множитель растёт, пока ракета летит, и в случайный миг она
+  // взрывается. Нажал раньше — забрал ставку на множитель, не успел — слив.
+  // Точку взрыва бросает МОСТ в момент пуска (исход — состояние, как у автомата),
+  // множитель растит плата по своим часам: m(t) = e^(K·t). Нажатие запоминает
+  // множитель в миг, когда кнопку ПРОДАВИЛИ, а уходит на отпускании: вращение с
+  // зажатой кнопкой листает экраны, и раньше отпускания это ещё не клик.
+  //
+  // Поле перерисовывается каждый кадр целиком (звёзды, горизонт, кривая, герой),
+  // поэтому в нём можно всё — никакой статики, которая отклеилась бы при рескейле.
+  const CR_K = 0.14;                      // x2 за 5с, x10 за 16с, x100 за 33с
+  const CR_CAP = 10000;                   // = CRASH_CAP моста: Луна, выплата без нажатия
+  const CR_BETS = [1,2,5,10,25,50,100,250,500,1000,2500,5000,10000];
+  const CR_ALLIN = -1;
+  const CR_FY0 = 34, CR_FY1 = 199;        // поле полёта
+  const CR_STATUS_Y = 204;                // строка подсказки — перерисовывается целиком
+  const CR_BOT_Y = 216;                   // низ: ставка / «на кону»
+  const CR_GX0 = 30, CR_GX1 = 300, CR_GY0 = 186, CR_GY1 = 48;   // оси графика
+  const CR_COUNT_MS = 1200;               // отсчёт 3-2-1
+  const CR_WAIT_MS = 3000;                // сверх отсчёта ждём ответ моста, потом отмена
+  const CR_FAST = 4;                      // после «забрал» время летит вчетверо
+  const CR_SPACE_TOP = rgb(4,6,22), CR_SPACE_LOW = rgb(30,14,52);
+  const CR_PLANET = rgb(40,92,120), CR_PLANET_DK = rgb(18,44,66), CR_ATMO = rgb(90,200,230);
+  const CR_GOLD = rgb(255,200,40), CR_HOT = rgb(255,90,200), CR_HELMET = rgb(150,220,255);
+  const CR_FLAME = [rgb(255,70,20), rgb(255,160,30), rgb(255,240,150)];
+  const CR_PLASMA = [rgb(60,90,255), rgb(120,200,255), rgb(235,250,255)];   // с x10
+  const CR_COIN = rgb(255,214,60), CR_COIN_DK = rgb(190,130,20);
+
+  // Звёзды: позиция и «глубина» из ЛКГ, как в прошивке (таблица считается один раз).
+  const CR_STARS = [];
+  { let r = 12345;
+    const rnd = n => { r = (Math.imul(r, 1103515245) + 12345) & 0x7fffffff; return (r >>> 16) % n; };
+    for(let i=0;i<46;i++) CR_STARS.push([rnd(320), rnd(CR_FY1-CR_FY0+1), 1 + rnd(3)]); }
+  // Дуга горизонта: на сколько опускается край планеты от центра экрана.
+  const CR_ARC = new Uint8Array(320);
+  for(let x=0;x<320;x++){ const d=(x-160)/160; CR_ARC[x] = Math.round(d*d*14); }
+  // Обломки взрыва: направление и скорость из той же таблицы — взрыв всегда одинаковой
+  // формы, а значит снимок экрана совпадает с тем, что видно глазом.
+  const CR_DEBRIS = [];
+  for(let i=0;i<14;i++){ const a=i*0.449+0.3; CR_DEBRIS.push([Math.cos(a), Math.sin(a), 60+((i*37)%50)]); }
+
+  let crPts = 3357, crRec = 3357, crPick = 50, crHist = [187, 1240, 103, 412, 100, 233, 5120, 151];
+  let crSt = "idle";                      // idle | count | fly | cashed | bust | refused
+  let crSp = 0, crX = 0, crBet = 0, crT = 0, crM = 100, crPressM = 0;
+  let crT0 = 0, crLast = 0, crScroll = 0, crBustAt = 0, crBustX = 0, crBustY = 0;
+  let crCashM = 0, crCashT = 0, crWin = 0, crRefusedAt = 0, crAnswered = false;
+  let crCashAt = 0, crCoinX = 0, crCoinY = 0;     // фонтан монет на «забрал»
+  let crHeroX = CR_GX0 + 12, crHeroY = CR_GY0 - 30;
+
+  const crMult = t => Math.min(CR_CAP, Math.floor(100*Math.exp(CR_K*t) + 1e-6));
+  const crTimeOf = m => Math.log(m/100)/CR_K;
+  // Целочисленно, с усечением — ровно как snprintf в прошивке, а не toFixed с округлением.
+  const crTxt = m => "X" + (m >= 10000 ? (m/100|0) : m >= 1000 ? `${m/100|0}.${(m/10|0)%10}`
+                                       : `${m/100|0}.${String(m%100).padStart(2,"0")}`);
+  const crTier = m => m >= 5000 ? CR_HOT : m >= 1000 ? CR_GOLD : m >= 200 ? C_WORK : CREAM;
+  function crBets(){                     // лестница ставок, которые счёт может оплатить
+    const out = CR_BETS.filter(v => v <= crPts);
+    out.push(CR_ALLIN);
+    return out;
+  }
+  const crBetVal = () => crPick === CR_ALLIN ? crPts : crPick;
+  const crBetTxt = () => crPick === CR_ALLIN ? "ВА-БАНК" : "СТАВКА " + crPick;
+
+  // --- мост (симуляция): на проводе ровно то, что шлёт build_crash() ---
+  function crBridgeGo(b){
+    const bet = b === CR_ALLIN ? crPts : b;
+    crSp++;
+    if(bet < 1 || crPts < bet){ wire("out", {v:1, scr:4, crash:{pts:crPts, sp:crSp, st:3}}); crApply(crSp, 3, 0); return; }
+    crPts -= bet;
+    const u = Math.random();
+    crX = Math.max(100, Math.min(CR_CAP, Math.floor(99/(1-u) + 1e-9)));
+    wire("out", {v:1, scr:4, crash:{pts:crPts, bet:b, rb:bet, sp:crSp, x:crX, st:1}});
+    crApply(crSp, 1, bet);
+  }
+  function crApply(sp, st, bet){         // = разбор снэпшота платой: новый раунд пришёл
+    if(crSt !== "count") return;
+    if(st === 3){ crSt = "refused"; crRefusedAt = performance.now(); return; }
+    crBet = bet; crAnswered = true;
+  }
+
+  function crashRotate(dir){
+    if(crSt === "count" || crSt === "fly" || crSt === "cashed") return;   // в полёте ставку не меняют
+    const list = crBets();
+    let i = list.indexOf(crPick);
+    if(i < 0){ i = 0; while(i < list.length-2 && list[i+1] <= crPick) i++; }
+    crPick = list[Math.max(0, Math.min(list.length-1, i + dir))];
+  }
+  function crashPressDown(){ crPressM = crM; }   // множитель фиксируется на продавливании
+  function crashPress(){
+    const now = performance.now();
+    if(crSt === "fly"){
+      // забрал: множитель — тот, что был в миг нажатия, а не после отпускания
+      const m = Math.min(crPressM || crM, crM);
+      crPressM = 0;
+      crCashM = m; crCashT = crTimeOf(m); crWin = Math.floor(crBet*m/100);
+      wire("in", {enc:"cash", sp:crSp, m});
+      crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
+      crPts += crWin; if(crPts > crRec) crRec = crPts;
+      crSt = "cashed";
+      return;
+    }
+    if(crSt === "cashed"){ crT = crTimeOf(crX); return; }   // досмотреть взрыв сразу
+    if(crSt === "count") return;
+    const b = crPick;
+    if(crBetVal() < 1 || crPts < crBetVal()){ crSt = "refused"; crRefusedAt = now; return; }
+    wire("in", {enc:"go", b});
+    crSt = "count"; crT0 = now; crAnswered = false; crT = 0; crM = 100;
+    crCashM = 0; crWin = 0; crScroll = 0;
+    setTimeout(()=>crBridgeGo(b), 140);
+  }
+
+  function crashPhysics(now){
+    const dt = Math.min(0.1, crLast ? (now - crLast)/1000 : 0.016);
+    crLast = now;
+    if(crSt === "refused" && now - crRefusedAt > 1600) crSt = "idle";
+    if(crSt === "count"){
+      const age = now - crT0;
+      if(age >= CR_COUNT_MS && crAnswered){ crSt = "fly"; crT = 0; }
+      else if(age >= CR_COUNT_MS + CR_WAIT_MS){ crSt = "idle"; }   // мост молчит — отмена
+    }
+    if(crSt === "fly" || crSt === "cashed"){
+      crT += dt * (crSt === "cashed" ? CR_FAST : 1);
+      crM = crMult(crT);
+      if(crM >= crX){
+        crM = crX; crT = crTimeOf(crX);
+        if(crX >= CR_CAP && crSt === "fly"){          // Луна: выплата без нажатия
+          crCashM = CR_CAP; crCashT = crT; crWin = Math.floor(crBet*CR_CAP/100);
+          wire("in", {enc:"cash", sp:crSp, m:CR_CAP});
+          crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
+          crPts += crWin; if(crPts > crRec) crRec = crPts;
+        } else if(crSt === "fly") wire("in", {enc:"bust", sp:crSp});
+        crHist = [crX, ...crHist].slice(0, 8);
+        crSt = "bust"; crBustAt = now; crBustX = crHeroX; crBustY = crHeroY;
+      }
+    }
+    // скорость полёта звёзд растёт с высотой: на x10 они уже тянутся полосами
+    const flying = crSt === "fly" || crSt === "cashed";
+    const speed = flying ? 10 + 34*Math.min(4.6, Math.log(crM/100)) * (crSt === "cashed" ? 2 : 1)
+                : crSt === "count" ? 4 : 2;
+    crScroll += dt * speed;
+    if(crScroll > 1e6) crScroll -= 1e6;
+  }
+
+  // Оси графика: время и множитель растягиваются так, чтобы вершина кривой всегда
+  // стояла у правого верха — ракета упирается в угол, а мир едет навстречу.
+  function crAxes(){
+    return {tMax: Math.max(6, crT*1.15), mMax: Math.max(180, crM*1.15)};
+  }
+  // Ось множителя ЛИНЕЙНАЯ: на логарифмической экспонента — прямая линия, и кривая
+  // не «загибается в небо». Здесь загиб и есть главный аттракцион.
+  const crY = (m, ax) => CR_GY0 - Math.round((m - 100)/(ax.mMax - 100) * (CR_GY0 - CR_GY1));
+  const crX_ = (t, ax) => CR_GX0 + Math.round(t/ax.tMax * (CR_GX1 - CR_GX0));
+
+  function crSpace(lift){
+    const H = CR_FY1 - CR_FY0 + 1;
+    // в миг взрыва небо на пару кадров озаряется
+    const flash = crSt === "bust" && crCashM < CR_CAP && performance.now() - crBustAt < 90;
+    for(let y=CR_FY0;y<=CR_FY1;y++){
+      const c = lerp(CR_SPACE_TOP, CR_SPACE_LOW, (y-CR_FY0)/H);
+      g.drawFastHLine(0, y, DW, flash ? lerp(c, CR_FLAME[2], 150/256) : c);
+    }
+    // звёзды: накопленный скролл, три слоя глубины
+    const flying = crSt === "fly" || crSt === "cashed";
+    const streak = flying ? Math.min(10, Math.log(crM/100)*3) : 0;
+    for(const [sx, sy, d] of CR_STARS){
+      const y = CR_FY0 + ((sy + Math.floor(crScroll*d)) % H);
+      const c = d === 3 ? 0xFFFF : d === 2 ? lerp(0xFFFF, BG, 0.4) : lerp(CR_HELMET, BG, 0.6);
+      const len = Math.floor(streak*d/3);
+      if(len > 1) g.drawFastVLine(sx, y - len, len, lerp(c, BG, 0.5));
+      g.drawPixel(sx, y, c);
+    }
+    // после x30 вдали проступает Луна и растёт — тизер джекпота
+    if(flying && crM >= 3000){
+      const r = 4 + ((crM - 3000)*14/7000|0), mx = 214, my = CR_FY0 + 26;
+      g.fillCircle(mx, my, r, lerp(CR_MOON, BG, 0.25));
+      if(r > 8) g.fillCircle(mx - (r/3|0), my - (r/4|0), r/4|0, lerp(CR_MOON_DK, BG, 0.25));
+    }
+    // горизонт планеты: на взлёте уходит вниз и пропадает
+    const top = CR_GY0 - 2 + lift;
+    if(top <= CR_FY1 + 14){
+      for(let x=0;x<DW;x++){
+        const y = top + CR_ARC[x];
+        if(y > CR_FY1) continue;
+        g.drawPixel(x, y-2, lerp(CR_ATMO, BG, 0.7));
+        g.drawPixel(x, y-1, lerp(CR_ATMO, BG, 0.35));
+        g.drawFastVLine(x, y, CR_FY1 - y + 1, ((x>>4) + (y>>3)) & 1 ? CR_PLANET : lerp(CR_PLANET, CR_PLANET_DK, 0.5));
+      }
+      // стартовый стол
+      const py = top + CR_ARC[CR_GX0 + 12];
+      g.fillRect(CR_GX0 - 4, py - 3, 33, 3, lerp(C_IDLE, BG, 0.2));
+      g.drawFastHLine(CR_GX0 - 4, py - 3, 33, C_IDLE);
+    }
+  }
+
+  function crGrid(ax){
+    const marks = [150, 200, 300, 500, 1000, 2000, 5000, 10000];
+    let last = 999;
+    for(const m of marks){
+      const y = crY(m, ax);
+      if(y - 9 < CR_FY0 + 2) break;          // подпись не лезет под шапку
+      if(last - y < 14) continue;           // подписи не слипаются
+      last = y;
+      for(let x=CR_GX0; x<DW-4; x+=6) g.drawFastHLine(x, y, 2, lerp(CREAM, BG, 0.8));
+      const lab = m % 100 ? "X" + (m/100).toFixed(1) : "X" + m/100;
+      txPx(lab, 2, y - 9, 1, lerp(CREAM, BG, 0.55));
+    }
+  }
+
+  function crCurve(ax){
+    const flying = crSt === "fly" || crSt === "cashed" || crSt === "bust";
+    if(!flying) return {x: CR_GX0, y: CR_GY0};
+    const xEnd = crX_(crT, ax);
+    let px = CR_GX0, py = CR_GY0;
+    for(let x=CR_GX0+1; x<=xEnd; x++){
+      const t = (x - CR_GX0)/(CR_GX1 - CR_GX0)*ax.tMax;
+      const m = crMult(t), y = crY(m, ax);
+      const c = crSt === "bust" && crCashM === 0 ? C_ERR : crTier(m);
+      if((x & 3) === 0) g.drawFastVLine(x, y+2, CR_GY0 - y - 1, lerp(c, BG, 0.78));   // заливка
+      g.drawLine(px, py, x, y, c); g.drawLine(px, py-1, x, y-1, c);
+      px = x; py = y;
+    }
+    // флажок «забрал» на траектории
+    if(crCashM){
+      const fx = crX_(crCashT, ax), fy = crY(crCashM, ax);
+      g.drawFastVLine(fx, fy - 16, 16, CREAM);
+      g.fillTriangle(fx+1, fy-16, fx+1, fy-8, fx+10, fy-12, C_WORK);
+      g.fillCircle(fx, fy, 2, C_WORK);
+    }
+    return {x: px, y: py};
+  }
+
+  // Шлем-пузырь вокруг тела и струя из-под щупалец.
+  function crHero(cx, cy, tt, now){
+    const flying = crSt === "fly" || crSt === "cashed";
+    const thrust = flying ? Math.min(1, 0.4 + Math.log(crM/100)/3) : crSt === "count" ? 0.25 : 0;
+    if(thrust > 0){
+      const fl = ((now/45)|0) & 3;
+      const hot = flying && crM >= 1000;
+      const len = 10 + Math.round(thrust*18) + fl*2 + (hot ? 6 : 0);
+      const fy = cy + 30, f = hot ? CR_PLASMA : CR_FLAME;
+      g.fillTriangle(cx-8, fy, cx+8, fy, cx, fy + len, f[0]);
+      g.fillTriangle(cx-5, fy, cx+5, fy, cx, fy + (len*2/3|0), f[1]);
+      g.fillTriangle(cx-2, fy, cx+2, fy, cx, fy + (len/3|0), f[2]);
+    }
+    tentacles(cx, cy, 17, 1, tt, 2 + thrust*8, 0.6 + thrust*0.8, 6, 9);
+    sphereBody(cx, cy, 17);
+    drawEyes(cx, cy - 5, flying && crM >= 1000 ? 1 : 0, tt, flying && crM >= 300, {blink:3.4});
+    g.drawCircle(cx, cy, 22, CR_HELMET);
+    g.drawCircle(cx, cy, 23, lerp(CR_HELMET, BG, 0.6));
+    g.drawLine(cx-15, cy-12, cx-11, cy-16, 0xFFFF);
+    g.drawLine(cx-16, cy-9, cx-15, cy-11, lerp(0xFFFF, BG, 0.3));
+  }
+
+  // После взрыва: кольца и обломки, потом осьминог с глазами-крестиками на парашюте.
+  // Луна — не взрыв, а главный выигрыш: осьминог садится на неё и машет.
+  const CR_MOON = rgb(220,214,190), CR_MOON_DK = rgb(150,142,120);
+  function crMoon(now, tt){
+    const age = (now - crBustAt)/1000;
+    const mx = DW - 60, my = CR_FY0 + 84 + Math.max(0, Math.round((1 - age)*70));
+    g.fillCircle(mx, my, 34, CR_MOON);
+    g.fillCircle(mx - 12, my - 8, 7, CR_MOON_DK);
+    g.fillCircle(mx + 13, my + 6, 5, CR_MOON_DK);
+    g.fillCircle(mx - 2, my + 18, 4, CR_MOON_DK);
+    g.drawCircle(mx, my, 36, lerp(CR_GOLD, BG, 0.5 + 0.3*Math.sin(age*5)));
+    const hx = crBustX + Math.round((mx - crBustX)*Math.min(1, age/0.8));
+    const hy = crBustY + Math.round((my - 46 - crBustY)*Math.min(1, age/0.8));
+    tentacles(hx, hy, 17, 1, tt, 3, 2.5, 6, 9);
+    sphereBody(hx, hy, 17);
+    g.drawLine(hx-9, hy-5, hx-6, hy-8, PUPIL); g.drawLine(hx-6, hy-8, hx-3, hy-5, PUPIL);   // ^ ^
+    g.drawLine(hx+3, hy-5, hx+6, hy-8, PUPIL); g.drawLine(hx+6, hy-8, hx+9, hy-5, PUPIL);
+    g.drawCircle(hx, hy, 22, CR_HELMET);
+  }
+
+  function crExplosion(now, tt){
+    const age = (now - crBustAt)/1000;
+    if(crCashM >= CR_CAP){ crMoon(now, tt); return; }
+    if(age < 0.7){
+      const r = 6 + Math.round(age*110);
+      g.drawCircle(crBustX, crBustY, r, age < 0.2 ? 0xFFFF : CR_FLAME[1]);
+      g.drawCircle(crBustX, crBustY, Math.max(1, r-4), CR_FLAME[0]);
+      if(age < 0.25) g.fillCircle(crBustX, crBustY, 20 - Math.round(age*40), CR_FLAME[2]);
+    }
+    if(age < 1.6){
+      for(let i=0;i<CR_DEBRIS.length;i++){
+        const [dx, dy, v] = CR_DEBRIS[i];
+        const x = crBustX + Math.round(dx*v*age), y = crBustY + Math.round(dy*v*age + 60*age*age);
+        g.fillRect(x, y, 3, 3, i & 1 ? CR_FLAME[i % 3] : lerp(C_IDLE, BG, age/2));
+      }
+    }
+    if(age > 0.5){
+      // парашют: снижение до земли, лёгкое раскачивание
+      const pa = age - 0.5;
+      const px = crBustX + Math.round(Math.sin(pa*1.8)*6);
+      const py = Math.min(CR_FY1 - 26, crBustY + Math.round(pa*14));
+      const R = 18, top = py - 44;
+      for(let dx=-R; dx<=R; dx++){
+        const h = Math.round(Math.sqrt(R*R - dx*dx)*0.7);
+        g.drawFastVLine(px+dx, top - h, h + 1, ((dx+R)/6|0) & 1 ? C_ERR : CREAM);
+      }
+      g.drawLine(px-R, top, px-10, py-12, lerp(CREAM, BG, 0.3));
+      g.drawLine(px+R, top, px+10, py-12, lerp(CREAM, BG, 0.3));
+      g.drawLine(px, top, px, py-17, lerp(CREAM, BG, 0.3));
+      tentacles(px, py, 17, 1, tt, 1.6, 2.2, 6, 9);
+      sphereBody(px, py, 17);
+      drawEyes(px, py - 5, crCashM ? 2 : 3, tt, false, null);
+    }
+  }
+
+  function crBigNumber(now, cx, cy){
+    if(crSt === "count"){
+      const left = CR_COUNT_MS - (now - crT0);
+      const s = left > 0 ? String(Math.ceil(left/400)) : "...";
+      const sc = left > 0 ? 7 - Math.min(2, ((left % 400)/120)|0) : 4;
+      txPx(s, cx - (txPxW(s, sc)>>1) + 3, cy - 4*sc + 3, sc, BG);
+      txPx(s, cx - (txPxW(s, sc)>>1), cy - 4*sc, sc, CR_GOLD);
+      return;
+    }
+    if(crSt !== "fly" && crSt !== "cashed" && crSt !== "bust") return;
+    const bust = crSt === "bust";
+    const s = crTxt(crM), sc = 4;
+    const moon = bust && crCashM >= CR_CAP;
+    const col = moon ? CR_GOLD : bust ? C_ERR : crSt === "cashed" ? lerp(crTier(crM), BG, 0.45) : crTier(crM);
+    const x = cx - (txPxW(s, sc)>>1), y = cy - 16;
+    txPx(s, x + 2, y + 2, sc, BG);
+    txPx(s, x, y, sc, col);
+    let tag = "";
+    if(bust) tag = crCashM >= CR_CAP ? "ЛУНА!" : "КРАШ";
+    else if(crSt === "cashed") tag = "А МОГЛО БЫТЬ";
+    else if(crM >= 1000) tag = (((now/180)|0) & 1) ? "ЗАНОС" : "";
+    else if(crM >= 500) tag = "ЖАРА";
+    if(tag) txPx(tag, cx - (txPxW(tag, 2)>>1), y - 20, 2, bust ? (crCashM >= CR_CAP ? CR_GOLD : C_ERR) : CREAM);
+  }
+
+  function crCoins(now){
+    if(!crCashM || crCashM >= CR_CAP || now - crCashAt > 1400) return;
+    const age = (now - crCashAt)/1000;
+    for(let i=0;i<CR_DEBRIS.length;i++){
+      const [dx, dy, v] = CR_DEBRIS[i];
+      const x = crCoinX + Math.round(dx*v*age*1.3), y = crCoinY + Math.round((dy*v - 40)*age + 140*age*age);
+      if((((now/80)|0) + i) & 1) g.fillRect(x, y-2, 2, 5, CR_COIN_DK);   // монета вертится
+      else { g.fillCircle(x, y, 2, CR_COIN); g.drawPixel(x-1, y-1, 0xFFFF); }
+    }
+    // слева от шлема и вверх: над головой надпись налезала на осьминога
+    const s = "+" + crWin, w = txPxW(s, 2), x = Math.max(4, crCoinX - 30 - w);
+    const y = Math.max(CR_FY0 + 4, crCoinY - 8 - Math.round(age*24));
+    txPx(s, x + 2, y + 2, 2, BG);
+    txPx(s, x, y, 2, ((now/100)|0) & 1 ? 0xFFFF : CR_COIN);
+  }
+
+  function crHeader(){
+    g.fillRect(0, 0, DW, 18, rgb(24, 10, 40));
+    g.drawFastHLine(0, 18, DW, lerp(CR_HOT, BG, 0.4));
+    txPx("ОКТОКРАШ", 8, 5, 1, CR_HOT);
+    const head = `${crPts} Б  РЕКОРД ${crRec}`;
+    txPx(head, DW - 8 - txPxW(head), 5, 1, lerp(CREAM, BG, 0.2));
+    // полоска истории: свежий взрыв слева
+    g.fillRect(0, 19, DW, 14, BG);
+    let x = 4;
+    for(const m of crHist){
+      const s = crTxt(m).slice(1).replace(/\.\d$/, "");   // 12.4 → 12: в пилюле место на счету
+      const w = txPxW(s) + 6;
+      if(x + w > DW - 2) break;
+      const c = m >= 1000 ? CR_GOLD : m >= 200 ? C_WORK : C_ERR;
+      g.fillRect(x, 21, w, 10, lerp(c, BG, 0.55));
+      g.drawFastHLine(x+1, 21, w-2, c);
+      txPx(s, x + 3, 22, 1, lerp(c, 0xFFFF, 0.5));
+      x += w + 3;
+    }
+  }
+
+  function crStatus(now){
+    g.fillRect(0, CR_STATUS_Y - 3, DW, 13, BG);
+    let t = "", c = lerp(CREAM, BG, 0.4);
+    const flash = (((now/150)|0) & 1) === 0;
+    if(crSt === "refused"){ t = "БАЛЛОВ НЕ ХВАТАЕТ, ИДИ РАБОТАЙ"; c = flash ? C_ERR : lerp(C_ERR, BG, 0.4); }
+    else if(crSt === "count") t = (now - crT0) > CR_COUNT_MS ? "СВЯЗЬ С БАЗОЙ..." : "ПРИСТЕГНИСЬ";
+    else if(crSt === "fly"){ t = `ЖМИ: ЗАБРАТЬ +${Math.floor(crBet*crM/100)}`; c = flash ? 0xFFFF : crTier(crM); }
+    else if(crSt === "cashed"){ t = `ЗАБРАЛ +${crWin} НА ${crTxt(crCashM)}  ЖМИ: ДАЛЬШЕ`; c = C_WORK; }
+    else if(crSt === "bust" && crCashM >= CR_CAP){ t = `ЛУНА! +${crWin} БАЛЛОВ`; c = flash ? 0xFFFF : CR_GOLD; }
+    else if(crSt === "bust" && crCashM){ t = `ЗАБРАЛ +${crWin}, КРАШ НА ${crTxt(crX)}`; c = C_WORK; }
+    else if(crSt === "bust"){ t = `СЛИВ -${crBet}, КРАШ НА ${crTxt(crX)}`; c = C_ERR; }
+    else t = "ЖМИ: ПОЕХАЛИ   КРУТИ: СТАВКА";
+    txPx(t, (DW - txPxW(t))>>1, CR_STATUS_Y, 1, c);
+  }
+
+  function crBottom(now){
+    g.fillRect(0, CR_BOT_Y - 2, DW, DH - CR_BOT_Y + 2, rgb(14, 6, 26));
+    g.drawFastHLine(0, CR_BOT_Y - 2, DW, lerp(CR_HOT, BG, 0.6));
+    const fly = crSt === "fly" || crSt === "cashed" || crSt === "count";
+    if(fly && crSt !== "count"){
+      const live = crSt === "fly" ? Math.floor(crBet*crM/100) : crWin;
+      const s = (crSt === "fly" ? "НА КОНУ " : "ЗАБРАЛ ") + live;
+      txPx(s, (DW - txPxW(s, 2))>>1, CR_BOT_Y + 5, 2, crSt === "fly" ? crTier(crM) : C_WORK);
+      return;
+    }
+    const s = crBetTxt();
+    const low = crBetVal() > crPts || crBetVal() < 1;
+    const w = txPxW(s, 2), x = (DW - w)>>1, y = CR_BOT_Y + 5;
+    const c = low ? (((now/300)|0) & 1 ? C_ERR : lerp(C_ERR, BG, 0.45)) : crPick === CR_ALLIN ? CR_HOT : CREAM;
+    txPx(s, x, y, 2, c);
+    if(crSt !== "count"){
+      const ac = lerp(CREAM, BG, 0.5);
+      g.fillTriangle(x - 18, y + 7, x - 10, y + 1, x - 10, y + 13, ac);
+      g.fillTriangle(x + w + 16, y + 7, x + w + 8, y + 1, x + w + 8, y + 13, ac);
+    }
+  }
+
+  // Состояние краша наружу, как у обеда: раунд проверяется скриптом, а перемотка
+  // времени (`skip`) позволяет снять x50 без полуминуты ожидания.
+  window.crashState = () => ({st: crSt, sp: crSp, x: crX, m: crM, bet: crBet, pick: crPick,
+                              pts: crPts, cash: crCashM, win: crWin, hist: [...crHist]});
+  window.crashDebug = {press: crashPress, down: crashPressDown, rotate: crashRotate,
+                       skip: m => { crT = crTimeOf(m); }, rig: x => { Math.random = () => 1 - 99/x; }};
+
+  function renderCrash(tt){
+    const now = performance.now();
+    crashPhysics(now);
+    g.fillScreen(BG);
+    const flying = crSt === "fly" || crSt === "cashed";
+    const lift = flying || crSt === "bust" ? Math.min(80, Math.round(60*Math.log(crM/100)/Math.log(1.5))) : 0;
+    // тряска поля в первые полсекунды после взрыва
+    const shk = crSt === "bust" && crCashM < CR_CAP && now - crBustAt < 450 ? (((now/30)|0) & 1 ? 3 : -3) : 0;
+    g.clipTo(0, CR_FY0, DW-1, CR_FY1);
+    g.ox = shk; g.oy = shk ? -shk>>1 : 0;
+    crSpace(lift);
+    const ax = crAxes();
+    if(flying || crSt === "bust") crGrid(ax);
+    const tip = crCurve(ax);
+    if(flying){
+      crHeroX = Math.max(40, Math.min(DW - 34, tip.x));
+      crHeroY = Math.max(CR_FY0 + 26, Math.min(CR_GY0 - 30, tip.y - 30));
+      if(crSt === "fly" && crM >= 500){            // перегрузка: ракету потряхивает
+        const a = crM >= 2000 ? 2 : 1;
+        crHeroX += ((now/40)|0) & 1 ? a : -a;
+        crHeroY += ((now/70)|0) & 1 ? a : 0;
+      }
+    } else if(crSt !== "bust"){
+      crHeroX = CR_GX0 + 12;
+      crHeroY = CR_GY0 - 30 - (crSt === "count" ? (((now/60)|0) & 1) : 0);
+    }
+    crBigNumber(now, 104, 76);       // левый верх: ракета туда не залетает никогда
+    if(crSt === "bust") crExplosion(now, tt);
+    else crHero(crHeroX, crHeroY, tt, now);
+    crCoins(now);
+    g.ox = 0; g.oy = 0;
+    g.clipOff();
+    crHeader();
+    crStatus(now);
+    crBottom(now);
+    blit();
+    spi(DW*DH);
+  }
+
+  // ==========================================================================
   // Экран 3: рулетка обеда
   // ==========================================================================
   // Список мест приходит с моста, победителя выбирает тоже мост — здесь только
@@ -2742,6 +3233,12 @@
       noteCafe(s);
       return;
     }
+    if(screenIdx===4){
+      wire("out", sleeping ? {v:1, slp:1} : {v:1, scr:4, crash:{pts:crPts, bet:crPick, rb:crBet, sp:crSp,
+           x:crX, st:{fly:1,cashed:2,refused:3,bust:4}[crSt]||0, cm:crCashM, win:crWin, rec:crRec, h:crHist.join(",")}});
+      plateInfo.textContent = sleeping ? "SLEEP" : "CRASH";
+      return;
+    }
     const pn=pageCount(), p=Math.min(page,pn-1);
     const sessions = currentPage().map(c=>{
       const o = {id:c.id, name:c.name, state:c.state};
@@ -2788,6 +3285,7 @@
     if(withKey){ setScreen(screenIdx+dir); return; }      // зажата кнопка — листаем экраны
     if(screenIdx===2){ roulKick(dir); return; }            // рулетка: подкрутить барабан
     if(screenIdx===3){ slotKick(); return; }               // автомат: раскрутить барабаны
+    if(screenIdx===4){ crashRotate(dir); return; }         // краш: выбрать ставку
     if(screenIdx!==0) return;                             // вне аквариума листать нечего
     const pn=pageCount();
     page = (Math.min(page,pn-1) + dir + pn) % pn;
@@ -2804,6 +3302,8 @@
     // Пока барабан крутится, кнопка не работает вовсе: и режим, и сброс меняют
     // состав круга, а барабан уже летит к результату прежнего.
     if(screenIdx===2 && rBusy()) return;
+    // Краш не ждёт окна двойного клика: «забрать» на 320мс позже — это другой множитель
+    if(screenIdx===4 && !sleeping){ markActivity(false); crashPress(); return; }
     if(clickTimer){                            // второй клик внутри окна — это двойной
       clearTimeout(clickTimer); clickTimer = null;
       if(sleeping){ markActivity(true); return; }
@@ -2832,6 +3332,7 @@
   knob.addEventListener("pointerdown", e=>{
     knob.setPointerCapture(e.pointerId);
     knob.classList.add("pressed"); dragAngle=null; dragged=false; pressStart=performance.now();
+    if(screenIdx===4) crashPressDown();
   });
   knob.addEventListener("pointerup", ()=>{
     knob.classList.remove("pressed");
@@ -2899,7 +3400,8 @@
     else if(screenIdx===0) renderAquarium(tt);
     else if(screenIdx===1) renderCoffee(tt);
     else if(screenIdx===2) renderRoulette(tt);
-    else renderSlots(tt);
+    else if(screenIdx===3) renderSlots(tt);
+    else renderCrash(tt);
     meterTick(now, spiPx, screenBuf.px+octoBuf.px, spiWins);
     requestAnimationFrame(loop);
   }

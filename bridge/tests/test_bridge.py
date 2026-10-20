@@ -1484,7 +1484,7 @@ def test_encoder_key_no_longer_switches_screen(bridge):
     под режим рулетки. Удержание (ручной сон) убрано целиком — гасить нечего.
     """
     assert bridge.handle_encoder("key") is False and bridge.screen == 0
-    for expect in (1, 2, 3, 0):
+    for expect in (1, 2, 3, 4, 0):
         bridge.handle_encoder("cw", held=True)
         assert bridge.screen == expect
 
@@ -2237,6 +2237,7 @@ def test_http_enc_endpoint_drives_screens_and_pages():
         assert held("cw")["screen"] == 1
         assert held("cw")["screen"] == 2
         assert held("cw")["screen"] == 3
+        assert held("cw")["screen"] == 4
         r = held("cw")
         assert r["screen"] == 0 and r["pages"] == 2
         assert enc("cw")["page"] == 1
@@ -2745,14 +2746,14 @@ def test_slot_snapshot_shape(tmp_path):
     assert len(br.snapshot_line().encode("utf-8")) < 1024
 
 
-def test_four_screens_cycle(tmp_path):
+def test_five_screens_cycle(tmp_path):
     br, _ = slot_bridge(tmp_path)
-    assert b.Bridge.SCREENS == 4
+    assert b.Bridge.SCREENS == 5
     seen = []
-    for _ in range(5):
+    for _ in range(6):
         br.handle_encoder("cw", held=True)
         seen.append(br.screen)
-    assert seen == [1, 2, 3, 0, 1]
+    assert seen == [1, 2, 3, 4, 0, 1]
 
 
 def test_slot_event_from_firmware_spins(tmp_path):
@@ -2762,6 +2763,199 @@ def test_slot_event_from_firmware_spins(tmp_path):
     br.screen = 3
     assert br.handle_encoder("slot") is True
     assert br.slot_sp == 1 and br.points != 50
+
+
+# ------------------------------------------------------------------ краш
+# Точку взрыва бросает мост при пуске, множитель растит плата; «забрал» приезжает
+# с множителем, который плата показывала в миг нажатия.
+def crash_bridge(tmp_path, points=1000, seed=3):
+    br, clock = slot_bridge(tmp_path, seed=seed)
+    br._points_loaded = True
+    br.points = points
+    br.screen = 4
+    return br
+
+
+def test_crash_point_bounds():
+    assert b.crash_point(0.0) == 100, "u=0 — взрыв на старте, ниже x1.00 не бывает"
+    assert b.crash_point(0.5) == 198
+    assert b.crash_point(0.99) == 9900
+    assert b.crash_point(0.9999) == b.CRASH_CAP, "выше Луны не летаем"
+    assert b.crash_point(1.0) == b.CRASH_CAP
+
+
+def test_crash_every_target_returns_the_same(tmp_path):
+    """P(взрыв не раньше m) = 0.99/m: стратегия «ждать x2» и «ждать x20» обязаны
+    давать одну отдачу — иначе одна из них просто правильная, и играть неинтересно."""
+    n = 200_000
+    us = [(i + 0.5) / n for i in range(n)]            # ровная сетка вместо случайности
+    xs = [b.crash_point(u) for u in us]
+    for target in (110, 200, 500, 2000):
+        ev = sum(target / 100 for x in xs if x > target) / n
+        assert 0.97 < ev < 0.995, f"цель x{target / 100}: отдача {ev:.3f}"
+    instant = sum(1 for x in xs if x == 100) / n
+    assert 0.01 < instant < 0.03, f"взрыв на старте: {instant:.3f}"
+
+
+def test_crash_go_takes_bet_and_opens_round(tmp_path):
+    br = crash_bridge(tmp_path, points=1000)
+    assert br.handle_encoder("go", arg={"b": 50}) is True
+    assert br.points == 950 and br.crash_bet == 50 and br.crash_st == b.CR_FLY
+    assert 100 <= br.crash_x <= b.CRASH_CAP
+    snap = br.build_snapshot()
+    assert snap["scr"] == 4
+    c = snap["crash"]
+    assert c["sp"] == 1 and c["st"] == b.CR_FLY and c["x"] == br.crash_x
+    assert c["pts"] == 950 and c["bet"] == 50
+    assert c["h"] == "", "открытый раунд в историю не попадает — это был бы спойлер"
+
+
+def test_crash_cash_below_crash_point_pays(tmp_path):
+    br = crash_bridge(tmp_path, points=1000)
+    br.crash_go(50)
+    br.crash_x = 500
+    assert br.handle_encoder("cash", arg={"sp": br.crash_sp, "m": 237}) is True
+    assert br.points == 950 + 50 * 237 // 100
+    assert br.crash_st == b.CR_CASHED and br.crash_cm == 237 and br.crash_win == 118
+    assert br.crash_hist == [500], "после выплаты точка взрыва уходит в историю"
+    assert br.crash_best_m == 237 and br.crash_best_win == 118
+    # второй «забрал» за тот же раунд — не платится
+    assert br.crash_cash(br.crash_sp, 300) is False
+    assert br.points == 950 + 118
+
+
+def test_crash_cash_too_late_is_a_bust(tmp_path):
+    br = crash_bridge(tmp_path, points=1000)
+    br.crash_go(100)
+    br.crash_x = 187
+    assert br.crash_cash(br.crash_sp, 187) is True, "на самой точке ракета уже взорвалась"
+    assert br.points == 900 and br.crash_st == b.CR_BUST and br.crash_win == 0
+
+
+def test_crash_cash_for_other_round_ignored(tmp_path):
+    br = crash_bridge(tmp_path)
+    br.crash_go(10)
+    br.crash_x = 900
+    assert br.crash_cash(br.crash_sp - 1, 150) is False
+    assert br.crash_cash("мусор", 150) is False
+    assert br.crash_st == b.CR_FLY
+
+
+def test_crash_bust_closes_round(tmp_path):
+    br = crash_bridge(tmp_path, points=200)
+    br.crash_go(100)
+    x = br.crash_x
+    assert br.handle_encoder("bust", arg={"sp": br.crash_sp}) is True
+    assert br.crash_st == b.CR_BUST and br.points == 100 and br.crash_hist == [x]
+    assert br.crash_bust(br.crash_sp) is False, "закрытый раунд второй раз не закрывается"
+    assert br.crash_bust(None) is False
+
+
+def test_crash_unclosed_round_is_lost_on_next_go(tmp_path):
+    """Взрыв потерялся (плата перезагрузилась в полёте) — раунд проигран, а не вечен."""
+    br = crash_bridge(tmp_path, points=100)
+    br.crash_go(10)
+    first = br.crash_x
+    br.crash_go(10)
+    assert br.crash_hist == [first] and br.points == 80 and br.crash_sp == 2
+
+
+def test_crash_refuses_without_points(tmp_path):
+    br = crash_bridge(tmp_path, points=30)
+    assert br.crash_go(50) is False
+    assert br.points == 30 and br.crash_st == b.CR_REFUSED
+    assert br.crash_sp == 1, "отказ — тоже новый номер, иначе плата ждёт ответа вечно"
+
+
+def test_crash_all_in_bets_everything(tmp_path):
+    br = crash_bridge(tmp_path, points=777)
+    assert br.crash_go(b.CRASH_ALLIN) is True
+    assert br.points == 0 and br.crash_bet == 777
+    assert br.build_crash()["bet"] == b.CRASH_ALLIN, "ручка должна вернуться на ва-банк"
+    br.crash_x = 1000
+    br.crash_cash(br.crash_sp, 400)
+    assert br.points == 777 * 4
+    br.points = 0
+    assert br.crash_go(b.CRASH_ALLIN) is False, "ва-банк с нуля — это отказ, а не ставка 0"
+
+
+def test_crash_bet_is_clamped(tmp_path):
+    br = crash_bridge(tmp_path, points=10 ** 6)
+    br.crash_go(10 ** 9)
+    assert br.crash_bet == b.CRASH_BETS[-1]
+    br.crash_go(0)
+    assert br.crash_bet == 1
+    br.crash_go("x")                                  # мусор — та же ставка, что прошлая
+    assert br.crash_bet == 1
+
+
+def test_crash_moon_pays_without_press(tmp_path):
+    br = crash_bridge(tmp_path, points=100)
+    br.crash_go(10)
+    br.crash_x = b.CRASH_CAP
+    assert br.crash_cash(br.crash_sp, b.CRASH_CAP) is True
+    assert br.crash_st == b.CR_CASHED and br.points == 90 + 10 * 100
+
+
+def test_crash_round_survives_restart(tmp_path):
+    """Ставка списана при пуске: перезапуск моста посреди полёта не вправе ни вернуть
+    её, ни потерять выигрыш."""
+    br = crash_bridge(tmp_path, points=500)
+    br.crash_go(b.CRASH_ALLIN)
+    br.crash_x = 300
+    br.save_points()
+    sp = br.crash_sp
+
+    again, _ = slot_bridge(tmp_path)
+    again.load_points()
+    assert again.points == 0 and again.crash_st == b.CR_FLY and again.crash_x == 300
+    assert again.crash_pick == b.CRASH_ALLIN
+    assert again.crash_cash(sp, 200) is True and again.points == 1000
+
+
+def test_crash_history_is_capped(tmp_path):
+    br = crash_bridge(tmp_path, points=10 ** 5)
+    for _ in range(b.CRASH_HIST + 3):
+        br.crash_go(1)
+        br.crash_bust(br.crash_sp)
+    assert len(br.crash_hist) == b.CRASH_HIST
+    assert br.build_crash()["h"].count(",") == b.CRASH_HIST - 1
+    assert len(br.snapshot_line().encode("utf-8")) < 1024
+
+
+def test_crash_broken_state_block_ignored(tmp_path):
+    (tmp_path / "points.json").write_text(json.dumps({"points": 5, "crash": {"x": "ой"}}),
+                                          encoding="utf-8")
+    br, _ = slot_bridge(tmp_path)
+    br.load_points()
+    assert br.points == 5 and br.crash_st == b.CR_NONE
+
+
+def test_crash_args_come_through_the_serial_line():
+    assert b.parse_esp_line('{"enc":"cash","sp":4,"m":237}') == {
+        "enc": "cash", "held": False, "arg": {"sp": 4, "m": 237}}
+    assert b.parse_esp_line('{"enc":"go","b":-1}')["arg"] == {"b": -1}
+    # нецелые и логические значения — не числа краша
+    assert "arg" not in b.parse_esp_line('{"enc":"cash","m":2.5,"sp":true}')
+
+
+def test_http_enc_plays_crash_round():
+    server, port = _serve()
+    try:
+        br = server.bridge
+        br._points_loaded = True
+        br.points = 100
+        with _post(port, "/enc", json.dumps({"enc": "go", "b": 10}).encode()) as r:
+            assert json.loads(r.read())["ok"] is True
+        assert br.points == 90 and br.crash_st == b.CR_FLY
+        br.crash_x = 500
+        with _post(port, "/enc", json.dumps({"enc": "cash", "sp": br.crash_sp,
+                                             "m": 300}).encode()):
+            pass
+        assert br.points == 120
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_record_is_peak_balance_not_best_win(tmp_path):

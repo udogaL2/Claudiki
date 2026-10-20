@@ -76,6 +76,8 @@ class Snap:
         self.br.screen = 3
         self.br._points_loaded = True
         self.slot = self.br.build_snapshot()
+        self.br.screen = 4
+        self.crash = self.br.build_snapshot()
         self.br.screen = 0
         self.br.sleeping = True
         self.sleep = self.br.build_snapshot()
@@ -95,7 +97,7 @@ COMMAND_KEYS = {"cmd", "pl"}
 
 def test_firmware_top_level_keys_are_sent(sketch, snap):
     read = keys_read_from(sketch, "doc") - COMMAND_KEYS
-    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.cull) | set(snap.slot)
+    available = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.cull) | set(snap.slot) | set(snap.crash)
     missing = read - available
     assert not missing, f"прошивка читает, а мост не шлёт: {sorted(missing)}"
 
@@ -119,7 +121,7 @@ def test_shot_command_matches_firmware(sketch):
 
 def test_bridge_top_level_keys_are_understood(sketch, snap):
     read = keys_read_from(sketch, "doc")
-    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.cull) | set(snap.slot)
+    sent = set(snap.aquarium) | set(snap.cafe) | set(snap.sleep) | set(snap.roulette) | set(snap.cull) | set(snap.slot) | set(snap.crash)
     # "v" прошивка намеренно игнорирует: версия нужна людям и логам
     unread = sent - read - {"v"}
     assert not unread, f"мост шлёт, а прошивка не разбирает: {sorted(unread)}"
@@ -199,7 +201,7 @@ def test_screen_count_matches(sketch):
     # в скетче экраны различаются по curScreen == N
     for n in range(1, b.Bridge.SCREENS):
         assert f"curScreen == {n}" in sketch, f"прошивка не знает экран {n}"
-    assert b.Bridge.SCREENS == 4
+    assert b.Bridge.SCREENS == 5
     # экрана, которого прошивка не умеет, у моста быть не должно
     assert f"curScreen == {b.Bridge.SCREENS}" not in sketch
 
@@ -418,6 +420,41 @@ def test_slot_event_understood(sketch):
     assert 'event == "slot"' in src, "мост не разбирает событие автомата"
 
 
+def test_crash_fields_match(sketch, tmp_path):
+    """Поля блока crash сверяются в обе стороны — иначе ракета молча не взлетит."""
+    read = keys_read_from(sketch, "cr")
+    cfg = b.Config(max_sessions=6, points_file=str(tmp_path / "p.json"))
+    br = b.Bridge(cfg, sink=None, clock=lambda: 1.0, is_alive=lambda p: True,
+                  wall_clock=lambda: 1_700_000_000.0, registry_probe=lambda: None)
+    br._points_loaded = True
+    sent = set(br.build_crash())
+    assert read, "в скетче не нашлось чтения полей краша — регулярка устарела?"
+    assert not (read - sent), f"прошивка читает, а мост не шлёт: {sorted(read - sent)}"
+    assert not (sent - read), f"мост шлёт, а прошивка не разбирает: {sorted(sent - read)}"
+
+
+def test_crash_events_understood(sketch):
+    """go/cash/bust с числами: прошивка печатает их сама, мимо sendEnc."""
+    plain = sketch.replace("\\", "")
+    src = pathlib.Path(b.__file__).read_text(encoding="utf-8")
+    for ev, args in (("go", ("b",)), ("cash", ("sp", "m")), ("bust", ("sp",))):
+        assert f'"enc":"{ev}"' in plain, f"прошивка перестала слать {ev}"
+        assert f'event == "{ev}"' in src, f"мост не разбирает {ev}"
+        line = json.dumps({"enc": ev, **{k: 7 for k in args}})
+        parsed = b.parse_esp_line(line)
+        assert parsed["enc"] == ev and parsed.get("arg") == {k: 7 for k in args}, parsed
+    # ва-банк едет отрицательным числом — его тоже надо принять
+    assert b.parse_esp_line('{"enc":"go","b":-1}')["arg"] == {"b": b.CRASH_ALLIN}
+    assert int(re.search(r"#define CR_ALLIN\s+\((-?\d+)\)", sketch).group(1)) == b.CRASH_ALLIN
+    assert int(re.search(r"#define CR_CAP\s+(\d+)", sketch).group(1)) == b.CRASH_CAP
+
+
+def test_crash_bet_ladder_matches(sketch):
+    """Лестница ставок ручки и моста одна: иначе мост обрежет выбранное молча."""
+    fw = re.search(r"CR_BETS\[\]\s*=\s*\{([^}]*)\}", sketch).group(1)
+    assert tuple(int(v) for v in fw.split(",")) == b.CRASH_BETS
+
+
 def sketch_defines(sketch: str) -> dict:
     """Числовые #define скетча — чтобы считать координаты прямоугольников."""
     d = {}
@@ -454,7 +491,8 @@ def test_status_line_is_inside_a_rect_that_redraws_it(sketch):
     rects = [r for r in rects if r[3] < d["H"] // 2]
 
     # y каждой строки состояния: у автомата своя константа, у рулетки — отступ от низа
-    for label, y in (("автомат", d["S_STATUS_Y"]), ("рулетка", d["H"] - 13)):
+    for label, y in (("автомат", d["S_STATUS_Y"]), ("рулетка", d["H"] - 13),
+                     ("краш", d["CR_STATUS_Y"])):
         ok = [r for r in rects
               if r[0] <= 0 and r[0] + r[2] >= d["W"]          # во всю ширину
               and r[1] <= y and r[1] + r[3] >= y + 8]         # и накрывает все 8 строк букв
