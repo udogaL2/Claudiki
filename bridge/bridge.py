@@ -432,14 +432,22 @@ SLOT_PAY_PAIR = 2.0           # два одинаковых — ставка в�
 # на каждый кадр дал бы рваный счётчик. Поэтому точка уезжает на плату сразу, а
 # «забрал» приходит с множителем, который плата показывала в миг нажатия.
 #
-# P(взрыв не раньше m) = CRASH_EDGE / m — у любой стратегии одно матожидание, 0.99:
-# ждать x2 и ждать x50 одинаково честно, разница только в нервах. Взрыв на старте
-# (x1.00) — ~2% раундов, это и есть цена удовольствия.
-CRASH_EDGE = 99               # в сотых: 0.99
+# P(взрыв не раньше m) = CRASH_EDGE / m — у любой стратегии одно матожидание:
+# ждать x2 и ждать x50 одинаково честно, разница только в нервах.
+# Маржи у дома НЕТ (отдача 100%): баллы — не деньги, их зарабатывают часами работы,
+# и казино, которое в среднем их съедает, превращает награду в налог. Симуляция
+# (вечер из 40 раундов) с маржой 1% давала «в плюсе» 37% вечеров, без неё — 40-44%.
+CRASH_EDGE = 100              # в сотых: 1.00
 CRASH_CAP = 10000             # x100 — «долетел до Луны», выплата без нажатия
 CRASH_HIST = 8                # столько прошлых взрывов в полоске истории
 CRASH_BETS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
-CRASH_ALLIN = -1              # ставка «ва-банк»: весь счёт на момент пуска
+CRASH_MAXBET = -1             # ставка «макс»: предел на момент пуска
+# Предел ставки — доля счёта. Без него за три минуты сливалось 3000 баллов (живой
+# вечер 21.10: ставки по 15-67% счёта и отыгрыш удвоением). Симуляция того же стиля:
+# потерять 90% счёта за вечер — 57% без предела, 1% при 20%, 0% при 10%. Пол нужен,
+# чтобы с маленьким счётом было на что играть: при 40 баллах 10% это 4.
+CRASH_MAX_PCT = 10
+CRASH_MIN_CAP = 10
 # Состояние раунда на проводе. «Полёт» мост не отличает от «ждём взрыва»: времени
 # он не знает, взрыв ему сообщает плата (`bust`), а молчаливый раунд закрывает
 # следующий пуск.
@@ -450,6 +458,11 @@ def crash_point(u: float) -> int:
     """Точка взрыва в сотых из равномерного u ∈ [0, 1)."""
     x = int(CRASH_EDGE / (1.0 - u) + 1e-9) if u < 1.0 else CRASH_CAP   # 99/0.01 это 9900, а не 9899
     return max(100, min(CRASH_CAP, x))
+
+
+def crash_cap(points: int) -> int:
+    """Сколько можно поставить при таком счёте."""
+    return max(0, min(points, max(CRASH_MIN_CAP, points * CRASH_MAX_PCT // 100)))
 
 
 
@@ -1185,7 +1198,7 @@ class Bridge:
         self.crash_sp = 0                     # номер раунда: по нему плата видит новый
         self.crash_x = 0                      # точка взрыва раунда, в сотых
         self.crash_bet = 0                    # ставка раунда, баллов
-        self.crash_pick = 10                  # что выбрано ручкой (CRASH_ALLIN = ва-банк)
+        self.crash_pick = 10                  # что выбрано ручкой (CRASH_MAXBET = макс)
         self.crash_st = CR_NONE
         self.crash_cm = 0                     # на каком множителе забрали, в сотых
         self.crash_win = 0
@@ -2030,10 +2043,13 @@ class Bridge:
             pick = int(pick)
         except (TypeError, ValueError):
             pick = self.crash_pick
-        if pick != CRASH_ALLIN:
+        if pick != CRASH_MAXBET:
             pick = max(1, min(CRASH_BETS[-1], pick))
         self.crash_pick = pick
-        bet = self.points if pick == CRASH_ALLIN else pick
+        # Сверх предела не отказ, а срез: счёт мог упасть, пока ручка стояла на
+        # выбранном, и «не дам» на ровном месте читалось бы как поломка
+        cap = crash_cap(self.points)
+        bet = cap if pick == CRASH_MAXBET else min(pick, max(cap, 1))
         self.crash_sp += 1
         self.crash_cm = self.crash_win = 0
         if bet < 1 or self.points < bet:
@@ -2048,7 +2064,7 @@ class Bridge:
         self.crash_st = CR_FLY
         self.crash_rounds += 1
         self.log.info("краш #%d: ставка %d%s, баллов %d", self.crash_sp, bet,
-                      " (ва-банк)" if pick == CRASH_ALLIN else "", self.points)
+                      " (макс)" if pick == CRASH_MAXBET else "", self.points)
         self.save_points()
         self.mark_dirty()
         return True
@@ -2108,9 +2124,12 @@ class Bridge:
             self.load_points()
         self._touch_peak()
         # История строкой, а не массивом: каждый узел ArduinoJson стоит дороже текста.
-        # bet — что выбрано ручкой (может быть ва-банк), rb — чем рискует раунд в
+        # bet — что выбрано ручкой (может быть «макс»), rb — чем рискует раунд в
         # баллах: раунд, запущенный не с ручки, иначе показывал бы чужую ставку.
-        return {"pts": self.points, "bet": self.crash_pick, "rb": self.crash_bet,
+        # cap — предел ставки: плата фильтрует по нему лестницу, а формулу не
+        # дублирует, чтобы правка процента не требовала перепрошивки.
+        return {"pts": self.points, "cap": crash_cap(self.points), "bet": self.crash_pick,
+                "rb": self.crash_bet,
                 "sp": self.crash_sp, "x": self.crash_x, "st": self.crash_st, "cm": self.crash_cm,
                 "win": self.crash_win, "rec": self.pts_peak,
                 "h": ",".join(str(v) for v in self.crash_hist)}

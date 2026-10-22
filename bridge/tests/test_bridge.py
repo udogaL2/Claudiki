@@ -2778,23 +2778,23 @@ def crash_bridge(tmp_path, points=1000, seed=3):
 
 def test_crash_point_bounds():
     assert b.crash_point(0.0) == 100, "u=0 — взрыв на старте, ниже x1.00 не бывает"
-    assert b.crash_point(0.5) == 198
-    assert b.crash_point(0.99) == 9900
+    assert b.crash_point(0.5) == 200
+    assert b.crash_point(0.99) == b.CRASH_CAP
     assert b.crash_point(0.9999) == b.CRASH_CAP, "выше Луны не летаем"
     assert b.crash_point(1.0) == b.CRASH_CAP
 
 
 def test_crash_every_target_returns_the_same(tmp_path):
-    """P(взрыв не раньше m) = 0.99/m: стратегия «ждать x2» и «ждать x20» обязаны
+    """P(взрыв не раньше m) = 1/m: стратегия «ждать x2» и «ждать x20» обязаны
     давать одну отдачу — иначе одна из них просто правильная, и играть неинтересно."""
     n = 200_000
     us = [(i + 0.5) / n for i in range(n)]            # ровная сетка вместо случайности
     xs = [b.crash_point(u) for u in us]
     for target in (110, 200, 500, 2000):
         ev = sum(target / 100 for x in xs if x > target) / n
-        assert 0.97 < ev < 0.995, f"цель x{target / 100}: отдача {ev:.3f}"
+        assert 0.98 < ev < 1.005, f"цель x{target / 100}: отдача {ev:.3f}"
     instant = sum(1 for x in xs if x == 100) / n
-    assert 0.01 < instant < 0.03, f"взрыв на старте: {instant:.3f}"
+    assert 0.005 < instant < 0.02, f"взрыв на старте: {instant:.3f}"
 
 
 def test_crash_go_takes_bet_and_opens_round(tmp_path):
@@ -2842,11 +2842,11 @@ def test_crash_cash_for_other_round_ignored(tmp_path):
 
 
 def test_crash_bust_closes_round(tmp_path):
-    br = crash_bridge(tmp_path, points=200)
+    br = crash_bridge(tmp_path, points=2000)
     br.crash_go(100)
     x = br.crash_x
     assert br.handle_encoder("bust", arg={"sp": br.crash_sp}) is True
-    assert br.crash_st == b.CR_BUST and br.points == 100 and br.crash_hist == [x]
+    assert br.crash_st == b.CR_BUST and br.points == 1900 and br.crash_hist == [x]
     assert br.crash_bust(br.crash_sp) is False, "закрытый раунд второй раз не закрывается"
     assert br.crash_bust(None) is False
 
@@ -2861,22 +2861,35 @@ def test_crash_unclosed_round_is_lost_on_next_go(tmp_path):
 
 
 def test_crash_refuses_without_points(tmp_path):
-    br = crash_bridge(tmp_path, points=30)
+    br = crash_bridge(tmp_path, points=0)
     assert br.crash_go(50) is False
-    assert br.points == 30 and br.crash_st == b.CR_REFUSED
+    assert br.points == 0 and br.crash_st == b.CR_REFUSED
     assert br.crash_sp == 1, "отказ — тоже новый номер, иначе плата ждёт ответа вечно"
 
 
-def test_crash_all_in_bets_everything(tmp_path):
-    br = crash_bridge(tmp_path, points=777)
-    assert br.crash_go(b.CRASH_ALLIN) is True
-    assert br.points == 0 and br.crash_bet == 777
-    assert br.build_crash()["bet"] == b.CRASH_ALLIN, "ручка должна вернуться на ва-банк"
-    br.crash_x = 1000
-    br.crash_cash(br.crash_sp, 400)
-    assert br.points == 777 * 4
+def test_crash_cap_is_a_share_of_points():
+    assert b.crash_cap(3368) == 336
+    assert b.crash_cap(40) == 10, "с маленьким счётом всё равно есть на что играть"
+    assert b.crash_cap(7) == 7, "пол не даёт ставить больше, чем есть"
+    assert b.crash_cap(0) == 0
+
+
+def test_crash_max_bets_the_cap(tmp_path):
+    br = crash_bridge(tmp_path, points=7770)
+    assert br.crash_go(b.CRASH_MAXBET) is True
+    assert br.points == 7770 - 777 and br.crash_bet == 777
+    assert br.build_crash()["bet"] == b.CRASH_MAXBET, "ручка должна вернуться на «макс»"
+    assert br.build_crash()["cap"] == b.crash_cap(br.points)
     br.points = 0
-    assert br.crash_go(b.CRASH_ALLIN) is False, "ва-банк с нуля — это отказ, а не ставка 0"
+    assert br.crash_go(b.CRASH_MAXBET) is False, "«макс» с нуля — это отказ, а не ставка 0"
+
+
+def test_crash_bet_over_cap_is_cut_not_refused(tmp_path):
+    """Живой вечер 21.10: 1000 при 1623 на счету. Теперь это срез до 10%."""
+    br = crash_bridge(tmp_path, points=1623)
+    assert br.crash_go(1000) is True
+    assert br.crash_bet == 162 and br.points == 1623 - 162
+    assert br.crash_pick == 1000, "выбор ручки не переписываем"
 
 
 def test_crash_bet_is_clamped(tmp_path):
@@ -2901,16 +2914,16 @@ def test_crash_round_survives_restart(tmp_path):
     """Ставка списана при пуске: перезапуск моста посреди полёта не вправе ни вернуть
     её, ни потерять выигрыш."""
     br = crash_bridge(tmp_path, points=500)
-    br.crash_go(b.CRASH_ALLIN)
+    br.crash_go(b.CRASH_MAXBET)
     br.crash_x = 300
     br.save_points()
     sp = br.crash_sp
 
     again, _ = slot_bridge(tmp_path)
     again.load_points()
-    assert again.points == 0 and again.crash_st == b.CR_FLY and again.crash_x == 300
-    assert again.crash_pick == b.CRASH_ALLIN
-    assert again.crash_cash(sp, 200) is True and again.points == 1000
+    assert again.points == 450 and again.crash_st == b.CR_FLY and again.crash_x == 300
+    assert again.crash_pick == b.CRASH_MAXBET
+    assert again.crash_cash(sp, 200) is True and again.points == 550
 
 
 def test_crash_history_is_capped(tmp_path):

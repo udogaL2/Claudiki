@@ -1878,10 +1878,12 @@
   //
   // Поле перерисовывается каждый кадр целиком (звёзды, горизонт, кривая, герой),
   // поэтому в нём можно всё — никакой статики, которая отклеилась бы при рескейле.
-  const CR_K = 0.14;                      // x2 за 5с, x10 за 16с, x100 за 33с
+  // мягкий старт: m = e^(K·t²/(t+T0)) — первую секунду ползёт, дальше та же экспонента
+  const CR_K = 0.16, CR_T0 = 2;          // x2 за 5.8с, x10 за 16с, x100 за 31с
   const CR_CAP = 10000;                   // = CRASH_CAP моста: Луна, выплата без нажатия
   const CR_BETS = [1,2,5,10,25,50,100,250,500,1000,2500,5000,10000];
-  const CR_ALLIN = -1;
+  const CR_MAXBET = -1;                  // «макс»: предел моста
+  const crCap = () => Math.max(0, Math.min(crPts, Math.max(10, Math.floor(crPts*10/100))));
   const CR_FY0 = 34, CR_FY1 = 199;        // поле полёта
   const CR_STATUS_Y = 204;                // строка подсказки — перерисовывается целиком
   const CR_BOT_Y = 216;                   // низ: ставка / «на кону»
@@ -1917,29 +1919,30 @@
   let crCashAt = 0, crCoinX = 0, crCoinY = 0;     // фонтан монет на «забрал»
   let crHeroX = CR_GX0 + 12, crHeroY = CR_GY0 - 30;
 
-  const crMult = t => Math.min(CR_CAP, Math.floor(100*Math.exp(CR_K*t) + 1e-6));
-  const crTimeOf = m => Math.log(m/100)/CR_K;
+  const crLn = t => CR_K*t*t/(t + CR_T0);
+  const crMult = t => Math.min(CR_CAP, Math.floor(100*Math.exp(crLn(t)) + 1e-6));
+  const crTimeOf = m => { const L = Math.log(m/100); return (L + Math.sqrt(L*L + 4*CR_K*L*CR_T0))/(2*CR_K); };
   // Целочисленно, с усечением — ровно как snprintf в прошивке, а не toFixed с округлением.
   const crTxt = m => "X" + (m >= 10000 ? (m/100|0) : m >= 1000 ? `${m/100|0}.${(m/10|0)%10}`
                                        : `${m/100|0}.${String(m%100).padStart(2,"0")}`);
   const crTier = m => m >= 5000 ? CR_HOT : m >= 1000 ? CR_GOLD : m >= 200 ? C_WORK : CREAM;
-  function crBets(){                     // лестница ставок, которые счёт может оплатить
-    const out = CR_BETS.filter(v => v <= crPts);
-    out.push(CR_ALLIN);
+  function crBets(){                     // лестница ставок в пределах 10% счёта
+    const out = CR_BETS.filter(v => v <= crCap());
+    out.push(CR_MAXBET);
     return out;
   }
-  const crBetVal = () => crPick === CR_ALLIN ? crPts : crPick;
-  const crBetTxt = () => crPick === CR_ALLIN ? "ВА-БАНК" : "СТАВКА " + crPick;
+  const crBetVal = () => crPick === CR_MAXBET ? crCap() : Math.min(crPick, crCap());
+  const crBetTxt = () => (crPick === CR_MAXBET ? "МАКС " : "СТАВКА ") + crBetVal();
 
   // --- мост (симуляция): на проводе ровно то, что шлёт build_crash() ---
   function crBridgeGo(b){
-    const bet = b === CR_ALLIN ? crPts : b;
+    const cap = crCap(), bet = b === CR_MAXBET ? cap : Math.min(b, Math.max(cap, 1));
     crSp++;
-    if(bet < 1 || crPts < bet){ wire("out", {v:1, scr:4, crash:{pts:crPts, sp:crSp, st:3}}); crApply(crSp, 3, 0); return; }
+    if(bet < 1 || crPts < bet){ wire("out", {v:1, scr:4, crash:{pts:crPts, cap, sp:crSp, st:3}}); crApply(crSp, 3, 0); return; }
     crPts -= bet;
     const u = Math.random();
-    crX = Math.max(100, Math.min(CR_CAP, Math.floor(99/(1-u) + 1e-9)));
-    wire("out", {v:1, scr:4, crash:{pts:crPts, bet:b, rb:bet, sp:crSp, x:crX, st:1}});
+    crX = Math.max(100, Math.min(CR_CAP, Math.floor(100/(1-u) + 1e-9)));   // отдача 100%, маржи нет
+    wire("out", {v:1, scr:4, crash:{pts:crPts, cap:crCap(), bet:b, rb:bet, sp:crSp, x:crX, st:1}});
     crApply(crSp, 1, bet);
   }
   function crApply(sp, st, bet){         // = разбор снэпшота платой: новый раунд пришёл
@@ -1972,7 +1975,7 @@
     if(crSt === "cashed"){ crT = crTimeOf(crX); return; }   // досмотреть взрыв сразу
     if(crSt === "count") return;
     const b = crPick;
-    if(crBetVal() < 1 || crPts < crBetVal()){ crSt = "refused"; crRefusedAt = now; return; }
+    if(crBetVal() < 1){ crSt = "refused"; crRefusedAt = now; return; }
     wire("in", {enc:"go", b});
     crSt = "count"; crT0 = now; crAnswered = false; crT = 0; crM = 100;
     crCashM = 0; crWin = 0; crScroll = 0;
@@ -2264,9 +2267,9 @@
       return;
     }
     const s = crBetTxt();
-    const low = crBetVal() > crPts || crBetVal() < 1;
+    const low = crBetVal() < 1;
     const w = txPxW(s, 2), x = (DW - w)>>1, y = CR_BOT_Y + 5;
-    const c = low ? (((now/300)|0) & 1 ? C_ERR : lerp(C_ERR, BG, 0.45)) : crPick === CR_ALLIN ? CR_HOT : CREAM;
+    const c = low ? (((now/300)|0) & 1 ? C_ERR : lerp(C_ERR, BG, 0.45)) : crPick === CR_MAXBET ? CR_HOT : CREAM;
     txPx(s, x, y, 2, c);
     if(crSt !== "count"){
       const ac = lerp(CREAM, BG, 0.5);
@@ -2280,7 +2283,7 @@
   window.crashState = () => ({st: crSt, sp: crSp, x: crX, m: crM, bet: crBet, pick: crPick,
                               pts: crPts, cash: crCashM, win: crWin, hist: [...crHist]});
   window.crashDebug = {press: crashPress, down: crashPressDown, rotate: crashRotate,
-                       skip: m => { crT = crTimeOf(m); }, rig: x => { Math.random = () => 1 - 99/x; }};
+                       skip: m => { crT = crTimeOf(m); }, rig: x => { Math.random = () => 1 - 100/(x + 0.5); }};
 
   function renderCrash(tt){
     const now = performance.now();

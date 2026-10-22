@@ -29,7 +29,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   96 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   97 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -2658,9 +2658,13 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
 // Поле перерисовывается каждый кадр целиком: оси графика растягиваются за ракетой, и
 // любая «статика» на поле отклеилась бы при рескейле. Всё, что движется, считает
 // физика ровно раз за кадр — таблицу кривой, героя, звёзды; рисование только читает.
-#define CR_K         0.14f   // x2 за 5с, x10 за 16с, x100 за 33с
+// Мягкий старт: m = e^(K·t²/(t+T0)). Первую секунду множитель еле ползёт, дальше
+// это та же экспонента. На чистой e^(0.14t) 14% раундов взрывались раньше, чем
+// человек успевал нажать (x1.15 за 1с), — проигрыш без шанса. Тут x1.05 за 1с: 5%.
+#define CR_K         0.16f   // x2 за 5.8с, x10 за 16с, x100 за 31с
+#define CR_T0        2.0f
 #define CR_CAP       10000   // = CRASH_CAP моста: Луна, выплата без нажатия
-#define CR_ALLIN     (-1)    // ставка «ва-банк»: весь счёт на момент пуска
+#define CR_MAXBET    (-1)    // ставка «макс»: предел моста на момент пуска
 #define CR_FY0       34      // поле полёта
 #define CR_FY1       199
 #define CR_FH        (CR_FY1 - CR_FY0 + 1)
@@ -2708,6 +2712,7 @@ enum CrashState { CRS_IDLE, CRS_COUNT, CRS_FLY, CRS_CASHED, CRS_BUST, CRS_REFUSE
 
 CrashState crSt = CRS_IDLE;
 int  crPts = 0, crRec = 0, crPick = 10;
+int  crCap = 10;                             // предел ставки: считает мост, тут только фильтр
 // Что ПОКАЗАНО в шапке — заморожено на полёт, как у автомата: мост закрывает раунд
 // по нажатию и сразу присылает счёт и историю, а в истории лежит точка взрыва.
 // Покажи её раньше времени — и «а могло быть» превращается в спойлер.
@@ -2777,11 +2782,15 @@ static inline int crTier(int m) { return m >= 5000 ? 3 : m >= 1000 ? 2 : m >= 20
 static inline bool crFlying() { return crSt == CRS_FLY || crSt == CRS_CASHED; }
 static inline bool crInRound() { return crSt == CRS_COUNT || crFlying(); }
 
+static inline float crLn(float t) { return CR_K * t * t / (t + CR_T0); }
 int crMult(float t) {
-  float m = 100.0f * expf(CR_K * t) + 1e-3f;
+  float m = 100.0f * expf(crLn(t)) + 1e-3f;
   return m >= CR_CAP ? CR_CAP : (int)m;
 }
-float crTimeOf(int m) { return logf(m / 100.0f) / CR_K; }
+float crTimeOf(int m) {                 // обратная к crLn: K·t² − L·t − L·T0 = 0
+  float L = logf(m / 100.0f);
+  return (L + sqrtf(L * L + 4 * CR_K * L * CR_T0)) / (2 * CR_K);
+}
 // Линейная ось множителя: на логарифмической экспонента была бы прямой, и кривая не
 // «загибалась бы в небо». А загиб тут и есть главный аттракцион.
 int crYOf(int m) { return CR_GY0 - iround((float)(m - 100) / (crMMax - 100) * (CR_GY0 - CR_GY1)); }
@@ -2793,7 +2802,8 @@ void crFmt(char *out, size_t n, int m) {
   else if (m >= 1000) snprintf(out, n, "X%d.%d", m / 100, (m / 10) % 10);
   else                snprintf(out, n, "X%d.%02d", m / 100, m % 100);
 }
-int crBetVal() { return crPick == CR_ALLIN ? crPts : crPick; }
+// Выбранное сверх предела мост срежет — и показываем сразу срезанное
+int crBetVal() { return crPick == CR_MAXBET ? crCap : min(crPick, crCap); }
 
 void crSendCash(int m) {
   Serial.print(F("{\"enc\":\"cash\",\"sp\":")); Serial.print(crSp);
@@ -2802,12 +2812,12 @@ void crSendCash(int m) {
 }
 
 // Выбор ставки — локальный: щелчок отзывается сразу, а мосту уходит только пуск.
-// Лестница отфильтрована по счёту: ставку, которую не оплатить, не предлагаем.
+// Лестница отфильтрована по пределу: ставку, которую мост срежет, не предлагаем.
 void crashRotate(int dir) {
   if (crInRound()) return;                  // в полёте ставку не меняют
   int list[CR_NBETS + 1], n = 0;
-  for (int i = 0; i < CR_NBETS; i++) if (CR_BETS[i] <= crPts) list[n++] = CR_BETS[i];
-  list[n++] = CR_ALLIN;
+  for (int i = 0; i < CR_NBETS; i++) if (CR_BETS[i] <= crCap) list[n++] = CR_BETS[i];
+  list[n++] = CR_MAXBET;
   int i = -1;
   for (int k = 0; k < n; k++) if (list[k] == crPick) { i = k; break; }
   if (i < 0) { i = 0; while (i < n - 2 && list[i + 1] <= crPick) i++; }
@@ -2840,7 +2850,7 @@ void crashPress() {
   if (crSt == CRS_CASHED) { crT = crTimeOf(crX); return; }   // досмотреть взрыв сразу
   if (crSt == CRS_COUNT) return;
   int bet = crBetVal();
-  if (bet < 1 || crPts < bet) { crSt = CRS_REFUSED; crRefusedAt = now; return; }
+  if (bet < 1) { crSt = CRS_REFUSED; crRefusedAt = now; return; }
   Serial.print(F("{\"enc\":\"go\",\"b\":")); Serial.print(crPick); Serial.println(F("}"));
   crSt = CRS_COUNT; crT0 = now; crAnswered = false;
   crT = 0; crM = 100; crCashM = crWin = 0;
@@ -2860,6 +2870,7 @@ void crHistApply() {
 
 void crashApply(JsonObject cr) {
   int pts = cr["pts"] | 0, rec = cr["rec"] | 0, bet = cr["bet"] | 10, rb = cr["rb"] | 0;
+  crCap = cr["cap"] | 10;
   int sp = cr["sp"] | 0, x = cr["x"] | 0, st = cr["st"] | 0;
   int cm = cr["cm"] | 0, win = cr["win"] | 0;
   const char *h = cr["h"] | "";
@@ -2954,13 +2965,15 @@ void crashPhysics(unsigned long now) {
   crGridN = 0;
   if (flying || crSt == CRS_BUST) {
     crCurveEnd = min(W - 1, crXOf(crT));
-    // Кривая — табличкой: экспонента на столбец на КАЖДУЮ полосу стоила бы тысячи
-    // expf за кадр. Одна expf на шаг, дальше умножение.
-    float r = expf(CR_K * crTMax / (CR_GX1 - CR_GX0)), mf = 1.0f;
+    // Кривая — табличкой, и без expf на столбец: показатель crLn растёт на столбец
+    // меньше чем на 0.03, так что e^d с точностью до d³/6 — это 1 + d + d²/2.
+    float dt = crTMax / (CR_GX1 - CR_GX0), mf = 1.0f, lp = 0;
     crCurveY[CR_GX0] = CR_GY0;
     crTierX[0] = crTierX[1] = crTierX[2] = W;
     for (int x = CR_GX0 + 1; x <= crCurveEnd; x++) {
-      mf *= r;
+      float l = crLn((x - CR_GX0) * dt), d = l - lp;
+      lp = l;
+      mf *= 1 + d + d * d * 0.5f;
       int m = (int)(100 * mf + 1e-3f);
       if (m > CR_CAP) m = CR_CAP;
       crCurveY[x] = (uint8_t)crYOf(m);
@@ -3265,12 +3278,12 @@ void crBottom(OffsetCanvas &g, unsigned long now) {
                crSt == CRS_FLY ? crTierCol[crTier(crM)] : C_WORKING, 2);
     return;
   }
-  if (crPick == CR_ALLIN) strlcpy(s, "ВА-БАНК", sizeof(s));
-  else                    snprintf(s, sizeof(s), "СТАВКА %d", crPick);
-  bool low = crBetVal() > crPts || crBetVal() < 1;
+  if (crPick == CR_MAXBET) snprintf(s, sizeof(s), "МАКС %d", crBetVal());
+  else                     snprintf(s, sizeof(s), "СТАВКА %d", crBetVal());
+  bool low = crBetVal() < 1;
   int w = textWidthRu(s, 2), x = (W - w) >> 1, y = CR_BOT_Y + 5;
   uint16_t c = low ? (((now / 300) & 1) ? C_ERROR : lerp565(C_ERROR, BG, 0.45f))
-               : crPick == CR_ALLIN ? CR_HOT : CREAMC;
+               : crPick == CR_MAXBET ? CR_HOT : CREAMC;
   drawTextRu(g, x, y, s, c, 2);
   if (crSt != CRS_COUNT) {
     uint16_t ac = lerp565(CREAMC, BG, 0.5f);

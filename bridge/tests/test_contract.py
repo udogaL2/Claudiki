@@ -443,9 +443,9 @@ def test_crash_events_understood(sketch):
         line = json.dumps({"enc": ev, **{k: 7 for k in args}})
         parsed = b.parse_esp_line(line)
         assert parsed["enc"] == ev and parsed.get("arg") == {k: 7 for k in args}, parsed
-    # ва-банк едет отрицательным числом — его тоже надо принять
-    assert b.parse_esp_line('{"enc":"go","b":-1}')["arg"] == {"b": b.CRASH_ALLIN}
-    assert int(re.search(r"#define CR_ALLIN\s+\((-?\d+)\)", sketch).group(1)) == b.CRASH_ALLIN
+    # «макс» едет отрицательным числом — его тоже надо принять
+    assert b.parse_esp_line('{"enc":"go","b":-1}')["arg"] == {"b": b.CRASH_MAXBET}
+    assert int(re.search(r"#define CR_MAXBET\s+\((-?\d+)\)", sketch).group(1)) == b.CRASH_MAXBET
     assert int(re.search(r"#define CR_CAP\s+(\d+)", sketch).group(1)) == b.CRASH_CAP
 
 
