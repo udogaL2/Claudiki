@@ -165,6 +165,15 @@ def test_hook_start_carries_pid_and_transcript(hook, monkeypatch):
         "cwd": "/work/proj", "transcript_path": "/t/abc.jsonl",
     })
     assert payload["pid"] == 4242 and payload["transcript"] == "/t/abc.jsonl"
+    assert "source" not in payload
+
+
+def test_hook_start_carries_source(hook, monkeypatch):
+    payload = run_hook(hook, monkeypatch, {
+        "session_id": "abc", "hook_event_name": "SessionStart",
+        "cwd": "/work/proj", "source": "compact",
+    })
+    assert payload["event"] == "start" and payload["source"] == "compact"
 
 
 def test_hook_carries_meta_orchestration_env(hook, monkeypatch):

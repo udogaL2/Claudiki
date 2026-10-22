@@ -138,6 +138,11 @@ def main() -> None:
     }
     if event == "start":
         payload["pid"] = resolve_claude_pid()  # захват PID claude один раз за сессию
+        # SessionStart приходит и на автокомпакт (source=compact) посреди работы,
+        # с тем же session_id: мост должен отличить его от настоящего старта.
+        source = envelope.get("source")
+        if isinstance(source, str) and source:
+            payload["source"] = source[:16]
 
     # Мета-оркестрация: роль и имя сессии видны прямо в ОКРУЖЕНИИ хука — плагин
     # MetaJetCore ставит их вкладке агента, а claude передаёт своим детям. Это

@@ -423,6 +423,26 @@ def test_start_resets_subagents(bridge):
     assert bridge.sessions["a"].subagents == 0
 
 
+def test_compact_start_keeps_state_and_subagents(bridge):
+    """Автокомпакт шлёт SessionStart(source=compact) посреди работы команды.
+
+    Живой случай: SubagentStop привёз subs=8, через 4с компакт обнулил счётчик и
+    поставил IDLE — пузырьки работающих teammate пропали с экрана.
+    """
+    bridge.handle_event({"session_id": "a", "event": "working", "cwd": "/p/x"})
+    bridge.handle_event({"session_id": "a", "event": "subagent_done", "subs": 8})
+    assert bridge.handle_event({"session_id": "a", "event": "start", "cwd": "/p/x",
+                                "pid": 77, "source": "compact"}) is False
+    s = bridge.sessions["a"]
+    assert s.subagents == 8 and s.state == b.WORKING and s.pid == 77
+
+
+def test_compact_start_of_unknown_session_creates_it(bridge):
+    assert bridge.handle_event({"session_id": "n", "event": "start", "cwd": "/p/x",
+                                "source": "compact"}) is True
+    assert bridge.sessions["n"].state == b.IDLE
+
+
 def test_subagent_unknown_session_created_working(bridge):
     assert bridge.handle_event({"session_id": "z", "event": "subagent", "cwd": "/p/mcp"}) is True
     assert bridge.sessions["z"].subagents == 1 and bridge.sessions["z"].state == b.WORKING

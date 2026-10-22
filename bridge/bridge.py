@@ -1269,6 +1269,15 @@ class Bridge:
                     self.sessions[session_id] = sess
                     self._note_transcript(sess, transcript)
                     self.log.info("start: %s (%s) pid=%s", session_id, name, pid)
+                elif data.get("source") == "compact":
+                    # Автокомпакт шлёт SessionStart посреди работы: сессия та же,
+                    # субагенты живы. Сброс гасил пузырьки работающей команды и
+                    # ставил IDLE, пока сессия трудится — это признак жизни, не старт.
+                    sess.last_event = now
+                    sess.last_active_ms = now_ms
+                    if pid is not None:
+                        sess.pid = pid
+                    return False
                 else:
                     sess.state = IDLE
                     sess.last_event = now
