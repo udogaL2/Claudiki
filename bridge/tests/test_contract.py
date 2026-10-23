@@ -447,6 +447,8 @@ def test_crash_events_understood(sketch):
     assert b.parse_esp_line('{"enc":"go","b":-1}')["arg"] == {"b": b.CRASH_MAXBET}
     assert int(re.search(r"#define CR_MAXBET\s+\((-?\d+)\)", sketch).group(1)) == b.CRASH_MAXBET
     assert int(re.search(r"#define CR_CAP\s+(\d+)", sketch).group(1)) == b.CRASH_CAP
+    assert int(re.search(r"#define CR_INS_PCT\s+(\d+)", sketch).group(1)) == b.CRASH_INS_PCT, \
+        "страховку плата показывает сама — процент обязан совпадать с мостом"
 
 
 def test_crash_bet_ladder_matches(sketch):

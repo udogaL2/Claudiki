@@ -1883,6 +1883,7 @@
   const CR_CAP = 10000;                   // = CRASH_CAP моста: Луна, выплата без нажатия
   const CR_BETS = [1,2,5,10,25,50,100,250,500,1000,2500,5000,10000];
   const CR_MAXBET = -1;                  // «макс»: предел моста
+  const CR_INS_PCT = 10;                 // страховка: слив возвращает эту долю ставки
   const crCap = () => Math.max(0, Math.min(crPts, Math.max(10, Math.floor(crPts*10/100))));
   const CR_FY0 = 34, CR_FY1 = 199;        // поле полёта
   const CR_STATUS_Y = 204;                // строка подсказки — перерисовывается целиком
@@ -1958,22 +1959,37 @@
     if(i < 0){ i = 0; while(i < list.length-2 && list[i+1] <= crPick) i++; }
     crPick = list[Math.max(0, Math.min(list.length-1, i + dir))];
   }
-  function crashPressDown(){ crPressM = crM; }   // множитель фиксируется на продавливании
+  // множитель фиксируется на продавливании; продавленное в полёте — «забрать», а не пуск,
+  // даже если ракета взорвалась до отпускания (иначе отпускание запускало новый раунд)
+  let crPressFly = false, crHeld = false;
+  const CR_LOCK_MS = 1000;               // столько после взрыва клик не запускает раунд
+  function crashPressDown(){
+    crHeld = true;
+    crPressFly = crSt === "fly" || crSt === "cashed";
+    crPressM = crSt === "fly" ? crM : 0;
+  }
+  function crCashAtM(m, now){
+    crCashM = m; crCashT = crTimeOf(m); crWin = Math.floor(crBet*m/100);
+    wire("in", {enc:"cash", sp:crSp, m});
+    crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
+    crPts += crWin; if(crPts > crRec) crRec = crPts;
+    crSt = "cashed";
+  }
   function crashPress(){
     const now = performance.now();
+    const fromFlight = crPressFly;
+    crPressFly = false; crHeld = false;
     if(crSt === "fly"){
       // забрал: множитель — тот, что был в миг нажатия, а не после отпускания
       const m = Math.min(crPressM || crM, crM);
       crPressM = 0;
-      crCashM = m; crCashT = crTimeOf(m); crWin = Math.floor(crBet*m/100);
-      wire("in", {enc:"cash", sp:crSp, m});
-      crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
-      crPts += crWin; if(crPts > crRec) crRec = crPts;
-      crSt = "cashed";
+      crCashAtM(m, now);
       return;
     }
+    crPressM = 0;
     if(crSt === "cashed"){ crT = crTimeOf(crX); return; }   // досмотреть взрыв сразу
     if(crSt === "count") return;
+    if(fromFlight || (crSt === "bust" && now - crBustAt < CR_LOCK_MS)) return;
     const b = crPick;
     if(crBetVal() < 1){ crSt = "refused"; crRefusedAt = now; return; }
     wire("in", {enc:"go", b});
@@ -1994,6 +2010,10 @@
     if(crSt === "fly" || crSt === "cashed"){
       crT += dt * (crSt === "cashed" ? CR_FAST : 1);
       crM = crMult(crT);
+      // кнопка продавлена до взрыва и ещё зажата — это «забрал» на том множителе
+      if(crM >= crX && crSt === "fly" && crPressFly && crHeld && crPressM && crPressM < crX){
+        crCashAtM(crPressM, now); crPressM = 0;
+      }
       if(crM >= crX){
         crM = crX; crT = crTimeOf(crX);
         if(crX >= CR_CAP && crSt === "fly"){          // Луна: выплата без нажатия
@@ -2001,7 +2021,7 @@
           wire("in", {enc:"cash", sp:crSp, m:CR_CAP});
           crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
           crPts += crWin; if(crPts > crRec) crRec = crPts;
-        } else if(crSt === "fly") wire("in", {enc:"bust", sp:crSp});
+        } else if(crSt === "fly"){ wire("in", {enc:"bust", sp:crSp}); crPts += Math.floor(crBet*CR_INS_PCT/100); }
         crHist = [crX, ...crHist].slice(0, 8);
         crSt = "bust"; crBustAt = now; crBustX = crHeroX; crBustY = crHeroY;
       }
@@ -2251,7 +2271,7 @@
     else if(crSt === "cashed"){ t = `ЗАБРАЛ +${crWin} НА ${crTxt(crCashM)}  ЖМИ: ДАЛЬШЕ`; c = C_WORK; }
     else if(crSt === "bust" && crCashM >= CR_CAP){ t = `ЛУНА! +${crWin} БАЛЛОВ`; c = flash ? 0xFFFF : CR_GOLD; }
     else if(crSt === "bust" && crCashM){ t = `ЗАБРАЛ +${crWin}, КРАШ НА ${crTxt(crX)}`; c = C_WORK; }
-    else if(crSt === "bust"){ t = `СЛИВ -${crBet}, КРАШ НА ${crTxt(crX)}`; c = C_ERR; }
+    else if(crSt === "bust"){ t = `КРАШ НА ${crTxt(crX)}: -${crBet}, СТРАХОВКА +${Math.floor(crBet*CR_INS_PCT/100)}`; c = C_ERR; }
     else t = "ЖМИ: ПОЕХАЛИ   КРУТИ: СТАВКА";
     txPx(t, (DW - txPxW(t))>>1, CR_STATUS_Y, 1, c);
   }

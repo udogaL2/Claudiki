@@ -29,7 +29,7 @@
 // на случай, если эти байты понадобятся; отдельной отладочной ВЕРСИИ прошивки нет
 // намеренно: два пути отрисовки в этом проекте уже расходились и стоили дня работы.
 #define ESP_SHOT 1
-#define FW_VER   97 // бампать при каждой заливке — видно в диаг-логе
+#define FW_VER   99 // бампать при каждой заливке — видно в диаг-логе
 
 // --- пины --------------------------------------------------------------------
 #define TFT_CS   D8
@@ -2665,6 +2665,7 @@ void composeSlots(OffsetCanvas &g, int top, int bot, int left, int right, float 
 #define CR_T0        2.0f
 #define CR_CAP       10000   // = CRASH_CAP моста: Луна, выплата без нажатия
 #define CR_MAXBET    (-1)    // ставка «макс»: предел моста на момент пуска
+#define CR_INS_PCT   10      // = CRASH_INS_PCT моста: слив возвращает эту долю ставки
 #define CR_FY0       34      // поле полёта
 #define CR_FY1       199
 #define CR_FH        (CR_FY1 - CR_FY0 + 1)
@@ -2722,6 +2723,8 @@ int  crHistIn[CR_HIST], crHistInN = 0;      // присланная — проя
 bool crPickSynced = false, crSynced = false;
 int  crSp = 0, crX = 0, crBet = 0, crCashM = 0, crWin = 0;
 int  crPressM = 0;                          // множитель в миг, когда кнопку продавили
+bool crPressFly = false;                    // продавили в полёте: такое нажатие не пуск
+#define CR_LOCK_MS   1000    // столько после взрыва клик не запускает новый раунд
 bool crAnswered = false;
 unsigned long crT0 = 0, crLast = 0, crBustAt = 0, crRefusedAt = 0;
 // «Забрал»: из осьминога брызжет фонтан монет, и над ним всплывает выигрыш
@@ -2830,25 +2833,42 @@ void crashRotate(int dir) {
 // Нажатие ловит множитель на ПРОДАВЛИВАНИИ, а решение уходит на отпускании: вращение
 // с зажатой кнопкой листает экраны, и до отпускания это ещё не клик. Без фиксации
 // «забрал» опаздывал бы на длину нажатия — на x20 это уже заметные баллы.
-void crashPressDown() { crPressM = crFlying() ? crM : 0; }
+//
+// Если ракета взорвалась, пока кнопка ещё зажата, решает миг продавливания: нажал до
+// взрыва — забрал (это проверяет физика на самом взрыве). Раньше такое нажатие
+// пропадало, а его отпускание, пришедшее уже после взрыва, запускало НОВЫЙ раунд со
+// ставкой: в логе 4 пуска из 41 взрыва за 0.3-0.5с после него, один — на 250 баллов.
+void crashPressDown() {
+  crPressFly = crFlying();                 // и после «забрал»: отпускание — не пуск
+  crPressM = crSt == CRS_FLY ? crM : 0;
+}
+
+void crCashAtM(int m, unsigned long now) {
+  crCashM = m;
+  crWin = (int)((long long)crBet * m / 100);
+  crSendCash(m);
+  crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
+  crPtsView += crWin;
+  if (crPtsView > crRecView) crRecView = crPtsView;
+  crSt = CRS_CASHED;
+  crHeadDirty = true;
+}
 
 void crashPress() {
   unsigned long now = millis();
+  bool fromFlight = crPressFly;
+  crPressFly = false;
   if (crSt == CRS_FLY) {
     int m = (crPressM && crPressM < crM) ? crPressM : crM;
     crPressM = 0;
-    crCashM = m;
-    crWin = (int)((long long)crBet * m / 100);
-    crSendCash(m);
-    crCashAt = now; crCoinX = crHeroX; crCoinY = crHeroY;
-    crPtsView += crWin;
-    if (crPtsView > crRecView) crRecView = crPtsView;
-    crSt = CRS_CASHED;
-    crHeadDirty = true;
+    crCashAtM(m, now);
     return;
   }
+  crPressM = 0;
   if (crSt == CRS_CASHED) { crT = crTimeOf(crX); return; }   // досмотреть взрыв сразу
   if (crSt == CRS_COUNT) return;
+  // Нажатие, начатое в полёте, и паника сразу после взрыва — это «забрать», а не «ещё»
+  if (fromFlight || (crSt == CRS_BUST && now - crBustAt < CR_LOCK_MS)) return;
   int bet = crBetVal();
   if (bet < 1) { crSt = CRS_REFUSED; crRefusedAt = now; return; }
   Serial.print(F("{\"enc\":\"go\",\"b\":")); Serial.print(crPick); Serial.println(F("}"));
@@ -2928,6 +2948,12 @@ void crashPhysics(unsigned long now) {
   if (crFlying()) {
     crT += dt * (crSt == CRS_CASHED ? CR_FAST : 1);
     crM = crMult(crT);
+    // Кнопка продавлена до взрыва и ещё не отпущена — это «забрал» на том множителе
+    if (crM >= crX && crSt == CRS_FLY && crPressFly && swDown && !swHandled
+        && crPressM && crPressM < crX) {
+      crCashAtM(crPressM, now);
+      crPressM = 0;
+    }
     if (crM >= crX) {
       crM = crX; crT = crTimeOf(crX);
       if (crX >= CR_CAP && crSt == CRS_FLY) {          // Луна: выплата без нажатия
@@ -2939,6 +2965,7 @@ void crashPhysics(unsigned long now) {
         if (crPtsView > crRecView) crRecView = crPtsView;
       } else if (crSt == CRS_FLY) {
         Serial.print(F("{\"enc\":\"bust\",\"sp\":")); Serial.print(crSp); Serial.println(F("}"));
+        crPtsView += crBet * CR_INS_PCT / 100;           // страховку видно сразу, мост вернёт ту же
       }
       // История: точка взрыва проявляется сразу, мост пришлёт ту же самую
       memmove(crHist + 1, crHist, sizeof(int) * (CR_HIST - 1));
@@ -3260,7 +3287,10 @@ void crStatus(OffsetCanvas &g, unsigned long now) {
   } else if (crSt == CRS_BUST) {
     crFmt(b, sizeof(b), crX);
     if (crCashM) { snprintf(t, sizeof(t), "ЗАБРАЛ +%d, КРАШ НА %s", crWin, b); c = C_WORKING; }
-    else         { snprintf(t, sizeof(t), "СЛИВ -%d, КРАШ НА %s", crBet, b);   c = C_ERROR; }
+    else {
+      snprintf(t, sizeof(t), "КРАШ НА %s: -%d, СТРАХОВКА +%d", b, crBet, crBet * CR_INS_PCT / 100);
+      c = C_ERROR;
+    }
   } else {
     strlcpy(t, "ЖМИ: ПОЕХАЛИ   КРУТИ: СТАВКА", sizeof(t));
   }

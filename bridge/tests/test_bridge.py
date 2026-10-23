@@ -2849,7 +2849,7 @@ def test_crash_cash_too_late_is_a_bust(tmp_path):
     br.crash_go(100)
     br.crash_x = 187
     assert br.crash_cash(br.crash_sp, 187) is True, "на самой точке ракета уже взорвалась"
-    assert br.points == 900 and br.crash_st == b.CR_BUST and br.crash_win == 0
+    assert br.points == 910 and br.crash_st == b.CR_BUST and br.crash_win == 0, "слив со страховкой"
 
 
 def test_crash_cash_for_other_round_ignored(tmp_path):
@@ -2866,7 +2866,7 @@ def test_crash_bust_closes_round(tmp_path):
     br.crash_go(100)
     x = br.crash_x
     assert br.handle_encoder("bust", arg={"sp": br.crash_sp}) is True
-    assert br.crash_st == b.CR_BUST and br.points == 1900 and br.crash_hist == [x]
+    assert br.crash_st == b.CR_BUST and br.points == 1910, "страховка вернула 10 из 100" and br.crash_hist == [x]
     assert br.crash_bust(br.crash_sp) is False, "закрытый раунд второй раз не закрывается"
     assert br.crash_bust(None) is False
 
@@ -2877,7 +2877,7 @@ def test_crash_unclosed_round_is_lost_on_next_go(tmp_path):
     br.crash_go(10)
     first = br.crash_x
     br.crash_go(10)
-    assert br.crash_hist == [first] and br.points == 80 and br.crash_sp == 2
+    assert br.crash_hist == [first] and br.points == 81 and br.crash_sp == 2, "страховка +1"
 
 
 def test_crash_refuses_without_points(tmp_path):
@@ -2885,6 +2885,23 @@ def test_crash_refuses_without_points(tmp_path):
     assert br.crash_go(50) is False
     assert br.points == 0 and br.crash_st == b.CR_REFUSED
     assert br.crash_sp == 1, "отказ — тоже новый номер, иначе плата ждёт ответа вечно"
+
+
+def test_crash_insurance_keeps_every_target_fair_and_nonnegative():
+    """Отдача раунда со страховкой 1 + c·(1 − 1/t): не ниже 1 и без риска-нуля.
+
+    Ракета обязана уметь взорваться сразу — иначе «жать на старте» дало бы баллы
+    без всякого риска, и правильная стратегия была бы одна."""
+    n = 100_000
+    xs = [b.crash_point((i + 0.5) / n) for i in range(n)]
+    c = b.CRASH_INS_PCT / 100
+    evs = {}
+    for t in (105, 150, 200, 500, 2000):
+        evs[t] = sum(t / 100 if x > t else c for x in xs) / n
+        assert evs[t] >= 0.995, f"цель x{t / 100}: {evs[t]:.3f}"
+    assert evs[105] < 1.01, "забирать сразу после старта не должно быть выгодно"
+    assert evs[105] < evs[200] < evs[2000], "смелость доплачивается"
+    assert min(xs) == 100, "взрыв на старте возможен"
 
 
 def test_crash_cap_is_a_share_of_points():
@@ -2900,6 +2917,7 @@ def test_crash_max_bets_the_cap(tmp_path):
     assert br.points == 7770 - 777 and br.crash_bet == 777
     assert br.build_crash()["bet"] == b.CRASH_MAXBET, "ручка должна вернуться на «макс»"
     assert br.build_crash()["cap"] == b.crash_cap(br.points)
+    br.crash_bust(br.crash_sp)
     br.points = 0
     assert br.crash_go(b.CRASH_MAXBET) is False, "«макс» с нуля — это отказ, а не ставка 0"
 

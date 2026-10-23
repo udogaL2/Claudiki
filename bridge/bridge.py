@@ -448,6 +448,14 @@ CRASH_MAXBET = -1             # ставка «макс»: предел на м�
 # чтобы с маленьким счётом было на что играть: при 40 баллах 10% это 4.
 CRASH_MAX_PCT = 10
 CRASH_MIN_CAP = 10
+# Страховка: слив возвращает часть ставки. Это и есть способ сделать игру «в ноль или
+# небольшой плюс»: отдачу выше 100% ровно по всем целям не построить — ракета тогда не
+# взрывалась бы до x1.0R, и «жать сразу после старта» стало бы деньгами без риска. А
+# страховка даёт раунду 1 + c·(1 − 1/t): у x1.1 почти ноль (+0.9%), у x2 — +5%, у x20 —
+# +9.5%. Смелость доплачивается, риск никуда не делся. Симуляция, вечер из 40 раундов
+# по 10% счёта: при 10% медиана вечера = стартовый счёт, в плюсе 50% вечеров; при 15%
+# счёт раздувается втрое за месяц.
+CRASH_INS_PCT = 10
 # Состояние раунда на проводе. «Полёт» мост не отличает от «ждём взрыва»: времени
 # он не знает, взрыв ему сообщает плата (`bust`), а молчаливый раунд закрывает
 # следующий пуск.
@@ -458,6 +466,11 @@ def crash_point(u: float) -> int:
     """Точка взрыва в сотых из равномерного u ∈ [0, 1)."""
     x = int(CRASH_EDGE / (1.0 - u) + 1e-9) if u < 1.0 else CRASH_CAP   # 99/0.01 это 9900, а не 9899
     return max(100, min(CRASH_CAP, x))
+
+
+def crash_insurance(bet: int) -> int:
+    """Сколько возвращает слив."""
+    return bet * CRASH_INS_PCT // 100
 
 
 def crash_cap(points: int) -> int:
@@ -2035,6 +2048,8 @@ class Bridge:
         """Закрывает открытый раунд: в историю уходит точка взрыва."""
         self.crash_st = st
         self.crash_hist = ([self.crash_x] + self.crash_hist)[:CRASH_HIST]
+        if st == CR_BUST:
+            self.points += crash_insurance(self.crash_bet)
 
     def crash_go(self, pick) -> bool:
         """Пуск: списывает ставку и бросает точку взрыва.
@@ -2122,7 +2137,8 @@ class Bridge:
             return False
         if self.crash_st != CR_FLY or sp != self.crash_sp:
             return False
-        self.log.info("краш #%d: взрыв на x%.2f, -%d", sp, self.crash_x / 100, self.crash_bet)
+        self.log.info("краш #%d: взрыв на x%.2f, -%d (страховка +%d)", sp, self.crash_x / 100,
+                      self.crash_bet, crash_insurance(self.crash_bet))
         self._crash_close(CR_BUST)
         self.save_points()
         self.mark_dirty()
