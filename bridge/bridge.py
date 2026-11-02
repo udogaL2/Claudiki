@@ -689,7 +689,7 @@ def pid_alive(pid: int | None) -> bool:
     if pid is None:
         return True
     if psutil is not None:
-        return psutil.pid_exists(pid)
+        return _psutil_pid_alive(pid)
     if os.name == "nt":
         return _win_pid_alive(pid)
     try:
@@ -697,6 +697,27 @@ def pid_alive(pid: int | None) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
+        return True  # существует, но не наш — считаем живым
+    return True
+
+
+def _psutil_pid_alive(pid: int) -> bool:
+    """Жив ли процесс по-настоящему, а не только запись о нём в таблице процессов.
+
+    `pid_exists` мало: процесс, который вышел, но не прибран родителем, остаётся
+    в таблице. PhpStorm Light не прибирает `claude` после `/exit` — сессия
+    закрыта, а PID «жив» до перезапуска IDE, и карточка висела бы вечно. На Linux
+    это честный зомби, на macOS — статус `idle` при флаге выхода (ps: `?Es`,
+    RSS 0), поэтому смотрим ещё и на память: у вышедшего процесса её уже нет.
+    """
+    try:
+        proc = psutil.Process(pid)
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        proc.memory_info()
+    except psutil.NoSuchProcess:  # в т.ч. ZombieProcess
+        return False
+    except psutil.AccessDenied:
         return True  # существует, но не наш — считаем живым
     return True
 

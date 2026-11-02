@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import random
+import sys
 import types
 
 import pytest
@@ -589,6 +590,44 @@ def test_pid_alive_self_is_true():
 
 def test_pid_alive_bogus_is_false():
     assert b.pid_alive(999_999_999) is False
+
+
+def test_pid_alive_unreaped_child_is_false():
+    """Вышедший, но не прибранный родителем процесс — мёртв (PhpStorm Light после /exit)."""
+    import subprocess
+    import time
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        deadline = time.monotonic() + 5
+        while b.pid_alive(child.pid) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert b.pid_alive(child.pid) is False
+    finally:
+        child.wait()
+
+
+class _FakeProc:
+    def __init__(self, status="running", mem_exc=None):
+        self._status, self._mem_exc = status, mem_exc
+
+    def status(self):
+        return self._status
+
+    def memory_info(self):
+        if self._mem_exc:
+            raise self._mem_exc
+
+
+@pytest.mark.parametrize("proc, alive", [
+    (_FakeProc(), True),
+    (_FakeProc(status="zombie"), False),
+    (_FakeProc(status="idle", mem_exc=b.psutil.NoSuchProcess(1)), False),
+    (_FakeProc(mem_exc=b.psutil.AccessDenied(1)), True),
+])
+def test_pid_alive_psutil_statuses(monkeypatch, proc, alive):
+    monkeypatch.setattr(b.psutil, "Process", lambda pid: proc)
+    assert b.pid_alive(1) is alive
 
 
 # --- LoggingSink --------------------------------------------------------------
