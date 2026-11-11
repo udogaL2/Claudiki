@@ -3351,7 +3351,7 @@ def test_crew_field_groups_by_role_in_pipeline_order(bridge):
                          "sess_name": name, "agent": agent})
     card = br.build_snapshot()["sessions"][0]
     # план → код → проверка; у ревьюверов упавший важнее ждущего
-    assert card["ag"] == "p12i20v33"
+    assert card["ag"] == "pc12ic20vc33"
 
 
 def test_team_collapses_into_one_card(bridge):
@@ -3367,7 +3367,7 @@ def test_team_collapses_into_one_card(bridge):
     assert len(cards) == 1, "агенты обязаны свернуться в карточку оркестратора"
     card = cards[0]
     assert card["r"] == b.ROLE_ORC
-    assert card["ag"] == "i10r10v11", "свита: буква роли + сколько их + худшее состояние"
+    assert card["ag"] == "ic10rc10vc11", "свита: роль + харнес + сколько их + худшее состояние"
     # имя вставшего агента ВМЕСТО имени оркестратора — иначе непонятно, куда идти
     assert card["name"].startswith("mjc-rev-sec") and card["name"].endswith("?")
 
@@ -3410,7 +3410,7 @@ def test_crew_field_is_capped_for_firmware_buffer(bridge):
         br.handle_event({"event": "working", "session_id": f"a{i}", "cwd": "/w/mjc",
                          "sess_name": f"mjc-rev-{i}", "agent": "reviewer"})
     ag = br.build_snapshot()["sessions"][0]["ag"]
-    assert ag == "v90", "длина свиты не зависит от размера команды: счётчик режется до цифры"
+    assert ag == "vc90", "длина свиты не зависит от размера команды: счётчик режется до цифры"
 
 
 def test_alarm_name_counts_the_rest(bridge):
@@ -3489,7 +3489,7 @@ def test_plain_session_becomes_orchestrator_when_its_agent_appears(bridge):
                      "parent": "какая-то-сессия"})
     cards = br.build_snapshot()["sessions"]
     assert len(cards) == 1, "агент обязан свернуться в карточку своего оркестратора"
-    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i10"
+    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "ic10"
 
 
 def test_agent_named_as_parent_does_not_become_orchestrator(bridge):
@@ -3581,7 +3581,7 @@ def test_session_referenced_by_sid_becomes_orchestrator(bridge):
                      "parent_sid": "s1"})
     cards = br.build_snapshot()["sessions"]
     assert len(cards) == 1, "агент обязан свернуться в карточку своего оркестратора"
-    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i10"
+    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "ic10"
 
 
 def test_name_path_still_works_without_sid(bridge):
@@ -3770,7 +3770,7 @@ def test_codex_agent_joins_its_team_through_reconcile(tmp_path, clock):
     assert br.reconcile()
     cards = br.build_snapshot()["sessions"]
     assert len(cards) == 1, "агент Codex обязан свернуться в карточку оркестратора"
-    assert cards[0]["ag"] == "v10"
+    assert cards[0]["ag"] == "vx10", "ревьювер Codex — свой зверь"
     dbg = {s["id"]: s for s in br.build_debug()["sessions"]}
     assert dbg[sid]["harness"] == "codex" and dbg[sid]["parent_sid"] == "orc"
     # связь могла приехать позже первой сверки — дополняется на следующей
@@ -3801,4 +3801,31 @@ def test_claude_agent_link_comes_from_process_env_after_restart(clock):
                      CollectingSink(), probe=lambda: entries)
     br.reconcile()
     cards = br.build_snapshot()["sessions"]
-    assert [c.get("ag") for c in cards if c.get("ag")] == ["i12"]
+    assert [c.get("ag") for c in cards if c.get("ag")] == ["ic12"]
+
+
+def _crew(br, members):
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    for i, (agent, harness, ev) in enumerate(members):
+        sid = f"a{i}"
+        br.handle_event({"event": ev, "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": f"mjc-{i}", "agent": agent})
+        br.sessions[sid].harness = harness
+    return br.build_snapshot()["sessions"][0]["ag"]
+
+
+def test_crew_splits_role_by_harness(bridge):
+    ag = _crew(bridge, [("reviewer", "", "working"), ("reviewer", "codex", "waiting"),
+                        ("reviewer", "b24", "error"), ("implementer", "", "working")])
+    assert ag == "ic10vc10vx11vb13", "каждый харнес — свой зверь, порядок Claude/Codex/b24"
+
+
+def test_crew_folds_harnesses_when_slots_run_out(bridge):
+    members = [(r, h, "working") for r in ("planner", "implementer")
+               for h in ("", "codex")] + [("reviewer", h, "working") for h in ("", "codex", "b24")]
+    members[-1] = ("reviewer", "b24", "waiting")
+    ag = _crew(bridge, members)
+    # 7 групп > 6 мест: харнесы внутри роли сворачиваются, зверь — у самого тревожного
+    assert ag == "pc20ic20vb31"
+    assert len(ag) == len(b.AGENT_ROLES * 4) - 4

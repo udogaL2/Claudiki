@@ -223,7 +223,11 @@ AGENT_ROLES = (ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV)
 # Буква роли для строки `ag` в снэпшоте. Оркестратор в свите не бывает — он и есть
 # карточка, поэтому его буквы тут нет.
 ROLE_LETTER = {ROLE_PLAN: "p", ROLE_IMPL: "i", ROLE_RSRCH: "r", ROLE_REV: "v"}
-AG_COUNT_MAX = 9           # счётчик агентов одной роли — одна цифра
+AG_COUNT_MAX = 9           # счётчик агентов одной группы — одна цифра
+# Харнес — вид зверя в свите (осьминог / медуза / краб): «ревью встало» — это ещё и
+# вопрос, в какую вкладку идти, а вкладки Claude, Codex и b24 разные.
+HARNESS_LETTER = {"": "c", "codex": "x", "b24": "b"}
+CREW_SLOTS = 6             # столько фигур встаёт на карточку: по три в столбец
 # Какое состояние роли показать, если агенты в ней разные: упавший важнее ждущего,
 # ждущий важнее работающего. Считает мост: прошивка получает уже готовую сводку.
 CREW_RANK = {ERROR: 0, WAITING: 1, WORKING: 2, IDLE: 3}
@@ -1891,24 +1895,37 @@ class Bridge:
         return self.teams(all_sessions).get(sess.session_id, [])
 
     def agents_field(self, agents: list[Session]) -> str:
-        """Свита строкой, по тройке на РОЛЬ: буква, сколько их, самое тревожное
-        состояние (`p10i30v21` — планировщик работает, три имплементера работают,
-        двое ревьюверов, и кто-то из них ждёт).
+        """Свита строкой, по четвёрке на группу (роль, харнес): буква роли, буква
+        харнеса (c — Claude, x — Codex, b — b24), сколько их, самое тревожное
+        состояние. `pc10ic30vc21vx11` — планировщик и три имплементера работают, из
+        двух ревьюверов Claude кто-то ждёт, ревьювер Codex ждёт.
 
-        По роли, а не по агенту: команды MetaJetCore 0.6 бывают по 10-15 вкладок
-        (одно итоговое ревью — до девяти ревьюверов), а буфер прошивки `ag[24]`.
-        Прошивка всё равно рисует одну фигуру на роль, так что сводка на плате
-        ничего не теряет, а длина строки больше не зависит от размера команды.
-        Строкой, а не массивом объектов: у прошивки арена ArduinoJson всего 2 КБ,
-        и каждый вложенный узел стоит дороже, чем весь этот текст.
+        По группе, а не по агенту: команды MetaJetCore 0.6 бывают по 10-15 вкладок,
+        а буфер прошивки `ag[28]`. Групп больше `CREW_SLOTS` — харнесы внутри роли
+        сворачиваются, и зверь берётся у самого тревожного агента роли: показать, что
+        встало, важнее, чем показать всех. Строкой, а не массивом объектов: у
+        прошивки арена ArduinoJson всего 2 КБ, вложенные узлы дороже текста.
         """
+        def worst(group: list[Session]) -> Session:
+            return min(group, key=lambda a: CREW_RANK[a.state])
+
+        def quad(role: int, harness: str, group: list[Session]) -> str:
+            return (f"{ROLE_LETTER[role]}{HARNESS_LETTER.get(harness, 'c')}"
+                    f"{min(len(group), AG_COUNT_MAX)}{worst(group).state}")
+
+        groups = []
+        for role in AGENT_ROLES:
+            for harness in HARNESS_LETTER:
+                mine = [a for a in agents if a.role == role and (a.harness or "") == harness]
+                if mine:
+                    groups.append(quad(role, harness, mine))
+        if len(groups) <= CREW_SLOTS:
+            return "".join(groups)
         out = []
         for role in AGENT_ROLES:
             mine = [a for a in agents if a.role == role]
-            if not mine:
-                continue
-            worst = min((a.state for a in mine), key=lambda st: CREW_RANK[st])
-            out.append(f"{ROLE_LETTER[role]}{min(len(mine), AG_COUNT_MAX)}{worst}")
+            if mine:
+                out.append(quad(role, worst(mine).harness or "", mine))
         return "".join(out)
 
     def team_alarm(self, agents: list[Session]) -> tuple[Session | None, int]:

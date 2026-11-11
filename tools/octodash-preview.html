@@ -105,6 +105,7 @@
   .rshape.sq{border-radius:2px}
   .rshape.tri{clip-path:polygon(50% 0,100% 100%,0 100%)}
   .rshape.di{clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+  .rh{font:inherit; font-size:11px; padding:0 5px; margin-left:6px; opacity:.8}
   .rshape.pl{clip-path:polygon(33% 0,67% 0,67% 33%,100% 33%,100% 67%,67% 67%,67% 100%,33% 100%,33% 67%,0 67%,0 33%,33% 33%)}
   .rstates{display:flex; gap:3px;}
   .rstates button{padding:3px 6px; font-size:10.5px; border-radius:6px;}
@@ -775,8 +776,10 @@
         // Шаг и якорь подобраны так, чтобы ТРИ фигуры влезли в окно 68×72 целиком,
         // вместе с шапкой-ролью сверху и щупальцами снизу: у крайних иначе срезало
         // макушку, и это не видно на экране — клип у канвы тихий.
-        const gy = hy + 2 + Math.round((idx - (col-1)/2) * (col >= 3 ? 19 : 24));
-        miniOcto(gx, gy, grp.role, grp.state, tt, k, grp.n);
+        // Тройка в столбце опускается ниже: снизу у окна запас (до hy+41), а сверху
+        // шапку верхнего иначе срезало бы краем буфера.
+        const gy = hy + (col >= 3 ? 8 : 2) + Math.round((idx - (col-1)/2) * (col >= 3 ? 20 : 24));
+        miniOcto(gx, gy, grp.role, grp.state, tt, k, grp.n, grp.h);
       });
       return;
     }
@@ -963,52 +966,117 @@
     }
   }
 
-  /** Осьминожек свиты: тот же зверь, что в ячейке, только меньше. Роль — цветом и
-   *  фигуркой-«шапкой» над головой, число одинаковых — точками под ним.
+  /** Член свиты. Роль — шапкой-камешком и цветом, ХАРНЕС — видом зверя:
+   *  Claude — осьминожек (свой, как босс), Codex — медуза, b24 — краб.
    *
-   *  Тело r=4, а не 3: на тройке глаза и щупальца сливались в пятно — ровно то, на что
-   *  и жаловались. Место под это взято у босса (он ужат до 13) и у орбиты (свита ушла
-   *  в боковые столбцы, где есть 18 свободных пикселей). */
-  function miniOcto(cx, cy, role, state, tt, phase, count){
-    const base = ROLE_COLOR[role] || rgb(200,200,200);
-    const col = state===I ? lerp(base, BG, 0.55) : base;
-    const bob = Math.round(Math.sin(tt*(state===W?3.2:1.6) + phase*1.7));   // покачивается сам по себе
-    cy += bob;
+   *  Харнес нужен на глаз, а не в octoctl: «ревью встало» — это вопрос, в какую
+   *  вкладку идти, а вкладки Codex и b24 выглядят и ведут себя иначе, чем Claude
+   *  (у b24 вопрос о правах отвечается только в его TUI). Вид зверя — третий
+   *  независимый код после силуэта шапки и цвета, и он читается по силуэту целиком:
+   *  купол с нитями и широкий панцирь с клешнями не спутать с круглым осьминогом
+   *  даже боковым зрением. Знаки состояния у всех общие: кольцо «?», крест «!»,
+   *  притушенный цвет и глаза-щёлочки у спящего.
+   *
+   *  «Их несколько» — дублями того же зверя за спиной (силуэт, а не цифра: шрифт
+   *  3×5 читается только на scale 3). Каждый дубль сперва выбивает под собой фон:
+   *  без зазора в пиксель трое сливаются в одно толстое пятно. */
+  const H_CLAUDE=0, H_CODEX=1, H_B24=2;
+  const HARNESS_LETTER = ["c", "x", "b"];
+  const HARNESS_NAME = ["Claude", "Codex", "b24"];
+
+  function crewEyes(cx, cy, state, gap){
+    if(state===I){                                            // спит — щёлочки
+      g.drawFastHLine(cx-gap-1, cy, 2, C_IDLE); g.drawFastHLine(cx+gap, cy, 2, C_IDLE);
+      return;
+    }
+    g.fillCircle(cx-gap, cy, 1, 0xFFFF); g.fillCircle(cx+gap, cy, 1, 0xFFFF);
+    g.drawPixel(cx-gap, cy, PUPIL);      g.drawPixel(cx+gap, cy, PUPIL);
+  }
+
+  function octoBody(cx, cy, col, state, tt, phase){
     for(let t=-3;t<=3;t++){                                   // щупальца
       const sway = Math.round(Math.sin(tt*(state===W?6:2.4) + phase + t*0.7));
       g.drawPixel(cx+t, cy+4, lerp(col, BG, 0.2));
       g.drawPixel(cx+t+sway, cy+5, lerp(col, BG, 0.45));
       if(t%2===0) g.drawPixel(cx+t+sway, cy+6, lerp(col, BG, 0.65));
     }
-    // «Их несколько»: силуэты за спиной. Смещение только вбок — вниз мешают щупальца,
-    // вверх шапка-роль, а по бокам в столбце как раз есть по четыре пикселя.
-    // Каждый дубль сперва выбивает под собой фон и только потом рисуется приглушённым:
-    // без этого зазора в 1 пиксель три круга сливаются в одно толстое пятно, и «их
-    // несколько» читается как «этот жирный».
-    const ghost = lerp(col, BG, 0.55);
-    if(count > 1) g.fillCircle(cx-4, cy+2, 3, ghost);
-    if(count > 2) g.fillCircle(cx+4, cy+2, 3, ghost);
-    if(count > 1) g.fillCircle(cx, cy, 5, BG);      // зазор вокруг ГЛАВНОГО, а не под дублями:
-                                                    // иначе тело затирает его же и всё слипается
     g.fillCircle(cx, cy, 4, col);
     g.fillCircle(cx-1, cy-2, 1, lerp(col, 0xFFFF, 0.75));     // блик
-    const eye = state===I ? C_IDLE : 0xFFFF;
-    if(state===I){                                            // спит — глаза щёлочками
-      g.drawFastHLine(cx-3, cy, 2, eye); g.drawFastHLine(cx+2, cy, 2, eye);
-    } else {
-      g.fillCircle(cx-2, cy, 1, eye); g.fillCircle(cx+2, cy, 1, eye);
-      g.drawPixel(cx-2, cy, PUPIL);    g.drawPixel(cx+2, cy, PUPIL);
+    crewEyes(cx, cy, state, 2);
+  }
+
+  /** Медуза: купол на полкруга с зубчатым краем и четыре нити, которые волнуются
+   *  сильнее к концу. Работает — купол качает воду: на такт раздаётся вширь и
+   *  приседает, как настоящая медуза, а не просто дышит. */
+  function jellyBody(cx, cy, col, state, tt, phase){
+    const pump = state===W ? (Math.sin(tt*4.6 + phase) > 0.3 ? 1 : 0) : 0;
+    const rw = 4 + pump, top = cy - 4 + pump, base = cy + 1;
+    for(const tx of [-3,-1,1,3]){                             // нити
+      for(let j=0;j<5;j++){
+        const sway = Math.round(Math.sin(tt*(state===W?5:2) + phase + tx*0.8 + j*0.9) * j/3);
+        g.drawPixel(cx+tx+sway, base+2+j, lerp(col, BG, 0.25 + j*0.14));
+      }
     }
+    for(let y=top; y<=base; y++){                             // купол
+      const d = (base - y + 0.5)/(base - top + 1);
+      const hw = Math.round(rw*Math.sqrt(Math.max(0, 1 - d*d)));
+      g.fillRect(cx-hw, y, 2*hw+1, 1, col);
+    }
+    for(let x=-rw; x<=rw; x+=2) g.drawPixel(cx+x, base+1, lerp(col, BG, 0.15));   // зубцы
+    g.drawPixel(cx-2, top+1, lerp(col, 0xFFFF, 0.75));        // блик купола
+    g.drawPixel(cx-3, top+2, lerp(col, 0xFFFF, 0.5));
+    crewEyes(cx, cy-1, state, 2);
+  }
+
+  /** Краб: широкий панцирь, глаза на стебельках, клешни по бокам и по три ножки.
+   *  Работает — машет клешнями по очереди. */
+  function crabBody(cx, cy, col, state, tt, phase){
+    const leg = lerp(col, BG, 0.35);
+    for(const sd of [-1,1]) for(let k=0;k<3;k++){             // ножки
+      const lx = cx + sd*(1 + k*2);
+      g.drawPixel(lx + sd, cy+4, leg);
+      g.drawPixel(lx + sd*2, cy+5, lerp(leg, BG, 0.3));
+    }
+    const rows = [[-1,3],[0,4],[1,4],[2,4],[3,3]];            // панцирь: [dy, полуширина]
+    for(const [dy,hw] of rows) g.fillRect(cx-hw, cy+dy, 2*hw+1, 1, col);
+    g.drawPixel(cx-2, cy, lerp(col, 0xFFFF, 0.7));            // блик
+    g.drawPixel(cx-1, cy-1, lerp(col, 0xFFFF, 0.5));
+    for(const sd of [-1,1]){                                  // клешни
+      const up = state===W && Math.sin(tt*6 + phase + (sd>0?Math.PI:0)) > 0 ? 1 : 0;
+      g.drawPixel(cx+sd*5, cy, col);
+      g.drawPixel(cx+sd*6, cy-1-up, col);
+      g.fillRect(sd>0 ? cx+6 : cx-7, cy-3-up, 2, 2, col);
+      g.drawPixel(cx+sd*6, cy-3-up, BG);                      // развилка клешни
+    }
+    g.drawPixel(cx-2, cy-2, col); g.drawPixel(cx+2, cy-2, col);   // стебельки
+    crewEyes(cx, cy-4, state, 2);
+  }
+
+  function crewGhost(h, cx, cy, col){
+    if(h===H_CODEX){
+      for(let y=-3;y<=0;y++){ const hw = Math.round(3*Math.sqrt(1 - ((-y+0.5)/4)**2)); g.fillRect(cx-hw, cy+y, 2*hw+1, 1, col); }
+      return;
+    }
+    if(h===H_B24){ g.fillRect(cx-3, cy, 7, 3, col); g.fillRect(cx-2, cy-1, 5, 1, col); return; }
+    g.fillCircle(cx, cy, 3, col);
+  }
+
+  function miniOcto(cx, cy, role, state, tt, phase, count, harness){
+    const h = harness || H_CLAUDE;
+    const base = ROLE_COLOR[role] || rgb(200,200,200);
+    const col = state===I ? lerp(base, BG, 0.55) : base;
+    cy += Math.round(Math.sin(tt*(state===W?3.2:1.6) + phase*1.7));   // покачивается сам по себе
+    const ghost = lerp(col, BG, 0.55);
+    if(count > 1) crewGhost(h, cx-4, cy+2, ghost);
+    if(count > 2) crewGhost(h, cx+4, cy+2, ghost);
+    if(count > 1) g.fillCircle(cx, cy, 5, BG);                // зазор вокруг ГЛАВНОГО
+    if(h===H_CODEX) jellyBody(cx, cy, col, state, tt, phase);
+    else if(h===H_B24) crabBody(cx, cy, col, state, tt, phase);
+    else octoBody(cx, cy, col, state, tt, phase);
     roleGem(cx, cy-10, role, col);   // «шапка» = роль; выше кольца ожидания (r≤7)
-    // Знак состояния — тот же, что у большого осьминога в ячейке: «?» значит «ждёт
-    // человека», и это единственное, ради чего на экран вообще смотрят. Ставим сбоку
-    // от головы, чтобы не спорил с шапкой-ролью.
     if(state===A){
-      // Мигает ТОЛЬКО кольцо, сам зверёк остаётся на месте. Мигание всей фигуры
-      // читалось как «агент то появляется, то исчезает» — то есть как проблема
-      // с составом, а не как «ждёт человека»; заодно от него рябило в глазах.
-      // Знак «?» горит постоянно: состояние должно быть читаемо в любой фазе,
-      // мигание тут — привлечь внимание, а не сообщить факт.
+      // Мигает ТОЛЬКО кольцо, зверёк остаётся на месте: мигание всей фигуры читалось
+      // как «агент исчез из состава». Знак «?» горит постоянно.
       const beat = Math.floor(tt*2.6 + phase) % 2 === 0;
       g.drawCircle(cx, cy, beat ? 6 : 7, beat ? C_WAIT : lerp(C_WAIT, BG, 0.55));
       tinyText(bufRect, cx+6, cy-8, "?", 1, C_WAIT);
@@ -1017,14 +1085,6 @@
       g.drawLine(cx-4, cy-4, cx+4, cy+4, C_ERR); g.drawLine(cx+4, cy-4, cx-4, cy+4, C_ERR);
       tinyText(bufRect, cx+6, cy-8, "!", 1, C_ERR);
     }
-    // Точного числа на экране НЕТ, и это решение, а не упущение. Пробовались точки 2×2
-    // (грязь под зверьком) и цифра 3×5 сбоку — а шрифт 3×5 в проекте используется ровно
-    // один раз, в индикаторе страниц, и там scale 3 «читается с руки». На панели 2.4"
-    // пиксель 0.15 мм: цифра scale 1 это 0.5×0.8 мм, втрое мельче имени карточки.
-    // Считать агентов глазами на этом экране всё равно никто не будет — важно «один или
-    // несколько». Поэтому за спиной у зверька выглядывают его дубли: один — двое,
-    // два — трое и больше. Точное число есть в панели и в octoctl.
-    void 0;
   }
 
   /** Свита — одна фигура на роль. Больше трёх фигур на карточке не бывает.
@@ -1039,16 +1099,27 @@
    *  важнее, чем работает. Иначе один упавший ревьювер тонул бы среди двух рабочих.
    */
   function crewGroups(sats){
-    // Порядок конвейера: план → код → исследование → проверка. Четыре роли встают
-    // по две в столбец: слева план и код, справа исследование и проверка.
+    // Порядок конвейера: план → код → исследование → проверка, внутри роли —
+    // Claude, Codex, b24. Группа — (роль, харнес): медуза-ревьювер и
+    // осьминог-ревьювер — разные вкладки, и стоять им надо порознь.
     const order = [ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
     const worst = [E, A, W, I];                     // по убыванию тревожности
+    const pick = (mine) => worst.find(st=>mine.some(a=>a.state===st));
+    const out = [];
+    for(const role of order) for(const h of [H_CLAUDE, H_CODEX, H_B24]){
+      const mine = sats.filter(a=>a.role===role && (a.h||H_CLAUDE)===h);
+      if(mine.length) out.push({role, h, n:mine.length, state:pick(mine)});
+    }
+    if(out.length <= CREW_SLOTS) return out;
+    // Не влезло — сворачиваем харнесы внутри роли: зверь — того, кто тревожнее всех.
     return order.map(role=>{
       const mine = sats.filter(a=>a.role===role);
       if(!mine.length) return null;
-      return {role, n:mine.length, state:worst.find(st=>mine.some(a=>a.state===st))};
+      const st = pick(mine);
+      return {role, h:mine.find(a=>a.state===st).h||H_CLAUDE, n:mine.length, state:st};
     }).filter(Boolean);
   }
+  const CREW_SLOTS = 6;                             // по три в столбец
 
 
   /** Метка роли на карточке. Живёт в строке имени и рисуется ПОСЛЕ копоти, со своей
@@ -3308,10 +3379,10 @@
       const o = {id:c.id, name:c.name, state:c.state};
       if(c.sub) o.sub=c.sub;
       if(metaVar!=="off" && c.role) o.r=c.role;
-      // Компактная строка вместо массива, по тройке на РОЛЬ: буква, сколько их
-      // (кап 9), самое тревожное состояние. Длина не зависит от размера команды.
+      // Компактная строка вместо массива, по четвёрке на группу (роль, харнес): буква
+      // роли, буква харнеса (c/x/b), сколько их (кап 9), самое тревожное состояние.
       if(metaVar!=="off" && c.role===ROLE_ORC && (c.sats||[]).length)
-        o.ag = crewGroups(c.sats).map(g=>ROLE_LETTER[g.role].toLowerCase()+Math.min(g.n,9)+g.state).join("");
+        o.ag = crewGroups(c.sats).map(g=>ROLE_LETTER[g.role].toLowerCase()+HARNESS_LETTER[g.h]+Math.min(g.n,9)+g.state).join("");
       return o;
     });
     // Спящему экрану состав не нужен: мост шлёт короткий снэпшот и не гоняет данные зря
@@ -3565,8 +3636,10 @@
   const TEAM_ROLES = [ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV, ROLE_IMPL,
                       ROLE_REV, ROLE_IMPL, ROLE_REV, ROLE_RSRCH, ROLE_REV,
                       ROLE_REV, ROLE_REV, ROLE_REV, ROLE_REV, ROLE_REV];
+  // На чём запущен агент: итоговое ревью — тремя харнесами, гейт безопасности — Codex.
+  const TEAM_HARNESS = [0,0,0,0,0, 1,0,0,0,0, 0,0,1,2,0];
   const TEAM_NAMES = ["mjc-plan","mjc-impl-p1","mjc-rsrch","mjc-rev-tests","mjc-impl-p2",
-                      "mjc-rev-sec","mjc-impl-p3","mjc-rev-a11y","mjc-rsrch-2","mjc-rev-perf",
+                      "mjc-rev-sec-codex","mjc-impl-p3","mjc-rev-a11y","mjc-rsrch-2","mjc-rev-perf",
                       "mjc-rev-scen","mjc-rev-review-claude","mjc-rev-review-codex",
                       "mjc-rev-review-b24","mjc-rev-review-claude-2"];
   /** Карточки агентов = отдельные сессии. Спутники их не заменяют: на карточке
@@ -3588,7 +3661,8 @@
   function setTeamSize(n){
     const orc = orcCard(); if(!orc) return;
     const was = orc.sats || [];
-    orc.sats = Array.from({length:n}, (_,k)=> was[k] || {role:TEAM_ROLES[k%TEAM_ROLES.length], state:W});
+    orc.sats = Array.from({length:n}, (_,k)=> was[k] || {role:TEAM_ROLES[k%TEAM_ROLES.length], state:W,
+                                                      h:TEAM_HARNESS[k%TEAM_HARNESS.length]});
     syncTeamCards();
   }
   function makeTeam(n){
@@ -3630,7 +3704,8 @@
       rows.push(`<div class="rrow">
         <span class="rshape ${ROLE_CSS[a.role]}" style="background:${ROLE_HEX[a.role]}"
               data-act="role" data-k="${k}" title="сменить роль"></span>
-        <span class="nm">${TEAM_NAMES[k%TEAM_NAMES.length]}${k>4?" · только спутник":""}</span>
+        <span class="nm">${TEAM_NAMES[k%TEAM_NAMES.length]}
+          <button class="rh" data-act="h" data-k="${k}" title="харнес: Claude → Codex → b24">${HARNESS_NAME[a.h||0]}</button></span>
         <span class="rstates">${stateBtns(a.state, k)}</span>
         <button class="rdel" data-act="del" data-k="${k}" title="убрать агента">✕</button>
       </div>`);
@@ -3650,6 +3725,8 @@
       // Роль циклом по четырём: оркестратор в свите не бывает — он и есть карточка.
       const cyc = [ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
       orc.sats[k].role = cyc[(cyc.indexOf(orc.sats[k].role)+1) % cyc.length];
+    } else if(el.dataset.act==="h"){
+      orc.sats[k].h = ((orc.sats[k].h||0) + 1) % 3;
     } else if(el.dataset.act==="del"){
       orc.sats.splice(k,1);
     }

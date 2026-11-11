@@ -620,7 +620,12 @@ def test_crew_is_drawn_from_the_ag_string(sketch):
     assert "void drawCrew(" in sketch, "прошивка не рисует свиту"
     body = sketch[sketch.index("void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt) {"):]
     body = body[:body.index(chr(10) + "}")]
-    assert "p += 3" in body, "строка свиты разбирается не тройками «роль+число+состояние»"
+    assert "p += 4" in body, "строка свиты разбирается не четвёрками «роль+харнес+число+состояние»"
+    for letter in ("'x'", "'b'"):
+        assert letter in body, f"прошивка не знает букву харнеса {letter}"
+    assert set(b.HARNESS_LETTER.values()) == {"c", "x", "b"}, "мост шлёт другие буквы харнеса"
+    m = re.search(r"#define\s+CREW_SLOTS\s+(\d+)", sketch)
+    assert m and int(m.group(1)) == b.CREW_SLOTS, "мест в свите у моста и прошивки разное число"
     for letter in ("'p'", "'i'", "'r'", "'v'"):
         assert letter in body, f"прошивка не знает букву роли {letter}"
     # rindex, а не index: первым в файле идёт ПРОТОТИП, тело — последним
@@ -669,10 +674,10 @@ def test_role_gems_match_emulator(sketch):
 
 def test_crew_string_fits_firmware_buffer(sketch):
     """`ag` обязан влезать в буфер прошивки: обрезка была бы молчаливой. Худший
-    случай — все роли свиты, по тройке на каждую, при любом размере команды."""
+    случай — все места свиты заняты, по четвёрке на группу, при любом размере команды."""
     m = re.search(r"char\s+ag\[(\d+)\]", sketch)
     assert m, "в карточке прошивки нет буфера свиты"
-    worst = len(b.AGENT_ROLES) * 3
+    worst = b.CREW_SLOTS * 4
     assert worst + 1 <= int(m.group(1)), f"мост шлёт до {worst} байт свиты при буфере {m.group(1)}"
 
 

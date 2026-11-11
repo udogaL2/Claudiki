@@ -353,10 +353,11 @@ struct Session {
   char  name[40];      // кириллица в UTF-8 по 2 байта: 16 символов = 33 байта
   State state;
   int   role;         // роль в мета-оркестрации: 0 нет, 1 орк, 2 impl, 3 rsrch, 4 rev, 5 plan
-  // Свита оркестратора: тройка символов на РОЛЬ — буква, сколько агентов, худшее
-  // состояние («p10i30v21»). Строкой, а не массивом: арена ArduinoJson всего 2 КБ,
-  // и каждый вложенный узел стоит дороже, чем весь этот текст.
-  char  ag[24];
+  // Свита оркестратора: четвёрка символов на группу (роль, харнес) — буква роли,
+  // буква харнеса, сколько агентов, худшее состояние («pc10ic30vx11»), до шести
+  // групп. Строкой, а не массивом: арена ArduinoJson всего 2 КБ, и каждый
+  // вложенный узел стоит дороже, чем весь этот текст.
+  char  ag[28];
   int   sub;          // активных суб-агентов
   int   mb;           // вес транскрипта, МБ — копоть по краям карточки
   uint8_t color;      // цвет вкладки из /color: индекс SESSION_RGB, 0 — не задан
@@ -443,7 +444,7 @@ void updateOctopusArea(int col, int row, Session &s, float tt);
 void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt);
 uint16_t roleColor(int role);
 void roleGem(Adafruit_GFX &g, int cx, int cy, int role, uint16_t col);
-void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt, int phase, int count);
+void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt, int phase, int count, int harness);
 void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt);
 void applySnapshot();
 void handleLine(const char *line);
@@ -1088,33 +1089,115 @@ void roleGem(Adafruit_GFX &g, int cx, int cy, int role, uint16_t col) {
     }
 }
 
-void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt,
-              int phase, int count) {
-  uint16_t base = roleColor(role);
-  uint16_t col = (state == IDLE) ? lerp565(base, BG, 0.55f) : base;
-  cy += iround(fastSin(tt * (state == WORKING ? 3.2f : 1.6f) + phase * 1.7f));
+// Член свиты. Роль — шапкой-камешком и цветом, ХАРНЕС — видом зверя: Claude —
+// осьминожек, Codex — медуза, b24 — краб. «Ревью встало» — это ещё и вопрос, в какую
+// вкладку идти, а вкладки харнесов разные (у b24 вопрос о правах отвечается только в
+// его TUI). Силуэт зверя читается целиком: купол с нитями и широкий панцирь с
+// клешнями не спутать с круглым осьминогом даже боковым зрением. Знаки состояния у
+// всех общие. Рисунок — пиксель в пиксель с эмулятором (tools/octodash-preview.html).
+#define H_CLAUDE 0
+#define H_CODEX  1
+#define H_B24    2
+
+static void crewEyes(Adafruit_GFX &g, int cx, int cy, int state) {
+  if (state == IDLE) {                                  // спит — глаза щёлочками
+    g.drawFastHLine(cx - 3, cy, 2, C_IDLE);
+    g.drawFastHLine(cx + 2, cy, 2, C_IDLE);
+    return;
+  }
+  g.fillCircle(cx - 2, cy, 1, EYE_LIGHT); g.fillCircle(cx + 2, cy, 1, EYE_LIGHT);
+  g.drawPixel(cx - 2, cy, EYE_DARK);      g.drawPixel(cx + 2, cy, EYE_DARK);
+}
+
+static void octoBody(Adafruit_GFX &g, int cx, int cy, uint16_t col, int state, float tt, int phase) {
   for (int t = -3; t <= 3; t++) {                       // щупальца
     int sway = iround(fastSin(tt * (state == WORKING ? 6.0f : 2.4f) + phase + t * 0.7f));
     g.drawPixel(cx + t, cy + 4, lerp565(col, BG, 0.2f));
     g.drawPixel(cx + t + sway, cy + 5, lerp565(col, BG, 0.45f));
     if (t % 2 == 0) g.drawPixel(cx + t + sway, cy + 6, lerp565(col, BG, 0.65f));
   }
-  // «Их несколько» — силуэтами за спиной, без цифр: шрифт 3×5 читается только на
-  // scale 3 (индикатор страниц), а считать агентов глазами всё равно никто не будет.
-  // Вокруг главного выбивается фон: без этого зазора три круга сливаются в пятно.
-  uint16_t ghost = lerp565(col, BG, 0.55f);
-  if (count > 1) g.fillCircle(cx - 4, cy + 2, 3, ghost);
-  if (count > 2) g.fillCircle(cx + 4, cy + 2, 3, ghost);
-  if (count > 1) g.fillCircle(cx, cy, 5, BG);
   g.fillCircle(cx, cy, 4, col);
   g.fillCircle(cx - 1, cy - 2, 1, lerp565(col, 0xFFFF, 0.75f));
-  if (state == IDLE) {                                  // спит — глаза щёлочками
-    g.drawFastHLine(cx - 3, cy, 2, C_IDLE);
-    g.drawFastHLine(cx + 2, cy, 2, C_IDLE);
-  } else {
-    g.fillCircle(cx - 2, cy, 1, EYE_LIGHT); g.fillCircle(cx + 2, cy, 1, EYE_LIGHT);
-    g.drawPixel(cx - 2, cy, EYE_DARK);      g.drawPixel(cx + 2, cy, EYE_DARK);
+  crewEyes(g, cx, cy, state);
+}
+
+// Медуза: купол на полкруга с зубчатым краем и четыре нити, которые волнуются сильнее
+// к концу. Работает — купол качает воду: на такт раздаётся вширь и приседает.
+static void jellyBody(Adafruit_GFX &g, int cx, int cy, uint16_t col, int state, float tt, int phase) {
+  int pump = (state == WORKING && fastSin(tt * 4.6f + phase) > 0.3f) ? 1 : 0;
+  int rw = 4 + pump, top = cy - 4 + pump, base = cy + 1;
+  static const int8_t TX[4] = {-3, -1, 1, 3};
+  for (int i = 0; i < 4; i++)                           // нити
+    for (int j = 0; j < 5; j++) {
+      int sway = iround(fastSin(tt * (state == WORKING ? 5.0f : 2.0f) + phase + TX[i] * 0.8f
+                                + j * 0.9f) * j / 3.0f);
+      g.drawPixel(cx + TX[i] + sway, base + 2 + j, lerp565(col, BG, 0.25f + j * 0.14f));
+    }
+  for (int y = top; y <= base; y++) {                   // купол
+    float d = (base - y + 0.5f) / (base - top + 1);
+    float q = 1 - d * d;
+    int hw = iround(rw * sqrtf(q > 0 ? q : 0));
+    g.fillRect(cx - hw, y, 2 * hw + 1, 1, col);
   }
+  for (int x = -rw; x <= rw; x += 2) g.drawPixel(cx + x, base + 1, lerp565(col, BG, 0.15f));
+  g.drawPixel(cx - 2, top + 1, lerp565(col, 0xFFFF, 0.75f));   // блик купола
+  g.drawPixel(cx - 3, top + 2, lerp565(col, 0xFFFF, 0.5f));
+  crewEyes(g, cx, cy - 1, state);
+}
+
+// Краб: широкий панцирь, глаза на стебельках, клешни по бокам и по три ножки.
+// Работает — машет клешнями по очереди.
+static void crabBody(Adafruit_GFX &g, int cx, int cy, uint16_t col, int state, float tt, int phase) {
+  uint16_t leg = lerp565(col, BG, 0.35f);
+  for (int sd = -1; sd <= 1; sd += 2)
+    for (int k = 0; k < 3; k++) {                       // ножки
+      int lx = cx + sd * (1 + k * 2);
+      g.drawPixel(lx + sd, cy + 4, leg);
+      g.drawPixel(lx + sd * 2, cy + 5, lerp565(leg, BG, 0.3f));
+    }
+  static const int8_t ROWS[5][2] = {{-1, 3}, {0, 4}, {1, 4}, {2, 4}, {3, 3}};
+  for (int i = 0; i < 5; i++)                           // панцирь
+    g.fillRect(cx - ROWS[i][1], cy + ROWS[i][0], 2 * ROWS[i][1] + 1, 1, col);
+  g.drawPixel(cx - 2, cy, lerp565(col, 0xFFFF, 0.7f));        // блик
+  g.drawPixel(cx - 1, cy - 1, lerp565(col, 0xFFFF, 0.5f));
+  for (int sd = -1; sd <= 1; sd += 2) {                 // клешни
+    int up = (state == WORKING && fastSin(tt * 6.0f + phase + (sd > 0 ? 3.14159f : 0)) > 0) ? 1 : 0;
+    g.drawPixel(cx + sd * 5, cy, col);
+    g.drawPixel(cx + sd * 6, cy - 1 - up, col);
+    g.fillRect(sd > 0 ? cx + 6 : cx - 7, cy - 3 - up, 2, 2, col);
+    g.drawPixel(cx + sd * 6, cy - 3 - up, BG);           // развилка клешни
+  }
+  g.drawPixel(cx - 2, cy - 2, col); g.drawPixel(cx + 2, cy - 2, col);   // стебельки
+  crewEyes(g, cx, cy - 4, state);
+}
+
+static void crewGhost(Adafruit_GFX &g, int h, int cx, int cy, uint16_t col) {
+  if (h == H_CODEX) {
+    for (int y = -3; y <= 0; y++) {
+      float d = (-y + 0.5f) / 4.0f;
+      int hw = iround(3 * sqrtf(1 - d * d));
+      g.fillRect(cx - hw, cy + y, 2 * hw + 1, 1, col);
+    }
+    return;
+  }
+  if (h == H_B24) { g.fillRect(cx - 3, cy, 7, 3, col); g.fillRect(cx - 2, cy - 1, 5, 1, col); return; }
+  g.fillCircle(cx, cy, 3, col);
+}
+
+void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt,
+              int phase, int count, int harness) {
+  uint16_t base = roleColor(role);
+  uint16_t col = (state == IDLE) ? lerp565(base, BG, 0.55f) : base;
+  cy += iround(fastSin(tt * (state == WORKING ? 3.2f : 1.6f) + phase * 1.7f));
+  // «Их несколько» — дублями того же зверя за спиной, без цифр: шрифт 3×5 читается
+  // только на scale 3. Вокруг главного выбивается фон: без зазора трое сливаются.
+  uint16_t ghost = lerp565(col, BG, 0.55f);
+  if (count > 1) crewGhost(g, harness, cx - 4, cy + 2, ghost);
+  if (count > 2) crewGhost(g, harness, cx + 4, cy + 2, ghost);
+  if (count > 1) g.fillCircle(cx, cy, 5, BG);
+  if (harness == H_CODEX)    jellyBody(g, cx, cy, col, state, tt, phase);
+  else if (harness == H_B24) crabBody(g, cx, cy, col, state, tt, phase);
+  else                       octoBody(g, cx, cy, col, state, tt, phase);
   roleGem(g, cx, cy - 10, role, col);   // выше кольца ожидания (r до 7)
   if (state == WAITING) {
     // Мигает ТОЛЬКО кольцо, сам зверёк остаётся на месте: мигание всей фигуры
@@ -1137,38 +1220,37 @@ void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt,
 
 // Свита стоит в СТОЛБЦАХ по бокам, а не на орбите: на кольце спутники наезжают на
 // тело и мельчают до нечитаемости, а сбоку у каждого есть свои 18×20 пикселей.
-// Одна фигура на РОЛЬ: опознать конкретного агента силуэтом всё равно нельзя, для
-// этого мост подставляет его имя в строку карточки.
+// Одна фигура на группу (роль, харнес): опознать конкретного агента силуэтом всё
+// равно нельзя, для этого мост подставляет его имя в строку карточки.
+#define CREW_SLOTS 6
 void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt) {
-  // `ag` — тройка на РОЛЬ: буква, сколько их (1..9), самое тревожное состояние
-  // («p10i30v21»). Сводку считает мост: команда бывает в 15 вкладок, а буфер ag[24],
-  // и рисуем мы всё равно одну фигуру на роль. Порядок — конвейер: план, код,
-  // исследование, проверка; четыре роли встают по две в столбец.
-  const int roles[4] = {ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV};
-  int cnt[4] = {0, 0, 0, 0}, st[4] = {-1, -1, -1, -1};
-  for (const char *p = ag; p[0] && p[1] && p[2]; p += 3) {
-    int idx = p[0] == 'p' ? 0 : p[0] == 'i' ? 1 : p[0] == 'r' ? 2 : p[0] == 'v' ? 3 : -1;
-    if (idx < 0) continue;
-    int n = p[1] - '0', state = p[2] - '0';
-    if (n < 1 || n > 9) n = 1;
-    if (state < 0 || state > 3) state = IDLE;
-    cnt[idx] = n;
-    st[idx] = state;
+  // `ag` — четвёрка на группу: буква роли, буква харнеса (c/x/b), сколько их (1..9),
+  // самое тревожное состояние («pc10ic30vx11»). Сводку и порядок (конвейер план →
+  // код → исследование → проверка, внутри роли Claude → Codex → b24) готовит мост;
+  // групп не больше CREW_SLOTS — по три в столбец.
+  int role[CREW_SLOTS], harn[CREW_SLOTS], cnt[CREW_SLOTS], st[CREW_SLOTS], n = 0;
+  for (const char *p = ag; p[0] && p[1] && p[2] && p[3] && n < CREW_SLOTS; p += 4) {
+    int r = p[0] == 'p' ? ROLE_PLAN : p[0] == 'i' ? ROLE_IMPL : p[0] == 'r' ? ROLE_RSRCH
+          : p[0] == 'v' ? ROLE_REV : -1;
+    if (r < 0) continue;
+    int c = p[2] - '0', state = p[3] - '0';
+    role[n] = r;
+    harn[n] = p[1] == 'x' ? H_CODEX : p[1] == 'b' ? H_B24 : H_CLAUDE;
+    cnt[n] = (c < 1 || c > 9) ? 1 : c;
+    st[n] = (state < 0 || state > 3) ? IDLE : state;
+    n++;
   }
-  int order[4], n = 0;
-  for (int k = 0; k < 4; k++) if (cnt[k]) order[n++] = k;
   if (!n) return;
   int half = (n + 1) / 2;
   for (int k = 0; k < n; k++) {
     bool right = k >= half;
     int col = right ? n - half : half;
     int idx = right ? k - half : k;
-    // Шаг и якорь подобраны так, чтобы три фигуры влезли в окно 68×72 целиком,
-    // вместе с шапкой сверху и щупальцами снизу: клип у канвы тихий, срезанную
-    // макушку на экране не заметишь.
+    // Тройка в столбце опускается ниже: снизу у окна запас (до hy+41), а сверху шапку
+    // верхнего иначе срезало бы краем буфера — клип у канвы тихий, на экране не видно.
     int gx = cx + (right ? 25 : -25);
-    int gy = hy + 2 + iround((idx - (col - 1) / 2.0f) * (col >= 3 ? 19 : 24));
-    crewOcto(g, gx, gy, roles[order[k]], st[order[k]], tt, k, cnt[order[k]]);
+    int gy = hy + (col >= 3 ? 8 : 2) + iround((idx - (col - 1) / 2.0f) * (col >= 3 ? 20 : 24));
+    crewOcto(g, gx, gy, role[k], st[k], tt, k, cnt[k], harn[k]);
   }
 }
 
