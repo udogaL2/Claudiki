@@ -32,6 +32,7 @@ import threading
 import time
 import zlib
 from dataclasses import dataclass, field
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Protocol
 
@@ -907,12 +908,29 @@ def read_session_registry(root: str = "", *, lister=None, reader=None) -> list[d
         entry = out.get(str(d["sessionId"]))
         if entry is None:
             continue
-        entry["status"] = str(d.get("state") or "") or entry.get("status")
         entry["name"] = entry.get("name") or d.get("name")
+        # Статус задания — только если он свежее записи сессии. Задание живёт неделями:
+        # фоновую сессию открыли заново интерактивно, и её state.json навсегда остался
+        # «blocked» на вопросе пятидневной давности, перебивая честный idle из sessions/.
+        job_ms = iso_ms(d.get("updatedAt"))
+        if d.get("state") and (job_ms is None or job_ms >= (entry.get("status_ms") or 0)):
+            entry["status"] = str(d["state"])
+            if job_ms:
+                entry["status_ms"] = job_ms
 
     if not found:
         return None      # ни одного источника — реестра тут нет (или другая версия CLI)
     return list(out.values())
+
+
+def iso_ms(value) -> float | None:
+    """ISO-время из файлов Claude Code («2026-11-11T11:39:22.314Z») → мс эпохи."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
+    except ValueError:
+        return None
 
 
 def registry_entry_alive(entry: dict, is_alive: Callable[[int | None], bool] = pid_alive) -> bool:

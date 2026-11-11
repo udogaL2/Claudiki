@@ -239,3 +239,17 @@ def test_hook_counts_teammates_as_subagents(hook, monkeypatch):
         ],
     })
     assert sent["subs"] == 4, "агенты — teammate/subagent/cloud session; shell и монитор — нет"
+
+
+def test_hook_notification_waits_only_on_a_real_question(hook, monkeypatch):
+    def notify(**extra):
+        return run_hook(hook, monkeypatch, {"session_id": "s", "hook_event_name": "Notification",
+                                            "cwd": "/w", **extra})
+    assert notify(notification_type="permission_prompt")["event"] == "waiting"
+    assert notify(notification_type="elicitation_dialog")["event"] == "waiting"
+    assert notify(notification_type="something_new")["event"] == "waiting"
+    assert notify(message="Claude needs your permission to use Bash")["event"] == "waiting"
+    # напоминание после конца хода — не вопрос: ничего не шлём, сессия остаётся IDLE
+    assert notify(notification_type="idle_prompt") is None
+    assert notify(notification_type="auth_success") is None
+    assert notify(message="Claude is waiting for your input") is None

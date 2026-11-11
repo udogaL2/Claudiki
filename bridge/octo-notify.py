@@ -27,7 +27,7 @@ HOOK_TO_EVENT = {
     "SessionStart": "start",
     "UserPromptSubmit": "working",
     "PostToolUse": "working",   # тул отработал → снова активны (снимает «застревание» на WAITING)
-    "Notification": "waiting",
+    "Notification": "waiting",  # только настоящий вопрос, см. NOT_A_QUESTION
     "Stop": "idle",
     "SessionEnd": "end",
     "StopFailure": "error",
@@ -46,6 +46,22 @@ HOOK_TO_EVENT = {
 AGENT_TASK_TYPES = ("subagent", "teammate", "cloud session")
 # «Работает» и «вот-вот начнёт» для пузырька одно и то же: работа роздана.
 AGENT_TASK_STATES = ("running", "pending")
+
+# Notification шлётся не только на вопрос человеку. Через минуту тишины после конца
+# хода приходит напоминание «Claude is waiting for your input» (idle_prompt), и
+# каждая закончившая сессия через минуту становилась WAITING — часами, обгоняя на
+# первую страницу тех, кто только что уснул. Вопрос это permission_prompt и
+# elicitation_dialog; незнакомый тип считается вопросом, чтобы не проспать новый.
+NOT_A_QUESTION = ("idle_prompt", "auth_success")
+IDLE_PROMPT_TEXT = "waiting for your input"   # старые версии шлют без типа
+
+
+def is_question(envelope: dict) -> bool:
+    kind = envelope.get("notification_type")
+    if kind:
+        return kind not in NOT_A_QUESTION
+    return IDLE_PROMPT_TEXT not in str(envelope.get("message") or "").lower()
+
 
 HOST = os.environ.get("OCTO_BRIDGE_HOST", "127.0.0.1")
 PORT = os.environ.get("OCTO_BRIDGE_PORT", "8787")
@@ -126,6 +142,8 @@ def main() -> None:
         event = HOOK_TO_EVENT.get(hook_name)
         if event is None:
             return  # неизвестный/ненужный хук — игнор
+        if hook_name == "Notification" and not is_question(envelope):
+            return  # напоминание после конца хода: сессия спит, а не ждёт
 
     payload = {
         "session_id": envelope.get("session_id"),

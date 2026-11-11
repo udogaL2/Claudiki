@@ -1065,6 +1065,22 @@ def test_read_registry_jobs_only_enrich_known_sessions():
     assert entries[0]["status"] == "blocked" and entries[0]["name"] == "фон"
 
 
+def test_read_registry_stale_job_does_not_override_fresher_session_status():
+    # фоновую сессию открыли заново интерактивно: state.json задания так и остался
+    # «blocked» на старом вопросе — перебивать свежий idle из sessions/ он не должен
+    fresh = b.iso_ms("2026-11-11T11:42:30.000Z")
+    fs = registry_fs({
+        "/r/sessions/7.json": {"pid": 7, "sessionId": "old", "status": "idle", "statusUpdatedAt": fresh},
+        "/r/sessions/8.json": {"pid": 8, "sessionId": "new", "status": "idle", "statusUpdatedAt": fresh},
+        "/r/jobs/old/state.json": {"sessionId": "old", "state": "blocked", "updatedAt": "2026-11-11T11:39:22.314Z"},
+        "/r/jobs/new/state.json": {"sessionId": "new", "state": "blocked", "updatedAt": "2026-11-11T11:45:00Z"},
+    })
+    got = {e["session_id"]: e for e in b.read_session_registry("/r", **fs)}
+    assert got["old"]["status"] == "idle" and got["old"]["status_ms"] == fresh
+    assert got["new"]["status"] == "blocked" and got["new"]["status_ms"] == b.iso_ms("2026-11-11T11:45:00Z")
+    assert b.iso_ms("вчера") is None and b.iso_ms(None) is None
+
+
 def test_read_registry_absent_returns_none():
     # ни одного источника → None («реестра нет»), а не пустой список
     assert b.read_session_registry("/r", **registry_fs({})) is None
