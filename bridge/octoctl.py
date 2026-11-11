@@ -62,6 +62,9 @@ def fmt_sessions(dbg: dict) -> str:
         idle = s.get("idle_hours")
         idle_txt = "—" if idle is None else (f"{idle * 60:.0f}м" if idle < 1 else f"{idle:.1f}ч")
         subs = f" +{s['subagents']}sub" if s.get("subagents") else ""
+        # агенты Codex/b24 хуков не шлют — их видно только сканером, это стоит знать
+        if s.get("harness") not in (None, "claude"):
+            subs += f" [{s['harness']}]"
         rows.append(
             f"{mark} {s['id'][:8]:<9} {str(s.get('registry_name') or s['name'])[:17]:<17} "
             f"{s.get('state_name', '?'):<8} {pid_txt:>8} {idle_txt:>7}  "

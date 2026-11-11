@@ -620,8 +620,8 @@ def test_crew_is_drawn_from_the_ag_string(sketch):
     assert "void drawCrew(" in sketch, "прошивка не рисует свиту"
     body = sketch[sketch.index("void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt) {"):]
     body = body[:body.index(chr(10) + "}")]
-    assert "p += 2" in body, "строка свиты разбирается не парами «роль+состояние»"
-    for letter in ("'i'", "'r'", "'v'"):
+    assert "p += 3" in body, "строка свиты разбирается не тройками «роль+число+состояние»"
+    for letter in ("'p'", "'i'", "'r'", "'v'"):
         assert letter in body, f"прошивка не знает букву роли {letter}"
     # rindex, а не index: первым в файле идёт ПРОТОТИП, тело — последним
     octo = sketch[sketch.rindex("void drawOctopus("):]
@@ -630,14 +630,50 @@ def test_crew_is_drawn_from_the_ag_string(sketch):
     assert "ROLE_ORC" in octo, "свиту рисуем не только у оркестратора?"
     # Буква роли на мосту и в прошивке — один алфавит, иначе свита молча пуста
     letters = set(b.ROLE_LETTER.values())
-    assert letters == {"i", "r", "v"}, f"мост шлёт другие буквы: {sorted(letters)}"
+    assert letters == {"p", "i", "r", "v"}, f"мост шлёт другие буквы: {sorted(letters)}"
+
+
+def test_role_codes_match_firmware(sketch):
+    """Код роли в `r` — тот же #define в прошивке. Новую роль (планировщик 0.6)
+    легко добавить в мост и забыть на плате — карточка нарисуется без фигуры."""
+    for name in ("ORC", "IMPL", "RSRCH", "REV", "PLAN"):
+        m = re.search(rf"#define\s+ROLE_{name}\s+(\d+)", sketch)
+        assert m, f"в прошивке нет ROLE_{name}"
+        assert int(m.group(1)) == getattr(b, f"ROLE_{name}"), f"код ROLE_{name} разъехался"
+    glyph = sketch[sketch.rindex("void roleGem("):]   # тело, а не прототип
+    glyph = glyph[:glyph.index(chr(10) + "}")]
+    assert "ROLE_PLAN" in glyph, "у планировщика нет своего силуэта"
+
+
+def test_role_gems_match_emulator(sketch):
+    """Шапки ролей рисуются по маске 7×7 и в эмуляторе, и на плате. Маски обязаны
+    совпадать пиксель в пиксель: эмулятор — место, где картинку утверждают."""
+    import pathlib
+    html = (pathlib.Path(__file__).resolve().parents[2] / "tools" / "octodash-preview.html").read_text("utf-8")
+    js = {}
+    for name in ("IMPL", "RSRCH", "REV", "PLAN"):
+        m = re.search(rf"\[ROLE_{name}\]:\s*\[([^\]]*)\]", html)
+        assert m, f"в эмуляторе нет маски ROLE_{name}"
+        rows = re.findall(r'"([.#]{7})"', m.group(1))
+        js[name] = [int(r.replace(".", "0").replace("#", "1"), 2) for r in rows]
+    table = sketch[sketch.index("GEM_MASK[4][7] = {"):]
+    table = table[:table.index("};")]
+    # комментарии фикстура вырезает — строки таблицы идут в порядке индекса roleGem
+    rows = [[int(v, 16) for v in r.split(",")] for r in re.findall(r"\{([^{}]*)\}", table)]
+    fw = dict(zip(("IMPL", "RSRCH", "REV", "PLAN"), rows))
+    gem = sketch[sketch.rindex("void roleGem("):]
+    assert re.search(r"ROLE_IMPL \? 0 : role == ROLE_RSRCH \? 1 : role == ROLE_REV \? 2"
+                     r"\s*: role == ROLE_PLAN \? 3", gem), "порядок строк GEM_MASK сменился"
+    assert fw == js, "маски шапок в прошивке и эмуляторе разъехались"
 
 
 def test_crew_string_fits_firmware_buffer(sketch):
-    """`ag` обязан влезать в буфер прошивки: обрезка была бы молчаливой."""
+    """`ag` обязан влезать в буфер прошивки: обрезка была бы молчаливой. Худший
+    случай — все роли свиты, по тройке на каждую, при любом размере команды."""
     m = re.search(r"char\s+ag\[(\d+)\]", sketch)
     assert m, "в карточке прошивки нет буфера свиты"
-    assert b.AG_MAX * 2 + 1 <= int(m.group(1)),         f"мост шлёт до {b.AG_MAX * 2} байт свиты при буфере {m.group(1)}"
+    worst = len(b.AGENT_ROLES) * 3
+    assert worst + 1 <= int(m.group(1)), f"мост шлёт до {worst} байт свиты при буфере {m.group(1)}"
 
 
 def test_crew_marks_waiting_without_hiding_the_creature(sketch):

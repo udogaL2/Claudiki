@@ -3326,6 +3326,34 @@ def test_role_from_registry_label_and_from_name():
     assert b.role_of(None, "octodash") == b.ROLE_NONE
 
 
+def test_role_label_with_plugin_prefix_and_planner():
+    # в реестр Claude Code попадает имя файла агента — с префиксом плагина
+    assert b.role_of("mjc-implementer", None) == b.ROLE_IMPL
+    assert b.role_of("mjc-planner", "modu-plan") == b.ROLE_PLAN
+    assert b.role_of("planner", None) == b.ROLE_PLAN
+    assert b.role_of(None, "modu-plan-p1-2") == b.ROLE_PLAN
+    assert b.role_of(None, "modu-rev-review-codex-2") == b.ROLE_REV
+    assert b.role_of("mjc-whatever", None) == b.ROLE_NONE
+
+
+def test_crew_field_groups_by_role_in_pipeline_order(bridge):
+    br = bridge
+    br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
+                     "sess_name": "mjc-orc"})
+    crew = (("r1", "mjc-rev-tests", "reviewer", "working"),
+            ("r2", "mjc-rev-sec", "reviewer", "error"),
+            ("r3", "mjc-rev-a11y", "reviewer", "waiting"),
+            ("i1", "mjc-impl-p1", "implementer", "idle"),
+            ("i2", "mjc-impl-p2", "implementer", "working"),
+            ("p1", "mjc-plan", "planner", "idle"))
+    for sid, name, agent, ev in crew:
+        br.handle_event({"event": ev, "session_id": sid, "cwd": "/w/mjc",
+                         "sess_name": name, "agent": agent})
+    card = br.build_snapshot()["sessions"][0]
+    # план → код → проверка; у ревьюверов упавший важнее ждущего
+    assert card["ag"] == "p12i20v33"
+
+
 def test_team_collapses_into_one_card(bridge):
     br = bridge
     br.handle_event({"event": "waiting", "session_id": "orc", "cwd": "/w/mjc",
@@ -3339,7 +3367,7 @@ def test_team_collapses_into_one_card(bridge):
     assert len(cards) == 1, "агенты обязаны свернуться в карточку оркестратора"
     card = cards[0]
     assert card["r"] == b.ROLE_ORC
-    assert card["ag"] == "i0r0v1", "свита: буква роли + цифра состояния на агента"
+    assert card["ag"] == "i10r10v11", "свита: буква роли + сколько их + худшее состояние"
     # имя вставшего агента ВМЕСТО имени оркестратора — иначе непонятно, куда идти
     assert card["name"].startswith("mjc-rev-sec") and card["name"].endswith("?")
 
@@ -3382,7 +3410,7 @@ def test_crew_field_is_capped_for_firmware_buffer(bridge):
         br.handle_event({"event": "working", "session_id": f"a{i}", "cwd": "/w/mjc",
                          "sess_name": f"mjc-rev-{i}", "agent": "reviewer"})
     ag = br.build_snapshot()["sessions"][0]["ag"]
-    assert len(ag) == b.AG_MAX * 2, "свита обязана резаться: у прошивки буфер ag[24]"
+    assert ag == "v90", "длина свиты не зависит от размера команды: счётчик режется до цифры"
 
 
 def test_alarm_name_counts_the_rest(bridge):
@@ -3461,7 +3489,7 @@ def test_plain_session_becomes_orchestrator_when_its_agent_appears(bridge):
                      "parent": "какая-то-сессия"})
     cards = br.build_snapshot()["sessions"]
     assert len(cards) == 1, "агент обязан свернуться в карточку своего оркестратора"
-    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i0"
+    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i10"
 
 
 def test_agent_named_as_parent_does_not_become_orchestrator(bridge):
@@ -3553,7 +3581,7 @@ def test_session_referenced_by_sid_becomes_orchestrator(bridge):
                      "parent_sid": "s1"})
     cards = br.build_snapshot()["sessions"]
     assert len(cards) == 1, "агент обязан свернуться в карточку своего оркестратора"
-    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i0"
+    assert cards[0]["r"] == b.ROLE_ORC and cards[0]["ag"] == "i10"
 
 
 def test_name_path_still_works_without_sid(bridge):
@@ -3614,3 +3642,163 @@ def test_agent_referenced_by_sid_stays_its_own_card(bridge):
     teams = br.teams(list(br.sessions.values()))
     assert teams["orc"] == [], "имплементер стал карточкой — в свиту он не идёт"
     assert [a.reg_name for a in teams["a1"]] == ["mjc-rev-sec"]
+
+
+# --- агенты не-Claude (Codex, b24) ---------------------------------------------
+# Хуков и записи в реестре Claude Code у них нет; мост находит их по окружению
+# процесса, а статус считает по ленте событий харнеса.
+
+def _lines(*events):
+    return [json.dumps(e) for e in events]
+
+
+def test_codex_feed_turns():
+    st = b.new_feed_state()
+    b.parse_feed("codex", _lines({"type": "event_msg", "payload": {"type": "task_started"}}), st)
+    assert b.feed_status(st) == "busy"
+    b.parse_feed("codex", _lines({"type": "response_item", "payload": {"type": "message"}},
+                                 {"type": "event_msg", "payload": {"type": "task_complete"}}), st)
+    assert b.feed_status(st) == "idle"
+    b.parse_feed("codex", _lines({"type": "event_msg", "payload": {"type": "task_started"}},
+                                 {"type": "event_msg", "payload": {"type": "turn_aborted"}}), st)
+    assert b.feed_status(st) == "idle"
+
+
+def test_b24_feed_turn_ends_only_without_tool_use_and_waits_on_permission():
+    st = b.new_feed_state()
+    start = {"type": "stream_event", "event": {"type": "message_start"}}
+    stop = {"type": "stream_event", "event": {"type": "message_stop"}}
+    b.parse_feed("b24", ["не json", "[]"] + _lines(
+        {"type": "system", "subtype": "session_start"},
+        {"type": "user", "message": {"content": [{"type": "text", "text": "сделай"}]}},
+        start,
+        {"type": "assistant", "message": {"content": [{"type": "tool_use"}]}},
+        stop), st)
+    assert b.feed_status(st) == "busy", "message_stop с tool_use ход не заканчивает"
+    b.parse_feed("b24", _lines({"type": "control_request", "request_id": "q1",
+                                "request": {"tool_name": "write_file"}}), st)
+    assert b.feed_status(st) == "waiting", "вопрос о правах — агент ждёт человека"
+    b.parse_feed("b24", _lines({"type": "control_response", "response": {"request_id": "q1"}},
+                               {"type": "user", "message": {"content": [{"type": "tool_result"}]}},
+                               start,
+                               {"type": "assistant", "message": {"content": [{"type": "text"}]}},
+                               stop), st)
+    assert b.feed_status(st) == "idle"
+
+
+def test_feed_tail_reads_only_complete_lines_and_increments(tmp_path):
+    path = tmp_path / "rollout-x.jsonl"
+    started = json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
+    done = json.dumps({"type": "event_msg", "payload": {"type": "task_complete"}})
+    path.write_text(started + "\n" + done[:10])
+    tail = b.FeedTail()
+    status, mtime = tail.status("codex", str(path))
+    assert status == "busy" and mtime > 0
+    path.write_text(started + "\n" + done + "\n")
+    assert tail.status("codex", str(path))[0] == "idle", "дописанная строка дочитана"
+    path.write_text(started + "\n")            # файл пересоздан короче — читаем заново
+    assert tail.status("codex", str(path))[0] == "busy"
+    assert tail.status("codex", str(tmp_path / "нет.jsonl")) == ("idle", 0.0)
+    tail.forget_except(set())
+    assert tail._files == {}
+
+
+def _codex_proc(tmp_path, *, pid=41544, name="codex", events=("task_started",)):
+    sid = "01a1ca09-21a5-7753-ab94-b149e75e3ef0"
+    feed = tmp_path / f"rollout-2026-11-11T11-55-58-{sid}.jsonl"
+    feed.write_text("".join(json.dumps({"type": "event_msg", "payload": {"type": e}}) + "\n"
+                            for e in events))
+    env = {"MJC_AGENT_NAME": "modu-rev-sec-codex", "MJC_ROLE": "reviewer",
+           "MJC_PARENT": "оркестратор", "MJC_PARENT_SESSION": "orc", "MJC_CODEX_TRUST": "x"}
+    return {"pid": pid, "name": name, "env": env, "cwd": "/w/modules", "started_ms": 1000.0,
+            "files": lambda: ["/tmp/.lock", str(feed)]}, sid
+
+
+def test_foreign_entry_codex_and_its_helper_process(tmp_path):
+    proc, sid = _codex_proc(tmp_path)
+    tail = b.FeedTail()
+    e = b.foreign_entry(proc, tail)
+    assert (e["session_id"], e["name"], e["agent"], e["status"]) == (sid, "modu-rev-sec-codex",
+                                                                     "reviewer", "busy")
+    assert (e["harness"], e["parent_sid"], e["pid"]) == ("codex", "orc", 41544)
+    helper = dict(proc, name="codex-code-mode-host")
+    assert b.foreign_entry(helper, tail) is None, "дочерний процесс Codex — не второй агент"
+    assert b.foreign_entry(dict(proc, env={"MJC_ROLE": "reviewer"}), tail) is None
+    blind = dict(proc, files=lambda: [])
+    assert b.foreign_entry(blind, tail)["session_id"] == "codex-41544"
+
+
+def test_foreign_entry_b24(tmp_path):
+    feed = tmp_path / "5f0e" / "events.jsonl"
+    feed.parent.mkdir()
+    feed.write_text(json.dumps({"type": "control_request", "request_id": "q"}) + "\n")
+    proc = {"pid": 7, "name": "node", "cwd": "/w", "started_ms": None,
+            "env": {"MJC_AGENT_NAME": "modu-impl-p1", "MJC_ROLE": "implementer",
+                    "MJC_B24_EVENTS": str(feed), "MJC_PARENT_SESSION": "orc"}}
+    e = b.foreign_entry(proc, b.FeedTail())
+    assert (e["session_id"], e["harness"], e["status"]) == ("5f0e", "b24", "waiting")
+    plain_node = {"pid": 8, "name": "node", "env": {"MJC_AGENT_NAME": "x", "MJC_ROLE": "planner"}}
+    assert b.foreign_entry(plain_node, b.FeedTail()) is None
+
+
+def test_scan_foreign_survives_lister_failure(tmp_path):
+    def boom():
+        raise RuntimeError("нет прав")
+    assert b.scan_foreign_agents(b.FeedTail(), boom) == []
+    proc, _ = _codex_proc(tmp_path)
+    tail = b.FeedTail()
+    assert len(b.scan_foreign_agents(tail, lambda: [proc, {"pid": 1, "name": "node", "env": {}}])) == 1
+    assert list(tail._files)
+
+
+def test_merge_registry_never_turns_missing_registry_into_partial_one():
+    foreign = [{"session_id": "x"}]
+    assert b.merge_registry(None, foreign) is None, "иначе сверка удалила бы все сессии Claude"
+    assert b.merge_registry([{"session_id": "c"}], foreign) == [{"session_id": "c"}, *foreign]
+
+
+def test_codex_agent_joins_its_team_through_reconcile(tmp_path, clock):
+    proc, sid = _codex_proc(tmp_path)
+    tail = b.FeedTail()
+    orc = b._entry("orc", pid=None, cwd="/w/modules", name="оркестратор", status="idle",
+                   status_ms=clock.wall() * 1000)
+    proc["started_ms"] = clock.wall() * 1000
+    br = make_bridge(b.Config(reconcile_grace_sec=0), clock, FakeLiveness({41544}),
+                     CollectingSink(),
+                     probe=lambda: b.merge_registry([orc], b.scan_foreign_agents(
+                         tail, lambda: [proc])))
+    assert br.reconcile()
+    cards = br.build_snapshot()["sessions"]
+    assert len(cards) == 1, "агент Codex обязан свернуться в карточку оркестратора"
+    assert cards[0]["ag"] == "v10"
+    dbg = {s["id"]: s for s in br.build_debug()["sessions"]}
+    assert dbg[sid]["harness"] == "codex" and dbg[sid]["parent_sid"] == "orc"
+    # связь могла приехать позже первой сверки — дополняется на следующей
+    br.sessions[sid].parent_sid = ""
+    assert br.reconcile()
+    assert br.sessions[sid].parent_sid == "orc"
+
+
+def test_claude_agent_link_comes_from_process_env_after_restart(clock):
+    """Спящий агент после рестарта моста хуков не шлёт — связь берётся из окружения."""
+    envs = {23: {"MJC_PARENT_SESSION": "orc", "MJC_PARENT": "оркестратор",
+                 "CLAUDE_CODE_AGENT": "implementer"}}
+    entries = [b._entry("orc", pid=None, cwd="/w", name="оркестратор", status="idle",
+                        status_ms=clock.wall() * 1000),
+               b._entry("fe", pid=23, cwd="/w", name="modu-impl-fe", status="idle",
+                        status_ms=clock.wall() * 1000, agent="mjc-implementer"),
+               b._entry("solo", pid=24, cwd="/w", name="просто сессия", status="idle",
+                        status_ms=clock.wall() * 1000)]
+    asked = []
+    def env_of(pid):
+        asked.append(pid)
+        return envs.get(pid)
+    linked = b.link_claude_agents(entries, env_of)
+    assert asked == [23], "окружение читается только у агентов, а не у всех сессий"
+    assert linked[1]["parent_sid"] == "orc"
+    assert b.link_claude_agents(None, env_of) is None
+    br = make_bridge(b.Config(reconcile_grace_sec=0), clock, FakeLiveness({23, 24}),
+                     CollectingSink(), probe=lambda: entries)
+    br.reconcile()
+    cards = br.build_snapshot()["sessions"]
+    assert [c.get("ag") for c in cards if c.get("ag")] == ["i12"]

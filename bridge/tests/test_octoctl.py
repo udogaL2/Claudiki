@@ -68,6 +68,14 @@ def test_fmt_sessions_formats_idle_in_minutes_and_hours():
     assert "87.6ч" in out
 
 
+def test_fmt_sessions_tags_non_claude_agents():
+    row = {"id": "01a1ca09-21a5", "name": "modules", "registry_name": "modu-rev-sec-codex",
+           "state_name": "IDLE", "pid": 41544, "pid_alive": True, "idle_hours": 0.1,
+           "visible": False, "hidden_reason": "в свите", "harness": "codex"}
+    out = c.fmt_sessions({"sessions": [row, dict(row, harness="claude")]})
+    assert out.count("[codex]") == 1, "у Claude-агентов метки харнеса нет"
+
+
 def test_fmt_head_summarises_bridge():
     head = c.fmt_head(DEBUG_SAMPLE)
     assert "pid=4242" in head and "uptime=2.0ч" in head

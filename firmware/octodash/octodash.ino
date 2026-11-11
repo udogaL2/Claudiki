@@ -352,10 +352,10 @@ struct Session {
   char  id[24];
   char  name[40];      // кириллица в UTF-8 по 2 байта: 16 символов = 33 байта
   State state;
-  int   role;         // роль в мета-оркестрации: 0 нет, 1 орк, 2 impl, 3 rsrch, 4 rev
-  // Свита оркестратора: пара символов на агента — буква роли и цифра состояния
-  // («i0r0v1»). Строкой, а не массивом: арена ArduinoJson всего 2 КБ, и каждый
-  // вложенный узел стоит дороже, чем весь этот текст.
+  int   role;         // роль в мета-оркестрации: 0 нет, 1 орк, 2 impl, 3 rsrch, 4 rev, 5 plan
+  // Свита оркестратора: тройка символов на РОЛЬ — буква, сколько агентов, худшее
+  // состояние («p10i30v21»). Строкой, а не массивом: арена ArduinoJson всего 2 КБ,
+  // и каждый вложенный узел стоит дороже, чем весь этот текст.
   char  ag[24];
   int   sub;          // активных суб-агентов
   int   mb;           // вес транскрипта, МБ — копоть по краям карточки
@@ -442,7 +442,7 @@ void octoWindow(int col, int row, int &wx, int &wy, int &wcx, int &wcy);
 void updateOctopusArea(int col, int row, Session &s, float tt);
 void drawOctopus(Adafruit_GFX &g, int cx, int cy, Session &s, float tt);
 uint16_t roleColor(int role);
-void roleGlyph(Adafruit_GFX &g, int cx, int cy, int r, int role, uint16_t col);
+void roleGem(Adafruit_GFX &g, int cx, int cy, int role, uint16_t col);
 void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt, int phase, int count);
 void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt);
 void applySnapshot();
@@ -1036,14 +1036,15 @@ void drawGuests(Adafruit_GFX &g, int cx, int cy, int idx, uint32_t seed) {
 // =============================================================================
 // Свита мета-оркестратора
 // =============================================================================
-// Оркестратор держит рядом отдельные сессии Claude Code — имплементера, ресерчера,
-// ревьювера. На карточке они стоят по бокам от него маленькими осьминожками: свои
+// Оркестратор держит рядом отдельные сессии — планировщика, имплементера, ресерчера,
+// ревьювера (с MetaJetCore 0.6 это бывают и Codex, и b24: мосту всё равно). На карточке они стоят по бокам от него маленькими осьминожками: свои
 // карточки они не занимают (пятеро съедали всю страницу из шести), а роль читается
 // фигурой-«шапкой», а не буквой — глиф 3×5 на этом экране не разобрать.
 #define ROLE_ORC   1
 #define ROLE_IMPL  2
 #define ROLE_RSRCH 3
 #define ROLE_REV   4
+#define ROLE_PLAN  5   // MetaJetCore 0.6; следующий свободный код, прошитые не сдвигаем
 
 uint16_t roleColor(int role) {
   switch (role) {
@@ -1051,26 +1052,40 @@ uint16_t roleColor(int role) {
     case ROLE_IMPL:  return 0x663F;   // голубой
     case ROLE_RSRCH: return 0xB47F;   // фиолетовый
     case ROLE_REV:   return 0x7F56;   // мятный
+    case ROLE_PLAN:  return 0xFC1A;   // розовый: далеко и от статусов, и от ролей
   }
   return 0xC618;
 }
 
-// Силуэт роли: круг — оркестратор, квадрат — имплементер, треугольник — ресерчер,
-// ромб — ревьювер. Фигура, а не буква: на семи пикселях силуэт узнаётся боковым
-// зрением, а «O» от «V» не отличить.
-void roleGlyph(Adafruit_GFX &g, int cx, int cy, int r, int role, uint16_t col) {
-  if (r < 1) r = 1;
-  if (role == ROLE_IMPL) { g.fillRect(cx - r, cy - r, 2 * r + 1, 2 * r + 1, col); return; }
-  if (role == ROLE_ORC)  { g.fillCircle(cx, cy, r, col); return; }
-  for (int j = 0; j <= 2 * r; j++) {
-    int hw = (role == ROLE_RSRCH) ? (j + 1) / 2 : r - abs(j - r);
-    g.fillRect(cx - hw, cy - r + j, 2 * hw + 1, 1, col);
-  }
+// Шапка роли — «камешек» 7×7 по маске: квадрат — имплементер, треугольник —
+// ресерчер, ромб — ревьювер, звезда — планировщик. Плоская заливка 5×5 на экране
+// выглядела кляксой; у камешка блик по верхне-левым граням и тень по нижне-правым —
+// свет падает так же, как на сфере босса. Грани считаются по маске, поэтому фигура —
+// это семь байт, а не код отрисовки. Бит 6 строки — левый пиксель.
+static const uint8_t GEM_MASK[4][7] = {
+  {0x00, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x00},   // ROLE_IMPL
+  {0x08, 0x08, 0x1C, 0x1C, 0x3E, 0x3E, 0x7F},   // ROLE_RSRCH
+  {0x08, 0x1C, 0x3E, 0x7F, 0x3E, 0x1C, 0x08},   // ROLE_REV
+  {0x08, 0x1C, 0x7F, 0x3E, 0x1C, 0x36, 0x22},   // ROLE_PLAN
+};
+
+static bool gemOn(const uint8_t *m, int x, int y) {
+  return x >= 0 && x < 7 && y >= 0 && y < 7 && ((m[y] >> (6 - x)) & 1);
 }
 
-// Насколько состояние тревожно: упал важнее, чем ждёт, ждёт важнее, чем работает.
-static int crewRank(int st) {
-  return st == ERR ? 0 : st == WAITING ? 1 : st == WORKING ? 2 : 3;
+void roleGem(Adafruit_GFX &g, int cx, int cy, int role, uint16_t col) {
+  int idx = role == ROLE_IMPL ? 0 : role == ROLE_RSRCH ? 1 : role == ROLE_REV ? 2
+          : role == ROLE_PLAN ? 3 : -1;
+  if (idx < 0) return;
+  const uint8_t *m = GEM_MASK[idx];
+  uint16_t hi = lerp565(col, 0xFFFF, 0.6f), lo = lerp565(col, BG, 0.45f);
+  for (int y = 0; y < 7; y++)
+    for (int x = 0; x < 7; x++) {
+      if (!gemOn(m, x, y)) continue;
+      bool top = !gemOn(m, x, y - 1) || !gemOn(m, x - 1, y);
+      bool bot = !gemOn(m, x, y + 1) || !gemOn(m, x + 1, y);
+      g.drawPixel(cx - 3 + x, cy - 3 + y, top && !bot ? hi : bot && !top ? lo : col);
+    }
 }
 
 void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt,
@@ -1100,7 +1115,7 @@ void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt,
     g.fillCircle(cx - 2, cy, 1, EYE_LIGHT); g.fillCircle(cx + 2, cy, 1, EYE_LIGHT);
     g.drawPixel(cx - 2, cy, EYE_DARK);      g.drawPixel(cx + 2, cy, EYE_DARK);
   }
-  roleGlyph(g, cx, cy - 8, 2, role, lerp565(col, 0xFFFF, 0.5f));
+  roleGem(g, cx, cy - 10, role, col);   // выше кольца ожидания (r до 7)
   if (state == WAITING) {
     // Мигает ТОЛЬКО кольцо, сам зверёк остаётся на месте: мигание всей фигуры
     // читалось как «агент то появляется, то исчезает», то есть как проблема с
@@ -1125,18 +1140,23 @@ void crewOcto(Adafruit_GFX &g, int cx, int cy, int role, int state, float tt,
 // Одна фигура на РОЛЬ: опознать конкретного агента силуэтом всё равно нельзя, для
 // этого мост подставляет его имя в строку карточки.
 void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt) {
-  const int roles[3] = {ROLE_IMPL, ROLE_RSRCH, ROLE_REV};
-  int cnt[3] = {0, 0, 0}, st[3] = {-1, -1, -1};
-  for (const char *p = ag; p[0] && p[1]; p += 2) {
-    int idx = p[0] == 'i' ? 0 : p[0] == 'r' ? 1 : p[0] == 'v' ? 2 : -1;
+  // `ag` — тройка на РОЛЬ: буква, сколько их (1..9), самое тревожное состояние
+  // («p10i30v21»). Сводку считает мост: команда бывает в 15 вкладок, а буфер ag[24],
+  // и рисуем мы всё равно одну фигуру на роль. Порядок — конвейер: план, код,
+  // исследование, проверка; четыре роли встают по две в столбец.
+  const int roles[4] = {ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV};
+  int cnt[4] = {0, 0, 0, 0}, st[4] = {-1, -1, -1, -1};
+  for (const char *p = ag; p[0] && p[1] && p[2]; p += 3) {
+    int idx = p[0] == 'p' ? 0 : p[0] == 'i' ? 1 : p[0] == 'r' ? 2 : p[0] == 'v' ? 3 : -1;
     if (idx < 0) continue;
-    int state = p[1] - '0';
+    int n = p[1] - '0', state = p[2] - '0';
+    if (n < 1 || n > 9) n = 1;
     if (state < 0 || state > 3) state = IDLE;
-    cnt[idx]++;
-    if (st[idx] < 0 || crewRank(state) < crewRank(st[idx])) st[idx] = state;
+    cnt[idx] = n;
+    st[idx] = state;
   }
-  int order[3], n = 0;
-  for (int k = 0; k < 3; k++) if (cnt[k]) order[n++] = k;
+  int order[4], n = 0;
+  for (int k = 0; k < 4; k++) if (cnt[k]) order[n++] = k;
   if (!n) return;
   int half = (n + 1) / 2;
   for (int k = 0; k < n; k++) {
@@ -1147,7 +1167,7 @@ void drawCrew(Adafruit_GFX &g, int cx, int hy, const char *ag, float tt) {
     // вместе с шапкой сверху и щупальцами снизу: клип у канвы тихий, срезанную
     // макушку на экране не заметишь.
     int gx = cx + (right ? 25 : -25);
-    int gy = hy + 2 + iround((idx - (col - 1) / 2.0f) * (col >= 3 ? 19 : 22));
+    int gy = hy + 2 + iround((idx - (col - 1) / 2.0f) * (col >= 3 ? 19 : 24));
     crewOcto(g, gx, gy, roles[order[k]], st[order[k]], tt, k, cnt[order[k]]);
   }
 }

@@ -105,6 +105,7 @@
   .rshape.sq{border-radius:2px}
   .rshape.tri{clip-path:polygon(50% 0,100% 100%,0 100%)}
   .rshape.di{clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+  .rshape.pl{clip-path:polygon(33% 0,67% 0,67% 33%,100% 33%,100% 67%,67% 67%,67% 100%,33% 100%,33% 67%,0 67%,0 33%,33% 33%)}
   .rstates{display:flex; gap:3px;}
   .rstates button{padding:3px 6px; font-size:10.5px; border-radius:6px;}
   .rstates button.on{border-color:currentColor}
@@ -231,6 +232,7 @@
         <button data-n="5">5</button>
         <button data-n="8">8</button>
         <button data-n="12">12</button>
+        <button data-n="15">15</button>
       </div>
       <div class="roster" id="roster"></div>
       <div class="btns">
@@ -773,7 +775,7 @@
         // Шаг и якорь подобраны так, чтобы ТРИ фигуры влезли в окно 68×72 целиком,
         // вместе с шапкой-ролью сверху и щупальцами снизу: у крайних иначе срезало
         // макушку, и это не видно на экране — клип у канвы тихий.
-        const gy = hy + 2 + Math.round((idx - (col-1)/2) * (col >= 3 ? 19 : 22));
+        const gy = hy + 2 + Math.round((idx - (col-1)/2) * (col >= 3 ? 19 : 24));
         miniOcto(gx, gy, grp.role, grp.state, tt, k, grp.n);
       });
       return;
@@ -872,12 +874,17 @@
   // ~/.claude/sessions/<pid>.json — туда её кладёт плагин через CLAUDE_CODE_AGENT),
   // а связь «оркестратор → его агенты» приезжает из env спавна. Здесь это просто
   // поля карточки: эмулятор проверяет картинку, а не способ добычи данных.
-  const ROLE_NONE=0, ROLE_ORC=1, ROLE_IMPL=2, ROLE_RSRCH=3, ROLE_REV=4;
-  const ROLE_LETTER = ["", "O", "I", "R", "V"];
+  // Планировщик появился в MetaJetCore 0.6 и получил следующий свободный код, а не
+  // место «по порядку»: коды — контракт с прошивкой, сдвигать прошитые нельзя.
+  const ROLE_NONE=0, ROLE_ORC=1, ROLE_IMPL=2, ROLE_RSRCH=3, ROLE_REV=4, ROLE_PLAN=5;
+  const ROLE_LETTER = ["", "O", "I", "R", "V", "P"];
   // Цвета ролей держим ПОДАЛЬШЕ от палитры статусов (зелёный/жёлтый/серый/красный):
   // на карточке рядом и то и другое, и путать их нельзя.
-  const ROLE_COLOR = [0, rgb(255,176,64), rgb(96,196,255), rgb(178,142,255), rgb(120,235,180)];
-  const ROLE_NAME = ["", "оркестратор", "имплементер", "ресерчер", "ревьювер"];
+  // Планировщику — розовый: единственный свободный тон, далёкий и от статусов, и от
+  // остальных ролей (красный сбоя темнее и холоднее, янтарь орка — жёлтый).
+  const ROLE_COLOR = [0, rgb(255,176,64), rgb(96,196,255), rgb(178,142,255), rgb(120,235,180),
+                      rgb(255,128,208)];
+  const ROLE_NAME = ["", "оркестратор", "имплементер", "ресерчер", "ревьювер", "планировщик"];
   // off — как сейчас; crew — свита осьминожков по бокам; shape — фигуры на орбите.
   let metaVar = "off";
   // collapsed — команда одной карточкой (агенты только спутниками), expanded — у каждого
@@ -886,7 +893,7 @@
   let teamMode = "collapsed";
 
   /** Силуэт роли: круг — оркестратор, квадрат — имплементер, треугольник — ресерчер,
-   *  ромб — ревьювер.
+   *  ромб — ревьювер, плюс — планировщик.
    *
    *  Фигура, а НЕ буква. Первый заход рисовал глиф 3×5, и он не читался: на клетке
    *  такого размера «O» и «V» отличаются четырьмя пикселями, а поверх копоти не
@@ -896,10 +903,42 @@
     if(r < 1) r = 1;
     if(role===ROLE_IMPL){ g.fillRect(cx-r, cy-r, 2*r+1, 2*r+1, col); return; }
     if(role===ROLE_ORC){  g.fillCircle(cx, cy, r, col); return; }
+    if(role===ROLE_PLAN){                     // звезда — та же маска, что у камешка
+      const m = GEM_MASK[ROLE_PLAN];
+      for(let y=0;y<7;y++) for(let x=0;x<7;x++) if(m[y][x]!==".") g.drawPixel(cx-3+x, cy-3+y, col);
+      return;
+    }
     for(let j=0;j<=2*r;j++){
       // треугольник вершиной вверх / ромб — одна и та же развёртка по строкам
       const hw = role===ROLE_RSRCH ? Math.round(j/2) : r - Math.abs(j - r);
       g.fillRect(cx-hw, cy-r+j, 2*hw+1, 1, col);
+    }
+  }
+
+  /** Шапка роли над осьминожком свиты — «камешек» 7×7, нарисованный по пикселю.
+   *
+   *  Первый заход заливал фигуру одним цветом на 5×5, и на просмотре это было «абы
+   *  как»: плоские кляксы, а у планировщика вообще плюс, похожий на аптечку. Свита
+   *  с 0.6 стоит не больше двух на бок, сверху освободилось место — и шапка выросла
+   *  до 7×7 и получила объём: блик по верхне-левым граням, тень по нижне-правым,
+   *  как у самой сферы босса, где свет тоже падает слева сверху. Пятая фигура —
+   *  звезда: в ряду «круг, квадрат, треугольник, ромб» это естественное продолжение,
+   *  и она единственная, что на семи пикселях не сливается ни с одной из них.
+   *  Грани считаются по маске, а не рисуются руками — фигуры остаются одним списком. */
+  const GEM_MASK = {
+    [ROLE_IMPL]:  [".......", ".#####.", ".#####.", ".#####.", ".#####.", ".#####.", "......."],
+    [ROLE_RSRCH]: ["...#...", "...#...", "..###..", "..###..", ".#####.", ".#####.", "#######"],
+    [ROLE_REV]:   ["...#...", "..###..", ".#####.", "#######", ".#####.", "..###..", "...#..."],
+    [ROLE_PLAN]:  ["...#...", "..###..", "#######", ".#####.", "..###..", ".##.##.", ".#...#."],
+  };
+  function roleGem(cx, cy, role, col){
+    const m = GEM_MASK[role]; if(!m) return;
+    const on = (x,y) => y>=0 && y<7 && x>=0 && x<7 && m[y][x]!==".";
+    const hi = lerp(col, 0xFFFF, 0.6), lo = lerp(col, BG, 0.45);
+    for(let y=0;y<7;y++) for(let x=0;x<7;x++){
+      if(!on(x,y)) continue;
+      const top = !on(x,y-1) || !on(x-1,y), bot = !on(x,y+1) || !on(x+1,y);
+      g.drawPixel(cx-3+x, cy-3+y, top && !bot ? hi : bot && !top ? lo : col);
     }
   }
 
@@ -960,7 +999,7 @@
       g.fillCircle(cx-2, cy, 1, eye); g.fillCircle(cx+2, cy, 1, eye);
       g.drawPixel(cx-2, cy, PUPIL);    g.drawPixel(cx+2, cy, PUPIL);
     }
-    roleGlyph(cx, cy-8, 2, role, lerp(col, 0xFFFF, 0.5));     // «шапка» = роль
+    roleGem(cx, cy-10, role, col);   // «шапка» = роль; выше кольца ожидания (r≤7)
     // Знак состояния — тот же, что у большого осьминога в ячейке: «?» значит «ждёт
     // человека», и это единственное, ради чего на экран вообще смотрят. Ставим сбоку
     // от головы, чтобы не спорил с шапкой-ролью.
@@ -1000,7 +1039,9 @@
    *  важнее, чем работает. Иначе один упавший ревьювер тонул бы среди двух рабочих.
    */
   function crewGroups(sats){
-    const order = [ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
+    // Порядок конвейера: план → код → исследование → проверка. Четыре роли встают
+    // по две в столбец: слева план и код, справа исследование и проверка.
+    const order = [ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
     const worst = [E, A, W, I];                     // по убыванию тревожности
     return order.map(role=>{
       const mine = sats.filter(a=>a.role===role);
@@ -3267,9 +3308,10 @@
       const o = {id:c.id, name:c.name, state:c.state};
       if(c.sub) o.sub=c.sub;
       if(metaVar!=="off" && c.role) o.r=c.role;
-      // Компактная строка вместо массива: буква роли + цифра статуса на агента.
+      // Компактная строка вместо массива, по тройке на РОЛЬ: буква, сколько их
+      // (кап 9), самое тревожное состояние. Длина не зависит от размера команды.
       if(metaVar!=="off" && c.role===ROLE_ORC && (c.sats||[]).length)
-        o.ag = c.sats.map(a=>ROLE_LETTER[a.role].toLowerCase()+a.state).join("");
+        o.ag = crewGroups(c.sats).map(g=>ROLE_LETTER[g.role].toLowerCase()+Math.min(g.n,9)+g.state).join("");
       return o;
     });
     // Спящему экрану состав не нужен: мост шлёт короткий снэпшот и не гоняет данные зря
@@ -3517,14 +3559,16 @@
         + (label.alarm ? ` · на карточке: «${label.text}»` : "")
       : `${orc.name}: агентов нет`;
   }
-  // Состав команды по числу агентов. Порядок ролей — как у самого MJC: один
-  // имплементер, один ресерчер, дальше ревьюверы и второй имплементер по доменам.
-  const TEAM_ROLES = [ROLE_IMPL, ROLE_RSRCH, ROLE_REV, ROLE_REV, ROLE_IMPL,
-                      ROLE_RSRCH, ROLE_REV, ROLE_IMPL, ROLE_REV, ROLE_RSRCH,
-                      ROLE_IMPL, ROLE_REV];
-  const TEAM_NAMES = ["mjc-impl-be","mjc-rsrch","mjc-rev-sec","mjc-rev-arch","mjc-impl-fe",
-                      "mjc-rsrch-2","mjc-rev-perf","mjc-impl-db","mjc-rev-ux","mjc-rsrch-3",
-                      "mjc-impl-api","mjc-rev-doc"];
+  // Состав команды по числу агентов — как его набирает MetaJetCore 0.6: планировщик,
+  // имплементеры по фазам, ресерчер, гейты-ревьюверы по слотам и итоговое ревью
+  // тремя харнесами (Claude, Codex, b24). 15 вкладок — реалистичный максимум.
+  const TEAM_ROLES = [ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV, ROLE_IMPL,
+                      ROLE_REV, ROLE_IMPL, ROLE_REV, ROLE_RSRCH, ROLE_REV,
+                      ROLE_REV, ROLE_REV, ROLE_REV, ROLE_REV, ROLE_REV];
+  const TEAM_NAMES = ["mjc-plan","mjc-impl-p1","mjc-rsrch","mjc-rev-tests","mjc-impl-p2",
+                      "mjc-rev-sec","mjc-impl-p3","mjc-rev-a11y","mjc-rsrch-2","mjc-rev-perf",
+                      "mjc-rev-scen","mjc-rev-review-claude","mjc-rev-review-codex",
+                      "mjc-rev-review-b24","mjc-rev-review-claude-2"];
   /** Карточки агентов = отдельные сессии. Спутники их не заменяют: на карточке
    *  оркестратора видно СОСТАВ, а у каждого агента есть своя карточка со статусом.
    *  На страницу помещается пятеро — остальные живут только спутниками. */
@@ -3562,8 +3606,8 @@
 
   // -- ростер: список команды, где роль и статус меняются одним кликом ----------
   const rosterEl = document.getElementById("roster");
-  const ROLE_CSS = ["", "ci", "sq", "tri", "di"];
-  const ROLE_HEX = ["", "#ffb040", "#60c4ff", "#b28eff", "#78ebb4"];
+  const ROLE_CSS = ["", "ci", "sq", "tri", "di", "pl"];
+  const ROLE_HEX = ["", "#ffb040", "#60c4ff", "#b28eff", "#78ebb4", "#ff80d0"];
   const ST_LABEL = ["работает", "ждёт", "спит", "сбой"];
   const ST_CLASS = ["w", "a", "i", "e"];
   const stateBtns = (st, k) => ST_LABEL.map((l,i)=>
@@ -3603,8 +3647,8 @@
       if(k < 0) orc.state = st;                       // строка самого оркестратора
       else if(orc.sats[k]) orc.sats[k].state = st;
     } else if(el.dataset.act==="role"){
-      // Роль циклом по трём: оркестратор в свите не бывает — он и есть карточка.
-      const cyc = [ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
+      // Роль циклом по четырём: оркестратор в свите не бывает — он и есть карточка.
+      const cyc = [ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV];
       orc.sats[k].role = cyc[(cyc.indexOf(orc.sats[k].role)+1) % cyc.length];
     } else if(el.dataset.act==="del"){
       orc.sats.splice(k,1);

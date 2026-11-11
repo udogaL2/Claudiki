@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import random
+import re
 import socket
 import sys
 import threading
@@ -186,6 +187,7 @@ class Session:
     # (MJC_PARENT_SESSION), имя — справочно (MJC_PARENT). См. блок ниже и teams().
     parent_sid: str = ""
     parent: str = ""
+    harness: str = ""                 # "" — Claude Code; codex | b24 — агент не-Claude
 
 
 # --- Мета-оркестрация (MetaJetCore) -------------------------------------------
@@ -204,15 +206,31 @@ class Session:
 # Путь по имени остаётся ЗАПАСНЫМ — для агентов от плагина прошлой версии, а совсем
 # без родителя работает эвристика: общий префикс имени (`mjc-orc` и `mjc-impl-be` →
 # `mjc`) плюс общий каталог.
-ROLE_NONE, ROLE_ORC, ROLE_IMPL, ROLE_RSRCH, ROLE_REV = 0, 1, 2, 3, 4
+#
+# Ролей ровно пять, список фиксирован плагином (произвольных агентов он не запускает).
+# Коды — контракт с прошивкой: планировщик появился в MetaJetCore 0.6 и получил
+# следующий свободный номер, а не место «по порядку конвейера», чтобы не сдвигать
+# коды уже прошитых ролей.
+ROLE_NONE, ROLE_ORC, ROLE_IMPL, ROLE_RSRCH, ROLE_REV, ROLE_PLAN = 0, 1, 2, 3, 4, 5
 ROLE_BY_ID = {"orchestrator": ROLE_ORC, "implementer": ROLE_IMPL,
-              "researcher": ROLE_RSRCH, "reviewer": ROLE_REV}
-# Короткие имена из нейминга MetaJetCore: <префикс>-<роль>[-<домен>].
-ROLE_BY_SHORT = {"orc": ROLE_ORC, "impl": ROLE_IMPL, "rsrch": ROLE_RSRCH, "rev": ROLE_REV}
+              "researcher": ROLE_RSRCH, "reviewer": ROLE_REV, "planner": ROLE_PLAN}
+# Короткие имена из нейминга MetaJetCore: <префикс>-<роль>[-<домен>][-N].
+ROLE_BY_SHORT = {"orc": ROLE_ORC, "impl": ROLE_IMPL, "rsrch": ROLE_RSRCH, "rev": ROLE_REV,
+                 "plan": ROLE_PLAN}
+# Роли свиты в порядке конвейера: план → код → исследование → проверка. В этом же
+# порядке они едут в `ag` и встают на карточке.
+AGENT_ROLES = (ROLE_PLAN, ROLE_IMPL, ROLE_RSRCH, ROLE_REV)
 # Буква роли для строки `ag` в снэпшоте. Оркестратор в свите не бывает — он и есть
 # карточка, поэтому его буквы тут нет.
-ROLE_LETTER = {ROLE_IMPL: "i", ROLE_RSRCH: "r", ROLE_REV: "v"}
-AG_MAX = 9                 # столько агентов влезает в буфер прошивки (ag[24])
+ROLE_LETTER = {ROLE_PLAN: "p", ROLE_IMPL: "i", ROLE_RSRCH: "r", ROLE_REV: "v"}
+AG_COUNT_MAX = 9           # счётчик агентов одной роли — одна цифра
+# Какое состояние роли показать, если агенты в ней разные: упавший важнее ждущего,
+# ждущий важнее работающего. Считает мост: прошивка получает уже готовую сводку.
+CREW_RANK = {ERROR: 0, WAITING: 1, WORKING: 2, IDLE: 3}
+# Метку в реестре Claude Code пишет то, что применилось через `--agent`, то есть имя
+# файла агента С префиксом плагина (`mjc-implementer`); в окружении агента
+# (CLAUDE_CODE_AGENT, MJC_ROLE) — голый id. Плагин снимает префикс так же.
+AGENT_ID_PREFIX = "mjc-"
 
 
 def role_of(agent: str | None, name: str | None) -> int:
@@ -222,7 +240,10 @@ def role_of(agent: str | None, name: str | None) -> int:
     (`/orchestrate` — это скилл, а не флаг `--agent`), метки в реестре у него нет,
     и опознать его можно только по имени `<префикс>-orc`, которое даёт плагин.
     """
-    by_id = ROLE_BY_ID.get((agent or "").strip().lower())
+    agent_id = (agent or "").strip().lower()
+    if agent_id.startswith(AGENT_ID_PREFIX):
+        agent_id = agent_id[len(AGENT_ID_PREFIX):]
+    by_id = ROLE_BY_ID.get(agent_id)
     if by_id:
         return by_id
     parts = (name or "").strip().lower().split("-")
@@ -909,6 +930,222 @@ def registry_entry_alive(entry: dict, is_alive: Callable[[int | None], bool] = p
     return actual is None or actual == want
 
 
+# --- Агенты не-Claude: Codex и b24 (MetaJetCore 0.6) ------------------------
+# Плагин назначает роль не только сессии Claude Code, но и Codex или
+# b24-cowork-code-cli. У них нет ни наших хуков, ни записи в ~/.claude/sessions —
+# ни один из двух источников моста их не видит. Видно их по окружению процесса:
+# плагин кладёт туда MJC_AGENT_NAME, MJC_ROLE, MJC_PARENT[_SESSION]. Статус — из
+# ленты событий харнеса, той же, по которой его считает сам плагин (list_agents):
+#   Codex — rollout ~/.codex/sessions/…/rollout-…-<uuid>.jsonl, его держит открытым
+#           сам процесс; ход идёт между `task_started` и `task_complete`/`turn_aborted`;
+#   b24   — MJC_B24_EVENTS; ход кончается на `message_stop` сообщения БЕЗ
+#           `tool_use`, а `control_request` без ответа — агент встал на вопросе о
+#           правах в своей вкладке, это WAITING: оттуда его снимет только человек.
+# Сканер — источник записей того же вида, что и реестр, поэтому сверка, liveness по
+# PID и команды работают с ними без единой развилки.
+HARNESS_CODEX, HARNESS_B24 = "codex", "b24"
+# Окружение читается только у процессов с такими именами: у всех подряд — это
+# сотни лишних системных вызовов каждые OCTO_REGISTRY_SEC. b24 — node-скрипт.
+FOREIGN_PROC_NAMES = {"codex", "codex.exe", "node", "node.exe"}
+_UUID_TAIL = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$")
+
+
+def new_feed_state() -> dict:
+    return {"busy": False, "tool": False, "perm": {}}
+
+
+def parse_feed(harness: str, lines, st: dict) -> dict:
+    """Прогоняет новые строки ленты через автомат статуса (повторяет плагин)."""
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue             # недописанное/чужое — пропускаем, как и плагин
+        if not isinstance(ev, dict):
+            continue
+        kind = ev.get("type")
+        if harness == HARNESS_CODEX:
+            payload = ev.get("payload") if kind == "event_msg" else None
+            ptype = payload.get("type") if isinstance(payload, dict) else None
+            if ptype == "task_started":
+                st["busy"] = True
+            elif ptype in ("task_complete", "turn_aborted"):
+                st["busy"] = False
+            continue
+        if kind == "user":
+            content = (ev.get("message") or {}).get("content") or []
+            if any(isinstance(b, dict) and b.get("type") == "text" for b in content):
+                st["busy"] = True          # tool_result тоже `user`, но ход не начинает
+        elif kind == "assistant":
+            content = (ev.get("message") or {}).get("content") or []
+            if any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content):
+                st["tool"] = True
+        elif kind == "stream_event":
+            etype = (ev.get("event") or {}).get("type")
+            if etype == "message_start":
+                st["busy"], st["tool"] = True, False
+            elif etype == "message_stop" and not st["tool"]:
+                st["busy"] = False
+        elif kind == "control_request" and ev.get("request_id"):
+            st["perm"][str(ev["request_id"])] = True
+        elif kind == "control_response":
+            st["perm"].pop(str((ev.get("response") or {}).get("request_id")), None)
+    return st
+
+
+def feed_status(st: dict) -> str:
+    return "waiting" if st["perm"] else "busy" if st["busy"] else "idle"
+
+
+class FeedTail:
+    """Дочитывает ленты с последнего смещения: rollout Codex — мегабайты, читать его
+    целиком раз в 10 секунд незачем. Берёт только завершённые строки — недописанная
+    в середине разбора дала бы пропавшее событие, а смещение ушло бы за неё."""
+
+    def __init__(self):
+        self._files: dict[str, tuple[str, int, dict]] = {}   # path → (harness, offset, state)
+
+    def status(self, harness: str, path: str) -> tuple[str, float]:
+        """(статус, mtime в мс). Ленты нет или не читается — idle с нулевым временем."""
+        h, off, st = self._files.get(path) or (harness, 0, new_feed_state())
+        try:
+            mtime = os.path.getmtime(path) * 1000
+            size = os.path.getsize(path)
+            if size < off:                       # файл пересоздан — читаем заново
+                off, st = 0, new_feed_state()
+            if size > off:
+                with open(path, "rb") as f:
+                    f.seek(off)
+                    chunk = f.read(size - off)
+                cut = chunk.rfind(b"\n") + 1
+                if cut:
+                    parse_feed(harness, chunk[:cut].decode("utf-8", "replace").splitlines(), st)
+                    off += cut
+        except OSError:
+            return "idle", 0.0
+        self._files[path] = (harness, off, st)
+        return feed_status(st), mtime
+
+    def forget_except(self, keep: set[str]) -> None:
+        for path in [p for p in self._files if p not in keep]:
+            del self._files[path]
+
+
+def foreign_entry(proc: dict, tail: FeedTail) -> dict | None:
+    """Запись реестра для процесса агента не-Claude или None, если это не он.
+
+    `proc` — {pid, name, env, started_ms, files}: files — лениво, функция без
+    аргументов (открытые файлы спрашиваем только у Codex, и только когда нужно).
+    """
+    env = proc.get("env") or {}
+    agent_name = env.get("MJC_AGENT_NAME")
+    if not agent_name or not env.get("MJC_ROLE"):
+        return None
+    name = (proc.get("name") or "").lower()
+    if env.get("MJC_B24_EVENTS"):
+        harness, feed = HARNESS_B24, env["MJC_B24_EVENTS"]
+        sid = os.path.basename(os.path.dirname(feed)) or f"b24-{proc['pid']}"
+    elif name in ("codex", "codex.exe"):
+        # Только сам `codex`: его дочерний codex-code-mode-host несёт то же окружение,
+        # и без этого фильтра один агент дал бы две карточки.
+        harness = HARNESS_CODEX
+        feed = next((f for f in (proc.get("files") or (lambda: []))()
+                     if _UUID_TAIL.search(f) and os.path.basename(f).startswith("rollout-")), "")
+        m = _UUID_TAIL.search(feed) if feed else None
+        sid = m.group(1) if m else f"codex-{proc['pid']}"
+    else:
+        return None
+    status, status_ms = tail.status(harness, feed) if feed else ("idle", 0.0)
+    entry = _entry(
+        sid, pid=proc["pid"], cwd=proc.get("cwd") or "", kind=harness, name=agent_name,
+        status=status, status_ms=status_ms or proc.get("started_ms") or 0.0,
+        started_ms=proc.get("started_ms"), agent=env.get("MJC_ROLE"),
+    )
+    entry.update(harness=harness, feed=feed,
+                 parent=str(env.get("MJC_PARENT") or "")[:64],
+                 parent_sid=str(env.get("MJC_PARENT_SESSION") or "")[:128])
+    return entry
+
+
+def list_foreign_procs() -> list[dict]:  # pragma: no cover - живые процессы ОС
+    """Процессы-кандидаты в агенты не-Claude. Без psutil — пусто: окружение чужого
+    процесса переносимо больше ничем не прочитать."""
+    if psutil is None:
+        return []
+    out = []
+    for p in psutil.process_iter(["pid", "name", "create_time"]):
+        if (p.info.get("name") or "").lower() not in FOREIGN_PROC_NAMES:
+            continue
+        try:
+            env = p.environ()
+            if "MJC_AGENT_NAME" not in env:
+                continue
+            cwd = p.cwd()
+        except (psutil.Error, OSError):
+            continue
+        def files(p=p):
+            try:
+                return [f.path for f in p.open_files()]
+            except (psutil.Error, OSError):
+                return []
+        out.append({"pid": p.info["pid"], "name": p.info.get("name"), "env": env, "cwd": cwd,
+                    "started_ms": (p.info.get("create_time") or 0) * 1000 or None,
+                    "files": files})
+    return out
+
+
+def scan_foreign_agents(tail: FeedTail, lister: Callable[[], list[dict]] = list_foreign_procs,
+                        log: logging.Logger | None = None) -> list[dict]:
+    try:
+        procs = lister()
+    except Exception as e:                # сканер — бонус: без него просто нет Codex/b24
+        (log or logging.getLogger("octo.bridge")).warning("агенты не-Claude: %s", e)
+        return []
+    out = [e for e in (foreign_entry(p, tail) for p in procs) if e is not None]
+    tail.forget_except({e["feed"] for e in out if e.get("feed")})
+    return out
+
+
+def proc_env(pid: int) -> dict | None:  # pragma: no cover - живые процессы ОС
+    if psutil is None:
+        return None
+    try:
+        return psutil.Process(pid).environ()
+    except (psutil.Error, OSError):
+        return None
+
+
+def link_claude_agents(entries: list[dict] | None,
+                       env_of: Callable[[int], dict | None] = proc_env) -> list[dict] | None:
+    """Связь «агент → команда» для агентов Claude Code — из окружения их процесса.
+
+    Хук привозит MJC_PARENT_SESSION только когда агент что-то делает. После рестарта
+    моста спящий агент оставался отдельной карточкой, пока не шевельнётся, — хотя
+    его PID уже есть в реестре, а переменная лежит в окружении. Читаем адресно, только
+    у записей с меткой агента: искать процессы по имени нельзя, у Claude Code имя
+    процесса — номер версии («2.1.322»).
+    """
+    for e in entries or ():
+        if not e.get("agent") or not e.get("pid") or e.get("parent_sid"):
+            continue
+        env = env_of(e["pid"]) or {}
+        if env.get("MJC_PARENT_SESSION") or env.get("MJC_PARENT"):
+            e["parent"] = str(env.get("MJC_PARENT") or "")[:64]
+            e["parent_sid"] = str(env.get("MJC_PARENT_SESSION") or "")[:128]
+    return entries
+
+
+def merge_registry(claude: list[dict] | None, foreign: list[dict]) -> list[dict] | None:
+    """Реестр Claude Code плюс агенты не-Claude.
+
+    Реестр не прочитался → None, даже если чужие агенты нашлись: список только из них
+    сверка приняла бы за полный состав и удалила бы все сессии Claude Code.
+    """
+    if claude is None:
+        return None
+    return claude + foreign
+
+
 # --- Автоопределение serial-порта --------------------------------------------
 # USB VID:PID распространённых UART-мостов на ESP-платах. WeMos D1 mini обычно CH340.
 KNOWN_USB_IDS = {
@@ -1136,8 +1373,11 @@ class Bridge:
         self._is_alive = is_alive
         self.sink: Sink = sink or LoggingSink(self.log)
         # Сверка состава с реестром Claude Code; None → читать реальный реестр.
+        self._feeds = FeedTail()
         self._registry_probe = registry_probe or (
-            lambda: read_session_registry(self.cfg.registry_root))
+            lambda: merge_registry(
+                link_claude_agents(read_session_registry(self.cfg.registry_root)),
+                scan_foreign_agents(self._feeds, log=self.log)))
         self._size_probe = size_probe
         self._color_probe = color_probe
         # Случайность внедряется: иначе выбор победителя рулетки нечем проверить.
@@ -1486,6 +1726,9 @@ class Bridge:
                     source="registry",
                     reg_name=entry.get("name"),
                     role=role_of(entry.get("agent"), entry.get("name")),
+                    parent=entry.get("parent") or "",
+                    parent_sid=entry.get("parent_sid") or "",
+                    harness=entry.get("harness") or "",
                 )
                 changed = True
                 self.log.info(
@@ -1509,6 +1752,12 @@ class Bridge:
             changed = True
         if sess.pid is None and entry.get("pid") is not None:
             sess.pid = entry["pid"]         # даёт liveness сессии, чей PID хук не нашёл
+        # Связь с командой у агентов не-Claude приезжает только отсюда: хуков у них нет.
+        for attr in ("parent", "parent_sid", "harness"):
+            value = entry.get(attr)
+            if value and value != getattr(sess, attr):
+                setattr(sess, attr, value)
+                changed = True
         # Статус: правда за самым свежим сигналом. Хуки обычно свежее (реагируют
         # мгновенно), но после рестарта моста или потерянного хука реестр точнее.
         status_ms = entry.get("status_ms") or 0
@@ -1607,13 +1856,13 @@ class Bridge:
                 if s.role == ROLE_ORC
                 or s.session_id in named_sids
                 or ((s.reg_name or "").strip().lower() in named
-                    and s.role not in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV))]
+                    and s.role not in AGENT_ROLES)]
         out: dict[str, list[Session]] = {o.session_id: [] for o in orcs}
         if not orcs:
             return out
         by_name = {(o.reg_name or "").strip().lower(): o for o in orcs if o.reg_name}
         for s in sessions:
-            if s.role not in (ROLE_IMPL, ROLE_RSRCH, ROLE_REV):
+            if s.role not in AGENT_ROLES:
                 continue
             if s.session_id in out:
                 continue     # на него самого сослались — он карточка, а не свита
@@ -1642,12 +1891,25 @@ class Bridge:
         return self.teams(all_sessions).get(sess.session_id, [])
 
     def agents_field(self, agents: list[Session]) -> str:
-        """Свита строкой: буква роли + цифра состояния на агента (`i0r0v1`).
+        """Свита строкой, по тройке на РОЛЬ: буква, сколько их, самое тревожное
+        состояние (`p10i30v21` — планировщик работает, три имплементера работают,
+        двое ревьюверов, и кто-то из них ждёт).
 
+        По роли, а не по агенту: команды MetaJetCore 0.6 бывают по 10-15 вкладок
+        (одно итоговое ревью — до девяти ревьюверов), а буфер прошивки `ag[24]`.
+        Прошивка всё равно рисует одну фигуру на роль, так что сводка на плате
+        ничего не теряет, а длина строки больше не зависит от размера команды.
         Строкой, а не массивом объектов: у прошивки арена ArduinoJson всего 2 КБ,
         и каждый вложенный узел стоит дороже, чем весь этот текст.
         """
-        return "".join(ROLE_LETTER.get(a.role, "i") + str(a.state) for a in agents[:AG_MAX])
+        out = []
+        for role in AGENT_ROLES:
+            mine = [a for a in agents if a.role == role]
+            if not mine:
+                continue
+            worst = min((a.state for a in mine), key=lambda st: CREW_RANK[st])
+            out.append(f"{ROLE_LETTER[role]}{min(len(mine), AG_COUNT_MAX)}{worst}")
+        return "".join(out)
 
     def team_alarm(self, agents: list[Session]) -> tuple[Session | None, int]:
         """Кто из свиты требует человека: упавший важнее ждущего. И сколько таких."""
@@ -2740,6 +3002,9 @@ class Bridge:
                 "color": SESSION_COLORS[sess.color - 1] if sess.color else None,
                 "transcript": sess.transcript,
                 "source": sess.source,
+                "harness": sess.harness or "claude",
+                "role": sess.role,
+                "parent_sid": sess.parent_sid or None,
                 "muted": bool(sess.muted_ms and sess.last_active_ms <= sess.muted_ms),
                 "age_sec": round(now - sess.first_seen, 1),
                 "last_event_sec_ago": round(now - sess.last_event, 1),
