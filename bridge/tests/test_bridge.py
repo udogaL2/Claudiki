@@ -1081,6 +1081,16 @@ def test_read_registry_stale_job_does_not_override_fresher_session_status():
     assert b.iso_ms("вчера") is None and b.iso_ms(None) is None
 
 
+def test_registry_shell_status_is_idle_with_background_command(bridge):
+    # busy на время фонового сжатия, потом «shell» — ход окончен, фоновая команда жива
+    bridge.handle_event({"session_id": "s", "event": "idle", "cwd": "/p/s"})
+    sess = bridge.sessions["s"]
+    bridge._apply_entry(sess, {"status": "busy", "status_ms": sess.last_active_ms + 1})
+    assert sess.state == b.WORKING
+    assert bridge._apply_entry(sess, {"status": "shell", "status_ms": sess.last_active_ms + 1})
+    assert sess.state == b.IDLE
+
+
 def test_read_registry_absent_returns_none():
     # ни одного источника → None («реестра нет»), а не пустой список
     assert b.read_session_registry("/r", **registry_fs({})) is None

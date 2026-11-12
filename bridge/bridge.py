@@ -784,6 +784,10 @@ REGISTRY_STATUS_TO_STATE = {
     "waiting": WAITING,
     "idle": IDLE,
     "done": IDLE,        # фоновое задание отработало, сессия ждёт нового ввода
+    # Ход закончен, но фоновая команда сессии ещё идёт (dev-сервер, Appium). Не зная
+    # этого слова, мост пропускал его, и сессия, которую на время фонового сжатия
+    # («Compacted while idle») видели busy, оставалась WORKING часами.
+    "shell": IDLE,
     "error": ERROR,
     "failed": ERROR,
 }
