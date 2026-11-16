@@ -3759,10 +3759,16 @@ def test_foreign_entry_b24(tmp_path):
     feed.parent.mkdir()
     feed.write_text(json.dumps({"type": "control_request", "request_id": "q"}) + "\n")
     proc = {"pid": 7, "name": "node", "cwd": "/w", "started_ms": None,
+            "cmdline": ["/n/bin/node", "/u/.b24-cowork-code/app/b24/bin/b24-entry.js"],
             "env": {"MJC_AGENT_NAME": "modu-impl-p1", "MJC_ROLE": "implementer",
                     "MJC_B24_EVENTS": str(feed), "MJC_PARENT_SESSION": "orc"}}
     e = b.foreign_entry(proc, b.FeedTail())
     assert (e["session_id"], e["harness"], e["status"]) == ("5f0e", "b24", "waiting")
+    # демон playwright-cli, запущенный агентом, несёт его окружение и переживает его
+    daemon = {**proc, "pid": 9, "cmdline": ["/n/bin/node", "/p/playwright-core/lib/entry/cliDaemon.js"]}
+    assert b.foreign_entry(daemon, b.FeedTail()) is None
+    windows = {**proc, "cmdline": ["node.exe", r"C:\u\.b24-cowork-code\app\b24\bin\b24-entry.js"]}
+    assert b.foreign_entry(windows, b.FeedTail())["harness"] == "b24"
     plain_node = {"pid": 8, "name": "node", "env": {"MJC_AGENT_NAME": "x", "MJC_ROLE": "planner"}}
     assert b.foreign_entry(plain_node, b.FeedTail()) is None
 

@@ -1057,10 +1057,13 @@ class FeedTail:
             del self._files[path]
 
 
+B24_ENTRY = "b24/bin/b24-entry.js"   # node …/.b24-cowork-code/app/b24/bin/b24-entry.js
+
+
 def foreign_entry(proc: dict, tail: FeedTail) -> dict | None:
     """Запись реестра для процесса агента не-Claude или None, если это не он.
 
-    `proc` — {pid, name, env, started_ms, files}: files — лениво, функция без
+    `proc` — {pid, name, cmdline, env, started_ms, files}: files — лениво, функция без
     аргументов (открытые файлы спрашиваем только у Codex, и только когда нужно).
     """
     env = proc.get("env") or {}
@@ -1069,6 +1072,11 @@ def foreign_entry(proc: dict, tail: FeedTail) -> dict | None:
         return None
     name = (proc.get("name") or "").lower()
     if env.get("MJC_B24_EVENTS"):
+        # Только сам b24-entry.js: всё, что агент запустил (демон playwright-cli для
+        # живых проверок), наследует его окружение и переживает его — осиротевший
+        # демон висел на экране ревьювером, которого оркестратор уже закрыл.
+        if not any(B24_ENTRY in str(a).replace("\\", "/") for a in (proc.get("cmdline") or ())):
+            return None
         harness, feed = HARNESS_B24, env["MJC_B24_EVENTS"]
         sid = os.path.basename(os.path.dirname(feed)) or f"b24-{proc['pid']}"
     elif name in ("codex", "codex.exe"):
@@ -1107,6 +1115,7 @@ def list_foreign_procs() -> list[dict]:  # pragma: no cover - живые про�
             if "MJC_AGENT_NAME" not in env:
                 continue
             cwd = p.cwd()
+            cmdline = p.cmdline()
         except (psutil.Error, OSError):
             continue
         def files(p=p):
@@ -1114,7 +1123,8 @@ def list_foreign_procs() -> list[dict]:  # pragma: no cover - живые про�
                 return [f.path for f in p.open_files()]
             except (psutil.Error, OSError):
                 return []
-        out.append({"pid": p.info["pid"], "name": p.info.get("name"), "env": env, "cwd": cwd,
+        out.append({"pid": p.info["pid"], "name": p.info.get("name"), "cmdline": cmdline,
+                    "env": env, "cwd": cwd,
                     "started_ms": (p.info.get("create_time") or 0) * 1000 or None,
                     "files": files})
     return out
