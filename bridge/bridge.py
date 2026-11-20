@@ -1002,6 +1002,11 @@ def parse_feed(harness: str, lines, st: dict) -> dict:
             content = (ev.get("message") or {}).get("content") or []
             if any(isinstance(b, dict) and b.get("type") == "text" for b in content):
                 st["busy"] = True          # tool_result тоже `user`, но ход не начинает
+            for b in content:              # инструмент отработал — значит, разрешили
+                if isinstance(b, dict) and b.get("type") == "tool_result":
+                    for rid, tid in list(st["perm"].items()):
+                        if tid and tid == b.get("tool_use_id"):
+                            del st["perm"][rid]
         elif kind == "assistant":
             content = (ev.get("message") or {}).get("content") or []
             if any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content):
@@ -1009,11 +1014,16 @@ def parse_feed(harness: str, lines, st: dict) -> dict:
         elif kind == "stream_event":
             etype = (ev.get("event") or {}).get("type")
             if etype == "message_start":
+                # Ответ на запрос прав в ленту попадает не всегда (разрешили в самом
+                # TUI b24): ревьювер закончил ход отчётом, а мост держал его WAITING
+                # часами. Новое сообщение модели при висящем запросе невозможно —
+                # раз оно началось, все запросы уже отвечены.
                 st["busy"], st["tool"] = True, False
+                st["perm"].clear()
             elif etype == "message_stop" and not st["tool"]:
                 st["busy"] = False
         elif kind == "control_request" and ev.get("request_id"):
-            st["perm"][str(ev["request_id"])] = True
+            st["perm"][str(ev["request_id"])] = (ev.get("request") or {}).get("tool_use_id") or ""
         elif kind == "control_response":
             st["perm"].pop(str((ev.get("response") or {}).get("request_id")), None)
     return st

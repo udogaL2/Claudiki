@@ -3712,6 +3712,26 @@ def test_b24_feed_turn_ends_only_without_tool_use_and_waits_on_permission():
     assert b.feed_status(st) == "idle"
 
 
+def test_b24_permission_without_response_clears_once_the_turn_moves_on():
+    # разрешили в самом TUI — control_response в ленту не попал, а ход пошёл дальше
+    start = {"type": "stream_event", "event": {"type": "message_start"}}
+    stop = {"type": "stream_event", "event": {"type": "message_stop"}}
+    ask = {"type": "control_request", "request_id": "q1",
+           "request": {"subtype": "can_use_tool", "tool_use_id": "t1"}}
+    st = b.parse_feed("b24", _lines(start, {"type": "assistant", "message": {"content": [{"type": "tool_use"}]}},
+                                    stop, ask), b.new_feed_state())
+    assert b.feed_status(st) == "waiting"
+    b.parse_feed("b24", _lines({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "other"}]}}), st)
+    assert b.feed_status(st) == "waiting", "чужой результат вопрос не снимает"
+    b.parse_feed("b24", _lines({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "t1"}]}}), st)
+    assert b.feed_status(st) == "busy"
+    st = b.parse_feed("b24", _lines(ask, start, {"type": "assistant", "message": {"content": [
+        {"type": "text"}]}}, stop), b.new_feed_state())
+    assert b.feed_status(st) == "idle", "новое сообщение модели — вопрос уже отвечен"
+
+
 def test_feed_tail_reads_only_complete_lines_and_increments(tmp_path):
     path = tmp_path / "rollout-x.jsonl"
     started = json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
